@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn-svelte/tailwind.css";
 @import "@fontsource-variable/oxanium";
+@import "@fontsource/space-mono/400.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -38,6 +39,25 @@
 	--sidebar-accent-foreground: oklch(0.205 0 0);
 	--sidebar-border: oklch(0.922 0 0);
 	--sidebar-ring: oklch(0.708 0 0);
+
+	/* Workout status — single palette (template, CTAs, calendar, sets) */
+	--w-green-bg: #14532d;
+	--w-green-border: #4ade80;
+	--w-green-fg: #4ade80;
+	--w-yellow-bg: #3f2a00;
+	--w-yellow-border: #fbbf24;
+	--w-yellow-fg: #fbbf24;
+	--w-skipped-bg: rgb(69 10 10 / 0.35);
+	--w-skipped-border: rgb(127 29 29 / 0.4);
+	--w-skipped-fg: #f87171;
+	--w-neutral-bg: #141414;
+	--w-neutral-border: #1e1e1e;
+	/* Active FINISH / START hold (solid, black text) */
+	--w-active-green: #4ade80;
+	--w-active-yellow: #fbbf24;
+
+	--font-mono: 'Space Mono', ui-monospace, monospace;
+	--font-header-clock: var(--font-mono);
 }
 
 .dark {
@@ -76,6 +96,8 @@
 
 @theme inline {
 	--font-sans: 'Oxanium Variable', sans-serif;
+	--font-timer: var(--font-mono);
+
 	--color-sidebar-ring: var(--sidebar-ring);
 	--color-sidebar-border: var(--sidebar-border);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -127,3 +149,930 @@
 		@apply font-sans;
 	}
 }
+
+@keyframes hold-skip-tap-pulse {
+	0% {
+		background-color: var(--w-yellow-bg);
+		border-color: var(--w-yellow-border);
+		color: var(--w-yellow-fg);
+	}
+	100% {
+		background-color: #0d0d0d;
+		border-color: #1e1e1e;
+		color: #71717a;
+	}
+}
+
+@keyframes hold-cancel-tap-pulse {
+	0% {
+		background-color: var(--w-skipped-bg);
+		border-color: var(--w-skipped-border);
+		color: var(--w-skipped-fg);
+	}
+	100% {
+		background-color: #0d0d0d;
+		border-color: #1e1e1e;
+		color: #71717a;
+	}
+}
+
+.hold-skip-tap-pulse {
+	animation: hold-skip-tap-pulse 0.5s ease-out forwards;
+}
+
+.hold-cancel-tap-pulse {
+	animation: hold-cancel-tap-pulse 0.5s ease-out forwards;
+}
+
+.cancel-btn-held {
+	background-color: var(--w-skipped-bg) !important;
+	border-color: var(--w-skipped-border) !important;
+	color: var(--w-skipped-fg) !important;
+}
+
+@keyframes hold-start-to-yellow {
+	0% {
+		background-color: #ffffff;
+		color: #000000;
+		border-color: transparent;
+		filter: brightness(1);
+		box-shadow: 0 0 0 0 transparent;
+	}
+	20% {
+		background-color: #ffffff;
+		color: #000000;
+		border-color: transparent;
+		filter: brightness(1.25);
+		box-shadow: 0 0 0 2px rgb(250 250 250 / 0.9);
+	}
+	100% {
+		background-color: var(--w-active-yellow);
+		color: #000000;
+		border-color: var(--w-active-yellow);
+		filter: brightness(1);
+		box-shadow: 0 0 0 0 transparent;
+	}
+}
+
+.hold-start-to-yellow {
+	animation: hold-start-to-yellow 0.7s ease-out forwards;
+	border-width: 2px;
+	border-style: solid;
+}
+
+@keyframes hold-start-to-skipped {
+	0% {
+		background-color: #ffffff;
+		color: #000000;
+		border-color: transparent;
+		filter: brightness(1);
+		box-shadow: 0 0 0 0 transparent;
+	}
+	20% {
+		background-color: #ffffff;
+		color: #000000;
+		border-color: transparent;
+		filter: brightness(1.2);
+		box-shadow: 0 0 0 2px rgb(250 250 250 / 0.85);
+	}
+	100% {
+		background-color: var(--w-skipped-bg);
+		color: var(--w-skipped-fg);
+		border-color: var(--w-skipped-border);
+		filter: brightness(1);
+		box-shadow: 0 0 0 0 transparent;
+	}
+}
+
+@keyframes hold-skip-side-to-erase {
+	0% {
+		background-color: #0d0d0d;
+		color: var(--w-yellow-fg);
+		border-color: var(--w-yellow-border);
+	}
+	25% {
+		background-color: var(--w-yellow-bg);
+		color: var(--w-yellow-fg);
+		border-color: var(--w-yellow-border);
+	}
+	100% {
+		background-color: #0d0d0d;
+		color: #71717a;
+		border-color: #1e1e1e;
+	}
+}
+
+.hold-start-to-skipped {
+	animation: hold-start-to-skipped 0.7s ease-out forwards;
+	border-width: 2px;
+	border-style: solid;
+}
+
+.hold-skip-side-to-erase {
+	animation: hold-skip-side-to-erase 0.7s ease-out forwards;
+}
+
+@keyframes hold-complete-green-to-start {
+	0% {
+		background-color: var(--w-green-bg);
+		color: var(--w-green-fg);
+		border-color: var(--w-green-border);
+	}
+	100% {
+		background-color: #ffffff;
+		color: #000000;
+		border-color: transparent;
+	}
+}
+
+@keyframes hold-complete-yellow-to-start {
+	0% {
+		background-color: var(--w-yellow-bg);
+		color: var(--w-yellow-fg);
+		border-color: var(--w-yellow-border);
+	}
+	100% {
+		background-color: #ffffff;
+		color: #000000;
+		border-color: transparent;
+	}
+}
+
+@keyframes hold-skipped-to-start {
+	0% {
+		background-color: var(--w-skipped-bg);
+		color: var(--w-skipped-fg);
+		border-color: var(--w-skipped-border);
+	}
+	100% {
+		background-color: #ffffff;
+		color: #000000;
+		border-color: transparent;
+	}
+}
+
+@keyframes hold-erase-to-skip {
+	0% {
+		background-color: var(--w-skipped-bg);
+		color: var(--w-skipped-fg);
+		border-color: var(--w-skipped-border);
+	}
+	25% {
+		background-color: #0d0d0d;
+		color: #71717a;
+		border-color: #1e1e1e;
+	}
+	100% {
+		background-color: #0d0d0d;
+		color: #71717a;
+		border-color: #1e1e1e;
+	}
+}
+
+@keyframes hold-active-finish-green-to-start {
+	0% {
+		background-color: var(--w-active-green);
+		color: #000000;
+		border-color: var(--w-active-green);
+	}
+	100% {
+		background-color: #ffffff;
+		color: #000000;
+		border-color: transparent;
+	}
+}
+
+@keyframes hold-active-finish-yellow-to-start {
+	0% {
+		background-color: var(--w-active-yellow);
+		color: #000000;
+		border-color: var(--w-active-yellow);
+	}
+	100% {
+		background-color: #ffffff;
+		color: #000000;
+		border-color: transparent;
+	}
+}
+
+@keyframes hold-cancel-to-skip {
+	0% {
+		background-color: var(--w-skipped-bg);
+		color: var(--w-skipped-fg);
+		border-color: var(--w-skipped-border);
+	}
+	25% {
+		background-color: #0d0d0d;
+		color: #71717a;
+		border-color: #1e1e1e;
+	}
+	100% {
+		background-color: #0d0d0d;
+		color: #71717a;
+		border-color: #1e1e1e;
+	}
+}
+
+.hold-complete-green-to-start,
+.hold-complete-yellow-to-start,
+.hold-skipped-to-start,
+.hold-erase-to-skip,
+.hold-active-finish-green-to-start,
+.hold-active-finish-yellow-to-start,
+.hold-cancel-to-skip,
+.hold-start-to-skipped,
+.hold-skip-side-to-erase {
+	animation-duration: 0.7s;
+	animation-timing-function: ease-out;
+	animation-fill-mode: forwards;
+}
+
+.hold-complete-green-to-start {
+	animation-name: hold-complete-green-to-start;
+	border-width: 2px;
+	border-style: solid;
+}
+
+.hold-complete-yellow-to-start {
+	animation-name: hold-complete-yellow-to-start;
+	border-width: 2px;
+	border-style: solid;
+}
+
+.hold-skipped-to-start {
+	animation-name: hold-skipped-to-start;
+	border-width: 2px;
+	border-style: solid;
+}
+
+.hold-erase-to-skip {
+	animation-name: hold-erase-to-skip;
+}
+
+.hold-active-finish-green-to-start {
+	animation-name: hold-active-finish-green-to-start;
+	border-width: 2px;
+	border-style: solid;
+}
+
+.hold-active-finish-yellow-to-start {
+	animation-name: hold-active-finish-yellow-to-start;
+	border-width: 2px;
+	border-style: solid;
+}
+
+.hold-cancel-to-skip {
+	animation-name: hold-cancel-to-skip;
+}
+
+.workout-cta-center,
+.workout-cta-side {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.15em;
+	line-height: 1.25;
+}
+
+/* Label width follows --cta-ch (interpolated during glitch transitions) */
+.workout-cta-label {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	box-sizing: content-box;
+	width: calc(var(--cta-ch, 13) * 1ch);
+	min-width: calc(var(--cta-ch, 13) * 1ch);
+	max-width: calc(var(--cta-ch, 13) * 1ch);
+	text-align: center;
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.15em;
+	line-height: 1.25;
+	white-space: nowrap;
+	margin-right: -0.15em;
+	transition:
+		width 0.06s linear,
+		min-width 0.06s linear,
+		max-width 0.06s linear;
+}
+
+.workout-cta-label-side {
+	max-width: calc(var(--cta-ch-side-max, 6) * 1ch);
+}
+
+.font-timer {
+	font-family: var(--font-timer);
+	font-variant-numeric: tabular-nums;
+	font-feature-settings: 'tnum' 1;
+	letter-spacing: 0.04em;
+	font-weight: 400;
+}
+
+.font-timer.text-2xl,
+input.font-timer {
+	font-weight: 400;
+}
+
+.ex-time-digit {
+	display: inline-block;
+	min-width: 2ch;
+	text-align: right;
+}
+
+.ex-time-digit--plus {
+	min-width: 1ch;
+	text-align: center;
+}
+
+/* Week bar live clock only — monospace keeps chevron from shifting */
+.font-header-clock {
+	font-family: var(--font-header-clock);
+	font-variant-numeric: tabular-nums;
+	font-feature-settings: 'tnum' 1;
+	letter-spacing: 0.04em;
+	font-weight: 400;
+}
+
+.font-header-clock--fixed {
+	display: inline-block;
+	min-width: 8ch;
+	text-align: right;
+}
+
+/* Status surfaces — fade between neutral / green / yellow */
+.status-surface {
+	transition:
+		background-color 0.38s ease,
+		border-color 0.38s ease,
+		color 0.32s ease;
+}
+
+/* Template header / list: snappier completion color */
+.status-surface--prompt {
+	transition:
+		background-color 0.12s ease,
+		border-color 0.12s ease,
+		color 0.1s ease;
+}
+
+/* Erase: snap template + set colors to grey together */
+.status-surface--instant,
+.status-surface--instant .status-surface,
+.status-surface--instant .tpl-progress-seg {
+	transition-duration: 0s !important;
+}
+
+.workout-cta-text-fade {
+	transition: opacity 0.22s ease;
+}
+
+.workout-cta-text-fade--no-width {
+	transition:
+		opacity 0.22s ease,
+		width 0s,
+		min-width 0s,
+		max-width 0s;
+}
+
+.status-surface--neutral {
+	background-color: var(--w-neutral-bg);
+	border: 1px solid var(--w-neutral-border);
+}
+
+.status-surface--green {
+	background-color: var(--w-green-bg);
+	border: 1px solid var(--w-green-border);
+	color: var(--w-green-fg);
+}
+
+.status-surface--yellow {
+	background-color: var(--w-yellow-bg);
+	border: 1px solid var(--w-yellow-border);
+	color: var(--w-yellow-fg);
+}
+
+.status-surface--skipped {
+	background-color: var(--w-skipped-bg);
+	border: 1px solid var(--w-skipped-border);
+	color: var(--w-skipped-fg);
+}
+
+/* Workout UI utilities (CTAs, calendar, header icons) */
+.w-cta-complete-green {
+	background-color: var(--w-green-bg);
+	border-color: var(--w-green-border);
+	color: var(--w-green-fg);
+}
+
+.w-cta-complete-yellow {
+	background-color: var(--w-yellow-bg);
+	border-color: var(--w-yellow-border);
+	color: var(--w-yellow-fg);
+}
+
+.w-cta-skipped {
+	background-color: var(--w-skipped-bg);
+	border-color: var(--w-skipped-border);
+	color: var(--w-skipped-fg);
+}
+
+.w-cta-active-green {
+	background-color: var(--w-active-green);
+	color: #000000;
+}
+
+.w-cta-active-yellow {
+	background-color: var(--w-active-yellow);
+	color: #000000;
+}
+
+.w-cal-green {
+	background-color: var(--w-green-bg) !important;
+	color: var(--w-green-fg) !important;
+}
+
+.w-cal-yellow {
+	background-color: var(--w-yellow-bg) !important;
+	color: var(--w-yellow-fg) !important;
+}
+
+.w-cal-skipped {
+	background-color: var(--w-skipped-bg) !important;
+	color: var(--w-skipped-fg) !important;
+}
+
+.w-hdr-icon-green {
+	border-color: var(--w-green-border);
+	color: var(--w-green-fg);
+}
+
+.w-hdr-icon-yellow {
+	border-color: var(--w-yellow-border);
+	color: var(--w-yellow-fg);
+}
+
+.w-hdr-icon-skipped {
+	border-color: var(--w-skipped-border);
+	color: var(--w-skipped-fg);
+}
+
+.w-fg-green {
+	color: var(--w-green-fg);
+}
+
+.w-fg-yellow {
+	color: var(--w-yellow-fg);
+}
+
+.w-fg-skipped {
+	color: var(--w-skipped-fg);
+}
+
+.w-fg-skipped-muted {
+	color: color-mix(in srgb, var(--w-skipped-fg) 80%, transparent);
+}
+
+.w-bg-green {
+	background-color: var(--w-green-bg);
+}
+
+.w-hold-skip-active {
+	border-color: var(--w-yellow-border);
+	color: var(--w-yellow-fg);
+}
+
+.w-hold-erase-active {
+	border-color: var(--w-skipped-border);
+	color: var(--w-skipped-fg);
+}
+
+.workout-label-row {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 0.875rem;
+	line-height: 1;
+}
+
+.workout-label-text {
+	line-height: 1;
+}
+
+.workout-tick-slot {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	width: 0;
+	max-width: 0;
+	opacity: 0;
+	overflow: hidden;
+	margin-left: 0;
+	vertical-align: middle;
+	transition:
+		max-width 0.38s ease,
+		width 0.38s ease,
+		opacity 0.32s ease,
+		margin-left 0.38s ease;
+}
+
+.workout-tick-slot--visible {
+	width: 0.875rem;
+	max-width: 0.875rem;
+	opacity: 1;
+	margin-left: 0.375rem;
+}
+
+.workout-complete-tick {
+	width: 0.875rem;
+	height: 0.875rem;
+	flex-shrink: 0;
+	display: block;
+}
+
+.workout-tick-slot--visible .workout-complete-tick {
+	animation: workout-tick-in 0.35s ease-out both;
+}
+
+@keyframes workout-tick-in {
+	from {
+		opacity: 0;
+		transform: scale(0.65);
+	}
+	to {
+		opacity: 1;
+		transform: scale(1);
+	}
+}
+
+.tpl-progress-seg {
+	background-color: #1a1a1a;
+	transition: background-color 0.42s ease;
+}
+
+.tpl-progress-seg--lit {
+	transition: background-color 0.42s ease;
+}
+
+/* Timed exercise: set row + active progress strip */
+.time-set-lane {
+	min-width: 0;
+	width: 100%;
+}
+
+.time-set-lane .set-row--time {
+	height: 1.75rem;
+}
+
+.ex-top--time {
+	align-items: center;
+}
+
+.time-readout {
+	flex-shrink: 0;
+	text-align: right;
+	line-height: 1;
+	white-space: nowrap;
+}
+
+.time-active-bar {
+	display: flex;
+	align-items: center;
+	gap: 0.375rem;
+	height: 1.75rem;
+	min-width: 0;
+	width: 100%;
+}
+
+.time-active-set {
+	flex: 0 0 1.25rem;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	align-self: stretch;
+	font-size: 8px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	line-height: 1;
+	color: #a1a1aa;
+}
+
+.time-active-progress {
+	flex: 1 1 auto;
+	display: flex;
+	align-items: center;
+	align-self: stretch;
+	min-width: 0;
+	padding: 0 0.125rem;
+}
+
+.timer-progress-cubes {
+	display: flex;
+	flex-wrap: nowrap;
+	align-items: center;
+	gap: 2px;
+	width: 100%;
+	height: 4px;
+	min-width: 0;
+}
+
+.time-active-actions {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 0.125rem;
+	align-self: stretch;
+	padding-left: 0.375rem;
+	margin-left: 0.125rem;
+	border-left: 1px solid #1e1e1e;
+}
+
+.timer-control-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.75rem;
+	height: 1.75rem;
+	margin: 0;
+	padding: 0;
+	flex-shrink: 0;
+	color: #ffffff;
+	background: transparent;
+	border: none;
+	border-radius: 0.375rem;
+	cursor: pointer;
+	transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.timer-control-btn:hover {
+	color: #ffffff;
+	background-color: #1a1a1a;
+}
+
+.timer-progress-cube {
+	flex: 1 1 0;
+	min-width: 2px;
+	max-width: 5px;
+	height: 100%;
+	aspect-ratio: 1;
+	border-radius: 1px;
+	background-color: #1a1a1a;
+	transition: background-color 0.22s ease;
+}
+
+.timer-progress-cube--lit {
+	background-color: #ffffff;
+}
+
+.timer-progress-cube--met {
+	background-color: var(--w-green-fg);
+}
+
+.timer-progress-cubes--running .timer-progress-cube--lit:last-of-type {
+	animation: timer-cube-pulse 3s ease-in-out infinite;
+}
+
+@keyframes timer-cube-pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.45;
+	}
+}
+
+/* Rep set bubbles */
+.set-bubble.status-surface--neutral {
+	background-color: #0d0d0d;
+	border: 1px solid #1e1e1e;
+}
+
+.set-bubble--empty {
+	border-style: dotted !important;
+	border-color: #52525b !important;
+}
+
+.set-bubble--empty.status-surface--skipped {
+	background-color: var(--w-skipped-bg);
+	border-style: solid !important;
+	border-color: var(--w-skipped-border) !important;
+	color: var(--w-skipped-fg);
+}
+
+.set-bubble--logged.status-surface--green {
+	background-color: var(--w-green-bg);
+	border-color: var(--w-green-border);
+	color: var(--w-green-fg);
+}
+
+.set-bubble--logged.status-surface--yellow {
+	background-color: var(--w-yellow-bg);
+	border-color: var(--w-yellow-border);
+	color: var(--w-yellow-fg);
+}
+
+.set-bubble-hold-fill {
+	position: absolute;
+	inset: 0;
+	z-index: 0;
+	background: color-mix(in srgb, var(--w-green-fg) 42%, transparent);
+	border-radius: inherit;
+	transition: width 24ms linear;
+	pointer-events: none;
+}
+
+.set-bubble--holding {
+	border-color: color-mix(in srgb, var(--w-green-border) 55%, transparent) !important;
+	border-style: solid !important;
+}
+
+.exercise-index.status-surface--neutral {
+	background-color: var(--w-neutral-bg);
+	border: 1px solid var(--w-neutral-border);
+}
+
+.week-calendar-panel {
+	--week-calendar-ms: 260ms;
+	--week-day-stagger: 10ms;
+	--week-day-anim: 200ms;
+	transition: grid-template-rows var(--week-calendar-ms) ease-in;
+}
+
+.week-calendar-panel--open {
+	transition-timing-function: ease-out;
+}
+
+@keyframes week-day-in {
+	from {
+		opacity: 0;
+		transform: scale(0.82);
+	}
+	to {
+		opacity: 1;
+		transform: scale(1);
+	}
+}
+
+@keyframes week-day-out {
+	from {
+		opacity: 1;
+		transform: scale(1);
+	}
+	to {
+		opacity: 0;
+		transform: scale(0.82);
+	}
+}
+
+.week-calendar-open .day-btn {
+	animation: week-day-in var(--week-day-anim) ease-out both;
+}
+
+.week-calendar-open .day-btn:nth-child(1) {
+	animation-delay: calc(var(--week-day-stagger) * 0);
+}
+.week-calendar-open .day-btn:nth-child(2) {
+	animation-delay: calc(var(--week-day-stagger) * 1);
+}
+.week-calendar-open .day-btn:nth-child(3) {
+	animation-delay: calc(var(--week-day-stagger) * 2);
+}
+.week-calendar-open .day-btn:nth-child(4) {
+	animation-delay: calc(var(--week-day-stagger) * 3);
+}
+.week-calendar-open .day-btn:nth-child(5) {
+	animation-delay: calc(var(--week-day-stagger) * 4);
+}
+.week-calendar-open .day-btn:nth-child(6) {
+	animation-delay: calc(var(--week-day-stagger) * 5);
+}
+.week-calendar-open .day-btn:nth-child(7) {
+	animation-delay: calc(var(--week-day-stagger) * 6);
+}
+
+.week-calendar-closing .day-btn {
+	animation: week-day-out var(--week-day-anim) ease-in both;
+}
+
+.week-calendar-closing .day-btn:nth-child(1) {
+	animation-delay: calc(var(--week-day-stagger) * 6);
+}
+.week-calendar-closing .day-btn:nth-child(2) {
+	animation-delay: calc(var(--week-day-stagger) * 5);
+}
+.week-calendar-closing .day-btn:nth-child(3) {
+	animation-delay: calc(var(--week-day-stagger) * 4);
+}
+.week-calendar-closing .day-btn:nth-child(4) {
+	animation-delay: calc(var(--week-day-stagger) * 3);
+}
+.week-calendar-closing .day-btn:nth-child(5) {
+	animation-delay: calc(var(--week-day-stagger) * 2);
+}
+.week-calendar-closing .day-btn:nth-child(6) {
+	animation-delay: calc(var(--week-day-stagger) * 1);
+}
+.week-calendar-closing .day-btn:nth-child(7) {
+	animation-delay: calc(var(--week-day-stagger) * 0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.week-calendar-panel {
+		transition-duration: 0.01ms;
+	}
+
+	.week-calendar-open .day-btn,
+	.week-calendar-closing .day-btn {
+		animation: none;
+	}
+
+	.status-surface,
+	.tpl-progress-seg,
+	.timer-progress-cube,
+	.set-bubble-hold-fill,
+	.workout-complete-tick,
+	.workout-tick-slot,
+	.workout-cta-label,
+	.hold-complete-green-to-start,
+	.hold-complete-yellow-to-start,
+	.hold-skipped-to-start,
+	.hold-erase-to-skip {
+		transition-duration: 0.01ms;
+		animation: none;
+	}
+
+	.workout-tick-slot--visible {
+		width: 0.875rem;
+		max-width: 0.875rem;
+		opacity: 1;
+		margin-left: 0.375rem;
+	}
+
+	.app-main-reveal,
+	.boot-overlay {
+		transition-duration: 0.01ms;
+	}
+
+	.app-main-reveal {
+		transform: none;
+	}
+
+	.header-edit-actions-reveal {
+		animation: none;
+		opacity: 1;
+	}
+}
+
+/* Boot → main crossfade (main mounts under overlay so both can animate) */
+.app-stage {
+	position: relative;
+}
+
+.app-main-reveal {
+	opacity: 0;
+	transform: translateY(10px);
+	pointer-events: none;
+	transition:
+		opacity 480ms cubic-bezier(0.22, 1, 0.36, 1) 64ms,
+		transform 480ms cubic-bezier(0.22, 1, 0.36, 1) 64ms;
+}
+
+.app-main-reveal--active {
+	opacity: 1;
+	transform: translateY(0);
+	pointer-events: auto;
+}
+
+.boot-overlay {
+	position: absolute;
+	inset: 0;
+	z-index: 30;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	background: #0a0a0a;
+	opacity: 1;
+	pointer-events: auto;
+	transition: opacity 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.boot-overlay--exit {
+	opacity: 0;
+	pointer-events: none;
+}
+
+@keyframes header-edit-actions-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+.header-edit-actions-reveal {
+	opacity: 0;
+	animation: header-edit-actions-in 700ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+

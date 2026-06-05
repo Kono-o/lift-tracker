@@ -1,23 +1,62 @@
+# Dependencies
 node_modules
 
-# Output
+# SvelteKit / Vite build output
+.svelte-kit
 .output
+build
+dist
+
+# Deployment platform metadata (may contain project ids)
 .vercel
 .netlify
 .wrangler
-/.svelte-kit
-/build
+
+# Environment & secrets (never commit real keys)
+.env
+.env.*
+!.env.example
+
+# Supabase CLI local state (not your cloud project)
+supabase/.branches
+supabase/.temp
+supabase/.env
+
+# Logs & debug
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test / coverage
+coverage
+
+# TypeScript
+*.tsbuildinfo
 
 # OS
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
-# Env
-.env
-.env.*
-!.env.example
-!.env.test
+# Editors
+.idea
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+*~
 
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Misc caches
+.cache
+.turbo
+*.pem
+*.key
+*.p12

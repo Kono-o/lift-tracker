@@ -1,3 +1,6 @@
+-- DEPRECATED: use supabase/reset_schema.sql for full tables + RLS + functions.
+-- This file only patches an existing database (usernames + delete_own_account).
+--
 -- Run once in Supabase Dashboard → SQL Editor → New query → paste → Run
 -- Enables: delete account, unique usernames
 

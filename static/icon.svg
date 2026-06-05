@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Lift Tracker">
+  <rect width="512" height="512" rx="96" fill="#0a0a0a"/>
+  <rect x="32" y="32" width="448" height="448" rx="80" fill="none" stroke="#1e1e1e" stroke-width="8"/>
+  <g fill="none" stroke="#34d399" stroke-width="28" stroke-linecap="round">
+    <path d="M128 256h64"/>
+    <path d="M320 256h64"/>
+    <path d="M192 256h128"/>
+    <path d="M128 256v-72a40 40 0 0 1 40-40h16a40 40 0 0 1 40 40v144a40 40 0 0 1-40 40h-16a40 40 0 0 1-40-40z"/>
+    <path d="M320 256v-72a40 40 0 0 0-40-40h-16a40 40 0 0 0-40 40v144a40 40 0 0 0 40 40h16a40 40 0 0 0 40-40z"/>
+  </g>
+</svg>

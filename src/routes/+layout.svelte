@@ -5,5 +5,9 @@
 	let { children } = $props();
 </script>
 
-<svelte:head><link rel="icon" href={favicon} /></svelte:head>
+<svelte:head>
+	<title>Lift Tracker</title>
+	<meta name="description" content="Track workouts, routines, and logs" />
+	<link rel="icon" href={favicon} />
+</svelte:head>
 {@render children()}

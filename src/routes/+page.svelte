@@ -139,8 +139,9 @@
   type BootSection = { title: string; lines: string[] };
   let bootSections = $state<BootSection[]>([]);
 
-  function enterRoutineBuilder() {
-    if (!showHeaderEditActions) return;
+  function enterRoutineBuilder(opts: { fromWeeklyPlan?: boolean } = {}) {
+    if (workoutState === 'active') return;
+    if (!opts.fromWeeklyPlan && !showHeaderEditActions) return;
     templateError = null;
     editingRoutineTemplateNameId = null;
     const newAssignments: Record<number, string | null> = {};
@@ -677,10 +678,15 @@
     }
     return arr;
   });
-  let weekPlan = $derived(schedule.map((s, i) => ({
-    day: DAYS[i],
-    hasTemplate: !!s.template_id
-  })));
+  let weekPlan = $derived.by(() =>
+    Array.from({ length: 7 }, (_, dayOfWeek) => {
+      const row = schedule.find((s) => s.day_of_week === dayOfWeek);
+      return {
+        day: DAYS[dayOfWeek],
+        hasTemplate: !!row?.template_id,
+      };
+    }),
+  );
   let workoutLabel = $derived.by(() => {
     if (isViewingToday) return "TODAY'S WORKOUT";
     // Check for real tomorrow
@@ -4056,7 +4062,7 @@
           <button
             type="button"
             class="w-full max-w-xs rounded-xl border border-transparent p-1 -m-1 transition-all duration-150 hover:border-[#2a2a2a] hover:bg-[#141414]/50 cursor-pointer"
-            onclick={enterRoutineBuilder}
+            onclick={() => enterRoutineBuilder({ fromWeeklyPlan: true })}
             title="Open routine editor"
           >
             <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 mb-2 text-center pointer-events-none">WEEKLY PLAN</div>
@@ -4127,7 +4133,7 @@
             <button
               type="button"
               class="w-10 h-10 rounded-lg shrink-0 flex items-center justify-center border bg-transparent self-center transition-opacity hover:bg-[#1a1a1a] hover:text-white {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'} {headerEditActionsFading ? 'opacity-0 pointer-events-none duration-[700ms]' : headerEditActionsRevealing ? 'header-edit-actions-reveal pointer-events-none' : isFuture ? 'opacity-70 pointer-events-none duration-150' : 'opacity-100 duration-150'}"
-              onclick={enterRoutineBuilder}
+              onclick={() => enterRoutineBuilder()}
               title="Routine editor"
             ><CalendarDays class="size-5" /></button>
           {:else}
@@ -4589,7 +4595,7 @@
       {#if !editingTemplate}
         <div class="text-center py-6">
           <p class="text-xs text-zinc-500 mb-2">No template loaded for this weekday.</p>
-          <button class="px-3 py-1 bg-[#141414] border border-[#1e1e1e] text-xs font-bold rounded-lg" onclick={enterRoutineBuilder}>Assign or Create</button>
+          <button class="px-3 py-1 bg-[#141414] border border-[#1e1e1e] text-xs font-bold rounded-lg" onclick={() => enterRoutineBuilder()}>Assign or Create</button>
         </div>
       {:else}
         <!-- Exercises + properties: shared grid keeps headers, divider, and footers aligned -->

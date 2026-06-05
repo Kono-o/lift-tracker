@@ -693,6 +693,59 @@ input.font-timer {
 	animation: workout-tick-in 0.35s ease-out both;
 }
 
+.tpl-header-body {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	min-height: 3.25rem;
+}
+
+.tpl-header-slot {
+	flex: 1 1 auto;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 1rem;
+	padding: 0.125rem 0;
+}
+
+.perfect-day-badge,
+.pr-badge {
+	font-size: 9px;
+	font-weight: 800;
+	letter-spacing: 0.08em;
+	line-height: 1;
+	border-radius: 0.25rem;
+	padding: 0.125rem 0.375rem;
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+.perfect-day-badge {
+	color: #fde68a;
+	background-color: rgb(0 0 0 / 0.4);
+	border: 1px solid #a16207;
+}
+
+.pr-badge {
+	color: #fde68a;
+	background-color: rgb(0 0 0 / 0.45);
+	border: 1px solid #a16207;
+}
+
+.ex-name-row {
+	display: flex;
+	align-items: center;
+	gap: 0.375rem;
+	min-width: 0;
+	flex-wrap: nowrap;
+}
+
+.ex-name-row .ex-name {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
 @keyframes workout-tick-in {
 	from {
 		opacity: 0;

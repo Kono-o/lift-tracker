@@ -293,6 +293,8 @@
   let schedule = $state<any[]>([]);
   let templates = $state<Template[]>([]);
   let todayLog = $state<any>(null);
+  /** All-time best weight per exercise id (reps); loaded for live PR badges. */
+  let exerciseAllTimeBests = $state<Record<string, number>>({});
 
   let setCounts = $derived.by(() => {
     const template =
@@ -810,7 +812,72 @@
     return todayLog;
   }
 
+  async function refreshExerciseAllTimeBests(exercises: Exercise[]) {
+    const repsExercises = exercises.filter((ex) => ex.exercise_type === 'reps');
+    if (!repsExercises.length) {
+      exerciseAllTimeBests = {};
+      return;
+    }
+    try {
+      const entries = await Promise.all(
+        repsExercises.map(
+          async (ex) => [ex.id, await db.getExercisePersonalBest(ex.id)] as const,
+        ),
+      );
+      exerciseAllTimeBests = Object.fromEntries(entries);
+    } catch (err) {
+      console.error('exercise PR bests fetch failed', err);
+    }
+  }
+
+  function repsExerciseMeetsTarget(exercise: Exercise): boolean {
+    let loggedSetsCount = 0;
+    let allRepsMetTarget = true;
+    for (let s = 0; s < exercise.target_sets; s++) {
+      const reps = trackedReps[`${exercise.id}-${s}`];
+      if (reps !== undefined && reps !== null) {
+        loggedSetsCount++;
+        if (reps < exercise.target_reps) allRepsMetTarget = false;
+      } else {
+        allRepsMetTarget = false;
+      }
+    }
+    return loggedSetsCount === exercise.target_sets && allRepsMetTarget;
+  }
+
+  function exerciseLiveIsPr(exercise: Exercise): boolean {
+    if (exercise.exercise_type === 'time') {
+      let loggedSetsCount = 0;
+      let allMet = true;
+      for (let s = 0; s < exercise.target_sets; s++) {
+        const t = completedTimers[`${exercise.id}-${s}`];
+        if (t !== undefined && t !== null) {
+          loggedSetsCount++;
+          if (!t.met) allMet = false;
+        } else {
+          allMet = false;
+        }
+      }
+      return loggedSetsCount === exercise.target_sets && allMet;
+    }
+    const weight = exercise.current_weight ?? 0;
+    if (weight <= 0) return false;
+    const best = exerciseAllTimeBests[exercise.id] ?? 0;
+    return repsExerciseMeetsTarget(exercise) && weight > best;
+  }
+
+  function showPrBadge(exercise: Exercise, loggedEx: { exercise_is_pr?: boolean } | null): boolean {
+    if (headerSurfaceStatus === 'skipped') return false;
+    if (isViewingToday && useLiveSessionTracking()) {
+      return exerciseLiveIsPr(exercise);
+    }
+    return !!loggedEx?.exercise_is_pr;
+  }
+
   function exerciseStatusFromLog(log: any, exercise: Exercise): 'green' | 'yellow' | 'neutral' {
+    const loggedEx = getLoggedEx(log, exercise.id);
+    if (loggedEx?.exercise_is_pr) return 'green';
+
     let loggedSetsCount = 0;
     let allMet = true;
     const targetSecs =
@@ -838,7 +905,16 @@
       }
     }
 
-    if (loggedSetsCount === exercise.target_sets && allMet) return 'green';
+    if (loggedSetsCount === exercise.target_sets && allMet) {
+      if (
+        exercise.exercise_type === 'reps' &&
+        loggedEx &&
+        loggedEx.exercise_is_pr === false
+      ) {
+        return 'yellow';
+      }
+      return 'green';
+    }
     if (loggedSetsCount > 0) return 'yellow';
     return 'neutral';
   }
@@ -876,7 +952,12 @@
         }
       }
 
-      if (loggedSetsCount === exercise.target_sets && allRepsMetTarget) return 'green';
+      if (loggedSetsCount === exercise.target_sets && allRepsMetTarget) {
+        const weight = exercise.current_weight ?? 0;
+        const best = exerciseAllTimeBests[exercise.id] ?? 0;
+        if (weight > 0 && weight > best) return 'green';
+        return 'yellow';
+      }
       if (loggedSetsCount > 0) return 'yellow';
       return 'neutral';
     }
@@ -1749,6 +1830,13 @@
 				bootSections = buildBootSections(currentUser, schedule, templates, todayLog, recentLogs);
 				bootMessage = 'Almost ready…';
 			}
+			const prTemplate =
+				activeWorkoutTemplate ??
+				(workoutState === 'active' ? activeTemplate : null) ??
+				activeTemplate;
+			if (prTemplate?.exercises?.length) {
+				void refreshExerciseAllTimeBests(prTemplate.exercises);
+			}
 			if (!options.preserveSession) {
 				if (!todayLog) {
 					workoutState = 'idle';
@@ -1976,6 +2064,7 @@
     writeActiveSessionBackup();
     void persistWorkoutProgressNow();
     scheduleWorkoutProgressSave();
+    void refreshExerciseAllTimeBests(template.exercises);
   }
 
   /** DB rejects duration_seconds = 0 on completed workouts. */
@@ -4114,7 +4203,7 @@
               : 'status-surface--neutral'} {isFuture ? 'opacity-80' : ''}"
       >
         <div class="text-center leading-none">
-          <div class="workout-label-row text-xs uppercase tracking-[1.5px] {headerSkipped ? 'w-fg-skipped' : 'text-zinc-500'}">
+          <div class="workout-label-row text-xs uppercase tracking-[1.5px] {headerSkipped ? 'w-fg-skipped' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-zinc-500'}">
             <span class="workout-label-text">{workoutLabel}</span>
             <span
               class="workout-tick-slot"
@@ -4128,46 +4217,45 @@
             </span>
           </div>
         </div>
-        <div class="flex items-center h-10 gap-2">
-          {#if showHeaderEditActions}
-            <button
-              type="button"
-              class="w-10 h-10 rounded-lg shrink-0 flex items-center justify-center border bg-transparent self-center transition-opacity hover:bg-[#1a1a1a] hover:text-white {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'} {headerEditActionsFading ? 'opacity-0 pointer-events-none duration-[700ms]' : headerEditActionsRevealing ? 'header-edit-actions-reveal pointer-events-none' : isFuture ? 'opacity-70 pointer-events-none duration-150' : 'opacity-100 duration-150'}"
-              onclick={() => enterRoutineBuilder()}
-              title="Routine editor"
-            ><CalendarDays class="size-5" /></button>
-          {:else}
-            <div class="w-10 h-10 shrink-0" aria-hidden="true"></div>
-          {/if}
-          <div class="flex-1 text-center min-w-0 self-center">
-            <span class="inline-flex items-center max-w-full">
-              <span class="tpl-name text-xl font-semibold tracking-tight truncate leading-none {headerSkipped ? 'w-fg-skipped' : 'text-white'}">[ {dispTemplate?.name || 'Workout'} ]</span>
-            </span>
-          </div>
-          {#if showHeaderEditActions}
-            <button
-              type="button"
-              class="w-10 h-10 rounded-lg shrink-0 flex items-center justify-center border bg-transparent self-center transition-opacity hover:bg-[#1a1a1a] hover:text-white {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'} {headerEditActionsFading ? 'opacity-0 pointer-events-none duration-[700ms]' : headerEditActionsRevealing ? 'header-edit-actions-reveal pointer-events-none' : isFuture ? 'opacity-70 pointer-events-none duration-150' : 'opacity-100 duration-150'}"
-              onclick={() => openTemplateEditor()}
-              title="Edit Exercises"
-            ><Pencil class="size-5" /></button>
-          {:else}
-            <div class="w-10 h-10 shrink-0" aria-hidden="true"></div>
-          {/if}
-        </div>
-        <div class="text-center flex items-center justify-center leading-none min-h-[12px]">
-          {#if !useHistorical && isPerfectDay}
-            <span class="text-[10px] font-extrabold tracking-wider w-fg-yellow rounded px-1 py-px leading-none border border-[color:var(--w-yellow-border)] bg-[color:var(--w-yellow-bg)]">PERFECT DAY</span>
-          {:else}
-            <div class="tpl-header-meta text-xs uppercase tracking-wide leading-none {headerSkipped ? 'w-fg-skipped-muted' : 'text-zinc-500'}">
-              {exCount} EXERCISES • {setCount} SETS
+        <div class="tpl-header-body">
+          <div class="flex items-center h-10 gap-2 shrink-0">
+            {#if showHeaderEditActions}
+              <button
+                type="button"
+                class="w-10 h-10 rounded-lg shrink-0 flex items-center justify-center border bg-transparent self-center transition-opacity hover:bg-[#1a1a1a] hover:text-white {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'} {headerEditActionsFading ? 'opacity-0 pointer-events-none duration-[700ms]' : headerEditActionsRevealing ? 'header-edit-actions-reveal pointer-events-none' : isFuture ? 'opacity-70 pointer-events-none duration-150' : 'opacity-100 duration-150'}"
+                onclick={() => enterRoutineBuilder()}
+                title="Routine editor"
+              ><CalendarDays class="size-5" /></button>
+            {:else}
+              <div class="w-10 h-10 shrink-0" aria-hidden="true"></div>
+            {/if}
+            <div class="flex-1 text-center min-w-0 self-center">
+              <span class="tpl-name text-xl font-semibold tracking-tight truncate leading-none block {headerSkipped ? 'w-fg-skipped' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-white'}">[ {dispTemplate?.name || 'Workout'} ]</span>
             </div>
-          {/if}
-        </div>
-        {#if useHistorical}
-          <div class="h-1 w-full w-bg-green rounded-[1px]"></div>
-        {:else}
-          <div class="flex gap-[1px] h-1 w-full">
+            {#if showHeaderEditActions}
+              <button
+                type="button"
+                class="w-10 h-10 rounded-lg shrink-0 flex items-center justify-center border bg-transparent self-center transition-opacity hover:bg-[#1a1a1a] hover:text-white {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'} {headerEditActionsFading ? 'opacity-0 pointer-events-none duration-[700ms]' : headerEditActionsRevealing ? 'header-edit-actions-reveal pointer-events-none' : isFuture ? 'opacity-70 pointer-events-none duration-150' : 'opacity-100 duration-150'}"
+                onclick={() => openTemplateEditor()}
+                title="Edit Exercises"
+              ><Pencil class="size-5" /></button>
+            {:else}
+              <div class="w-10 h-10 shrink-0" aria-hidden="true"></div>
+            {/if}
+          </div>
+          <div class="tpl-header-slot">
+            {#if !useHistorical && isPerfectDay}
+              <span class="perfect-day-badge">PERFECT DAY</span>
+            {:else}
+              <div class="tpl-header-meta text-xs uppercase tracking-wide leading-none {headerSkipped ? 'w-fg-skipped-muted' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-zinc-500'}">
+                {exCount} EXERCISES • {setCount} SETS
+              </div>
+            {/if}
+          </div>
+          {#if useHistorical}
+            <div class="h-1 w-full w-bg-green rounded-[1px] shrink-0"></div>
+          {:else}
+            <div class="flex gap-[1px] h-1 w-full shrink-0">
             {#each Array(setCounts.total) as _, i}
               <div
                 class="tpl-progress-seg flex-1 rounded-[1px]"
@@ -4175,8 +4263,9 @@
                 style={i < setCounts.done ? `background-color: ${progressBarColor}` : undefined}
               ></div>
             {/each}
-          </div>
-        {/if}
+            </div>
+          {/if}
+        </div>
       </div>
 
       <!-- Exercises in one shared box separated by horizontal dividers, with list numbers on left (like editor list) -->
@@ -4194,7 +4283,6 @@
               : status === 'yellow'
                 ? 'status-surface--yellow'
                 : 'status-surface--neutral'}
-          {@const isTargetMet = status === 'green'}
           {@const isTimeEx = exercise.exercise_type === 'time'}
           {@const hasActiveTimerThis = isViewingToday && isTimeEx && activeTimerExerciseId === exercise.id && activeTimerSetIndex !== null}
           {@const timeTotal = isTimeEx ? (exercise.target_minutes * 60 + exercise.target_seconds) : 0}
@@ -4214,18 +4302,16 @@
             <div class="flex-1 flex flex-col gap-1.5">
               <div class="ex-top flex justify-between gap-3 {isTimeEx ? 'ex-top--time items-center' : 'items-start'}">
               <div class="truncate pr-2 min-w-0">
-                <div class="ex-name-row flex items-center gap-1.5 {workoutExercisesEditable ? 'hover:brightness-110' : ''} transition-all">
+                <div class="ex-name-row {workoutExercisesEditable ? 'hover:brightness-110' : ''} transition-all">
                   {#if exercise.exercise_type === 'reps'}
                     <Dumbbell class="size-3.5 shrink-0 {headerSkipped ? 'text-current' : 'text-white'}" />
                   {:else}
                     <Timer class="size-3.5 shrink-0 {headerSkipped ? 'text-current' : 'text-white'}" />
                   {/if}
-                  <div class="min-w-0">
-                    <span class="ex-name text-sm font-extrabold tracking-wide {headerSkipped ? 'text-current' : 'text-white'}">{exercise.name}</span>
-                    {#if isTargetMet && workoutState === 'active'}
-                      <span class="pr-badge text-[9px] font-extrabold tracking-wider w-fg-yellow rounded px-1.5 py-0.5 ml-1.5 align-middle border border-[color:var(--w-yellow-border)] bg-[color:var(--w-yellow-bg)]">NEW PR</span>
-                    {/if}
-                  </div>
+                  <span class="ex-name text-sm font-extrabold tracking-wide truncate {headerSkipped ? 'text-current' : 'text-white'}">{exercise.name}</span>
+                  {#if showPrBadge(exercise, loggedEx)}
+                    <span class="pr-badge">NEW PR</span>
+                  {/if}
                 </div>
                 <div class="ex-meta text-xs mt-0.5 tracking-wide {headerSkipped ? 'w-fg-skipped-muted' : 'text-zinc-400'}">
                   {#if exercise.exercise_type === 'reps'}

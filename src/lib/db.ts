@@ -383,6 +383,29 @@ export const db = {
 		if (error) throw error;
 	},
 
+	/* log a rest day explicitly for a (past) date, for historical accuracy */
+	async logRestForDate(dateStr: string) {
+		const { error } = await supabase.from("workout_history").insert({
+			workout_date: dateStr,
+			template_id: null,
+			template_name_snapshot: null,
+			is_skipped: false,
+			performance_snapshot: {},
+			workout_snapshot: {
+				is_rest: true,
+			},
+		});
+		if (error) throw error;
+	},
+
+	async deleteLogForDate(dateStr: string) {
+		const { error } = await supabase
+			.from("workout_history")
+			.delete()
+			.eq("workout_date", dateStr);
+		if (error) throw error;
+	},
+
 	/* load log for arbitrary date (for week box past/future viewing) */
 	async getLogForDate(dateStr: string) {
 		const { data, error } = await supabase

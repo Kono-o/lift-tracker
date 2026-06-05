@@ -335,6 +335,7 @@
     const log = viewedLog;
     if (!log) return 'neutral';
     if (log.is_skipped) return 'skipped';
+    if (log.workout_snapshot?.is_rest) return 'neutral';
     const snap = log.workout_snapshot;
     if (!snap?.exercises?.length) return 'yellow';
     let totalSets = 0;
@@ -898,6 +899,47 @@ async function finishWorkout() {
     }
   }
 
+  async function markPastDayAsRest(dateStr: string) {
+    try {
+      await db.logRestForDate(dateStr);
+      const log = await db.getLogForDate(dateStr);
+      weekLogs[dateStr] = log;
+      if (selectedDateStr === dateStr) {
+        viewedLog = log;
+      }
+    } catch (err) {
+      console.error('mark rest failed', err);
+    }
+  }
+
+  async function undoRestLog(dateStr: string) {
+    try {
+      await db.deleteLogForDate(dateStr);
+      weekLogs[dateStr] = null;
+      if (selectedDateStr === dateStr) {
+        viewedLog = null;
+      }
+    } catch (err) {
+      console.error('undo rest log failed', err);
+    }
+  }
+
+  async function deleteTemplateInBuilder(tpl: any) {
+    if (!confirm(`Permanently delete template "${tpl.name}"?`)) return;
+    try {
+      await db.deleteTemplate(tpl.id);
+      // clear from any pending assignments in builder
+      for (let i = 0; i < 7; i++) {
+        if (builderAssignments[i] === tpl.id) {
+          builderAssignments[i] = null;
+        }
+      }
+      await loadData();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
   function resetNewExerciseForm() {
     // No-op: the exercise editor no longer uses a separate new* buffer (edits are direct on draft items).
     // Kept for any legacy call sites on view exit etc.
@@ -1116,7 +1158,7 @@ async function finishWorkout() {
           {@const hasTemplate = !!daySchedule?.template_id}
           {@const isRest = !hasTemplate}
           {@const dayLog = isRealToday ? todayLog : (weekLogs[dayInfo.key] ?? null)}
-          {@const dayHasLog = !!dayLog}
+          {@const dayHasWorkoutLog = !!dayLog && !dayLog.workout_snapshot?.is_rest}
           {@const dayDone = isRealToday ? (workoutState === 'done') : false}
           {@const daySkipped = isRealToday ? (workoutState === 'skipped') : !!dayLog?.is_skipped}
           {@const effStatus = isRealToday ? (justFinishedStatus ?? todayCompletionStatus) : viewedCompletionStatus}
@@ -1138,7 +1180,7 @@ async function finishWorkout() {
             {#if isSelected}
               <span class="absolute -bottom-[1px] left-1/2 -translate-x-1/2 w-1.5 h-[1.5px] bg-current rounded-full transition-all duration-150"></span>
             {/if}
-            {#if dayHasLog && !isSelected && !isRealToday}
+            {#if dayHasWorkoutLog && !isSelected && !isRealToday}
               <span class="absolute -bottom-[1px] left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-[#fbbf24] opacity-60"></span>
             {/if}
           </button>
@@ -1264,63 +1306,45 @@ async function finishWorkout() {
     </div>
   
   {:else if currentView === 'track'}
-    {#if !activeTemplate}
-      <div class="flex flex-col items-center justify-center py-10 px-2 gap-6 {isFuture ? 'opacity-80' : ''}">
+    {@const isPast = selectedDateStr < REAL_TODAY_STR && !isViewingToday}
+    {@const hasLog = !!viewedLog}
+    {@const isRestLog = hasLog && viewedLog.workout_snapshot?.is_rest}
+    {@const isPastNoLog = isPast && !hasLog}
+    {@const currentScheduleIsRest = !activeTemplate}
+
+    {#if templates.length === 0}
+      <!-- Onboarding: entire routine is rest (starting out, or last template deleted). Not a tutorial; just a clean create-first page matching rest/unlogged style exactly. -->
+      <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
         <!-- Hero icon -->
         <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
-          <Bed class="size-10 text-zinc-400" />
+          <Dumbbell class="size-10 text-zinc-400" />
         </div>
 
         <div class="text-center">
-          <div class="text-3xl font-semibold tracking-[-0.02em] text-white">REST DAY</div>
-          <div class="text-[10px] uppercase tracking-[3px] text-zinc-500 mt-1">NO TEMPLATE ASSIGNED</div>
+          <div class="text-3xl font-semibold tracking-[-0.02em] text-white">START YOUR ROUTINE</div>
+          <div class="text-[10px] uppercase tracking-[3px] text-zinc-500 mt-1">CREATE YOUR FIRST TEMPLATE</div>
         </div>
 
         <div class="max-w-[240px] text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200">
-          Recovery is where the gains happen. 
+          The only workout you regret is the one you never started.
         </div>
 
-        {#if !isViewingToday}
+        <!-- Create form, same styling as other create sections and pages -->
+        <div class="w-full max-w-xs space-y-2">
+          <input 
+            placeholder="Template name (e.g. Full Body, Push/Pull)" 
+            class="w-full bg-black border border-zinc-800 text-xs text-white p-2 rounded-lg outline-none focus:border-zinc-700" 
+            bind:value={newTemplateName} 
+          />
           <button 
-            class="h-[52px] border-none rounded-xl font-sans font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-white text-black transition-all duration-150 hover:brightness-110 active:scale-95 w-full max-w-xs !opacity-100"
-            onclick={goToToday}>
-            GO TO TODAY
+            class="w-full bg-white text-black text-xs font-bold py-2 rounded-lg transition-all hover:brightness-110 active:scale-95" 
+            onclick={handleCreateTemplate}>
+            CREATE &amp; ADD EXERCISES
           </button>
-        {/if}
-
-        <!-- Week overview -->
-        <div class="w-full max-w-xs">
-          <div class="text-[9px] uppercase tracking-[2px] text-zinc-500 mb-2 text-center">WEEKLY PLAN</div>
-          <div class="grid grid-cols-7 gap-1">
-            {#each weekPlan as d, i}
-              <div class="flex flex-col items-center gap-0.5 transition-all duration-150">
-                <div class="text-[10px] font-medium {i === TODAY_WEEKDAY ? 'text-white' : 'text-zinc-400'}">{d.day}</div>
-                <div class="w-full h-6 rounded-md flex items-center justify-center border transition-all duration-150 {d.hasTemplate ? 'bg-emerald-950/30 border-emerald-900 hover:border-emerald-700' : 'bg-[#1e1e1e] border-[#2a2a2a] hover:border-[#3a3a3a]'}">
-                  {#if d.hasTemplate}
-                    <Dumbbell class="size-3 text-emerald-400" />
-                  {:else}
-                    <Bed class="size-3 text-zinc-500" />
-                  {/if}
-                </div>
-              </div>
-            {/each}
-          </div>
-          <div class="text-center text-[10px] text-zinc-500 mt-2 hover:text-white transition-colors duration-200">
-            {weekPlan.filter(d => d.hasTemplate).length} training • {weekPlan.filter(d => !d.hasTemplate).length} rest
-          </div>
-        </div>
-
-        <!-- Actions -->
-        <div class="flex flex-col gap-2 w-full max-w-xs pt-1">
-          <button 
-            class="h-[52px] border-none rounded-xl font-sans font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-white text-black transition-all duration-150 hover:brightness-110 active:scale-95" 
-            onclick={enterRoutineBuilder}>
-            MOUNT OR CREATE TEMPLATE
-          </button>
-          <div class="text-[10px] text-center text-zinc-500">Rest days are part of the program.</div>
         </div>
       </div>
-    {:else if !isViewingToday && !viewedLog && selectedDateStr < REAL_TODAY_STR}
+    {:else if isPastNoLog}
+      <!-- UNLOGGED for past with truly no history entry (distinguishes from current-schedule backtrack rests) -->
       <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
         <!-- Hero icon -->
         <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
@@ -1343,11 +1367,83 @@ async function finishWorkout() {
             GO TO TODAY
           </button>
         {/if}
+
+        <!-- QoL: allow backfilling true historical rest even if not opened that day -->
+        <button 
+          class="h-[52px] border border-[#1e1e1e] rounded-xl font-sans font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-transparent text-white transition-all duration-150 hover:bg-[#1a1a1a] w-full max-w-xs"
+          onclick={() => markPastDayAsRest(selectedDateStr)}>
+          MARK AS REST DAY
+        </button>
+      </div>
+    {:else if isRestLog || (!isPast && currentScheduleIsRest)}
+      <!-- REST DAY: current/future per schedule, or past explicitly logged rest (historical truth) -->
+      <div class="flex flex-col items-center justify-center py-10 px-2 gap-6 {isFuture && !isRestLog ? 'opacity-80' : ''}">
+        <!-- Hero icon -->
+        <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
+          <Bed class="size-10 text-zinc-400" />
+        </div>
+
+        <div class="text-center">
+          <div class="text-3xl font-semibold tracking-[-0.02em] text-white">REST DAY</div>
+          <div class="text-[10px] uppercase tracking-[3px] text-zinc-500 mt-1">
+            {isRestLog ? `LOGGED FOR ${selectedDateDisplay.nice}` : 'NO TEMPLATE ASSIGNED'}
+          </div>
+        </div>
+
+        <div class="max-w-[240px] text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200">
+          Recovery is where the gains happen. 
+        </div>
+
+        {#if !isViewingToday && !isRestLog}
+          <button 
+            class="h-[52px] border-none rounded-xl font-sans font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-white text-black transition-all duration-150 hover:brightness-110 active:scale-95 w-full max-w-xs !opacity-100"
+            onclick={goToToday}>
+            GO TO TODAY
+          </button>
+        {/if}
+
+        {#if !isRestLog}
+          <!-- Week overview + mount only for current schedule rests, not historical -->
+          <div class="w-full max-w-xs">
+            <div class="text-[9px] uppercase tracking-[2px] text-zinc-500 mb-2 text-center">WEEKLY PLAN</div>
+            <div class="grid grid-cols-7 gap-1">
+              {#each weekPlan as d, i}
+                <div class="flex flex-col items-center gap-0.5 transition-all duration-150">
+                  <div class="text-[10px] font-medium {i === TODAY_WEEKDAY ? 'text-white' : 'text-zinc-400'}">{d.day}</div>
+                  <div class="w-full h-6 rounded-md flex items-center justify-center border transition-all duration-150 {d.hasTemplate ? 'bg-emerald-950/30 border-emerald-900 hover:border-emerald-700' : 'bg-[#1e1e1e] border-[#2a2a2a] hover:border-[#3a3a3a]'}">
+                    {#if d.hasTemplate}
+                      <Dumbbell class="size-3 text-emerald-400" />
+                    {:else}
+                      <Bed class="size-3 text-zinc-500" />
+                    {/if}
+                  </div>
+                </div>
+              {/each}
+            </div>
+            <div class="text-center text-[10px] text-zinc-500 mt-2 hover:text-white transition-colors duration-200">
+              {weekPlan.filter(d => d.hasTemplate).length} training • {weekPlan.filter(d => !d.hasTemplate).length} rest
+            </div>
+          </div>
+
+          <!-- Actions -->
+          <div class="flex flex-col gap-2 w-full max-w-xs pt-1">
+            <button 
+              class="h-[52px] border-none rounded-xl font-sans font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-white text-black transition-all duration-150 hover:brightness-110 active:scale-95" 
+              onclick={enterRoutineBuilder}>
+              MOUNT OR CREATE TEMPLATE
+            </button>
+            <div class="text-[10px] text-center text-zinc-500">Rest days are part of the program.</div>
+          </div>
+        {:else}
+          <div class="text-[10px] text-center text-zinc-500">This day was logged as a rest day. <button class="text-red-400 hover:text-red-500 underline" onclick={() => undoRestLog(selectedDateStr)}>undo</button></div>
+        {/if}
       </div>
     {:else}
-      <!-- Template box on main screen -->
-      {@const exCount = activeTemplate.exercises.length}
-      {@const setCount = activeTemplate.exercises.reduce((sum, ex) => sum + (ex.target_sets || 0), 0)}
+      <!-- Template box on main screen (supports historical past logged workouts even if current schedule has no template for the day, for edge cases like deleted templates) -->
+      {@const useHistorical = isPast && viewedLog && !viewedLog.workout_snapshot?.is_rest}
+      {@const dispTemplate = useHistorical ? { id: viewedLog.template_id, name: viewedLog.template_name_snapshot || 'Past Workout', exercises: viewedLog.workout_snapshot?.exercises || [] } : activeTemplate}
+      {@const exCount = (dispTemplate?.exercises || []).length}
+      {@const setCount = (dispTemplate?.exercises || []).reduce((sum: number, ex: any) => sum + (ex.target_sets || 0), 0)}
       <div class="tpl-header bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 flex flex-col gap-2 {sessionStatus === 'green' ? '!bg-[#052e16] !border-emerald-700' : ''} {sessionStatus === 'yellow' ? '!bg-[#3f2a00] !border-amber-700' : ''} {isFuture ? 'opacity-80' : ''}">
         <div class="text-center">
           <div class="text-[9px] uppercase tracking-[2px] text-zinc-500 mb-1 flex items-center justify-center gap-1">
@@ -1358,24 +1454,24 @@ async function finishWorkout() {
           </div>
         </div>
         <div class="flex items-center h-8">
-          {#if workoutState !== 'active'}
+          {#if workoutState !== 'active' && !useHistorical}
             <button class="w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center border {sessionStatus === 'green' ? 'border-emerald-700' : sessionStatus === 'yellow' ? 'border-amber-700' : 'border-[#1e1e1e]'} bg-transparent {sessionStatus === 'green' ? 'text-[#4ade80] hover:text-white' : sessionStatus === 'yellow' ? 'text-[#fbbf24] hover:text-white' : 'text-zinc-500 hover:text-white'} self-center transition-all duration-150 hover:bg-[#1a1a1a] {isFuture ? 'opacity-70 pointer-events-none' : ''}" onclick={enterRoutineBuilder} title="Routine Builder"><CalendarDays class="size-4" /></button>
           {:else}
             <div class="w-8 h-8 flex-shrink-0"></div>
           {/if}
           <div class="flex-1 text-center px-2 min-w-0 self-center">
             <span class="inline-flex items-center">
-              <span class="tpl-name text-lg font-semibold tracking-tight text-white truncate leading-none">[ {activeTemplate.name} ]</span>
+              <span class="tpl-name text-lg font-semibold tracking-tight text-white truncate leading-none">[ {dispTemplate?.name || 'Workout'} ]</span>
             </span>
           </div>
-          {#if workoutState !== 'active'}
+          {#if workoutState !== 'active' && !useHistorical}
             <button class="w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center border {sessionStatus === 'green' ? 'border-emerald-700' : sessionStatus === 'yellow' ? 'border-amber-700' : 'border-[#1e1e1e]'} bg-transparent {sessionStatus === 'green' ? 'text-[#4ade80] hover:text-white' : sessionStatus === 'yellow' ? 'text-[#fbbf24] hover:text-white' : 'text-zinc-500 hover:text-white'} self-center transition-all duration-150 hover:bg-[#1a1a1a] {isFuture ? 'opacity-70 pointer-events-none' : ''}" onclick={() => currentView = 'edit_template'} title="Edit Exercises"><Pencil class="size-4" /></button>
           {:else}
             <div class="w-8 h-8 flex-shrink-0"></div>
           {/if}
         </div>
         <div class="text-center -mt-0.5 h-[14px] flex items-center justify-center">
-          {#if isPerfectDay}
+          {#if !useHistorical && isPerfectDay}
             <span class="text-[9px] font-extrabold tracking-wider text-[#fbbf24] bg-[#1c1200] border border-[#713f12] rounded px-1.5 py-0.5">PERFECT DAY</span>
           {:else}
             <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500">
@@ -1383,19 +1479,23 @@ async function finishWorkout() {
             </div>
           {/if}
         </div>
-        <div class="flex gap-[1px] h-2 w-full">
-          {#each Array(setCounts.total) as _, i}
-            <div 
-              class="flex-1 rounded-[1px]"
-              style="background-color: {i < setCounts.done ? progressBarColor : '#1a1a1a'}"
-            ></div>
-          {/each}
-        </div>
+        {#if useHistorical}
+          <div class="h-2 w-full bg-[#14532d] rounded-[1px]"></div>
+        {:else}
+          <div class="flex gap-[1px] h-2 w-full">
+            {#each Array(setCounts.total) as _, i}
+              <div 
+                class="flex-1 rounded-[1px]"
+                style="background-color: {i < setCounts.done ? progressBarColor : '#1a1a1a'}"
+              ></div>
+            {/each}
+          </div>
+        {/if}
       </div>
 
       <!-- Exercises in one shared box separated by horizontal dividers, with list numbers on left (like editor list) -->
       <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl overflow-hidden {isFuture ? 'opacity-80' : ''}">
-        {#each activeTemplate.exercises as exercise, index}
+        {#each (dispTemplate?.exercises || []) as exercise, index}
           {@const status = getExerciseStatus(exercise)}
           {@const isTargetMet = status === 'green'}
           {@const isTimeEx = exercise.exercise_type === 'time'}
@@ -1592,12 +1692,21 @@ async function finishWorkout() {
           </button>
           
           {#each templates as template}
-            <button class="w-full text-left px-3 py-2 rounded-lg border border-zinc-800 bg-zinc-900 text-xs flex justify-between items-center transition-all hover:border-zinc-700
-              {builderAssignments[builderEditingDay] === template.id ? 'border-emerald-500 text-emerald-400 bg-emerald-950/10' : 'text-zinc-400'}"
-              onclick={() => { builderAssignments[builderEditingDay] = template.id; }}>
-              <span>[ {template.name} ]</span>
-              {#if builderAssignments[builderEditingDay] === template.id}<span class="text-[9px] bg-emerald-950 px-1 rounded border border-emerald-800">ASSIGNED</span>{/if}
-            </button>
+            <div class="flex items-center gap-1">
+              <button class="flex-1 text-left px-3 py-2 rounded-lg border border-zinc-800 bg-zinc-900 text-xs flex justify-between items-center transition-all hover:border-zinc-700
+                {builderAssignments[builderEditingDay] === template.id ? 'border-emerald-500 text-emerald-400 bg-emerald-950/10' : 'text-zinc-400'}"
+                onclick={() => { builderAssignments[builderEditingDay] = template.id; }}>
+                <span>[ {template.name} ]</span>
+                {#if builderAssignments[builderEditingDay] === template.id}<span class="text-[9px] bg-emerald-950 px-1 rounded border border-emerald-800">ASSIGNED</span>{/if}
+              </button>
+              <!-- delete for this template in builder list -->
+              <button 
+                class="w-8 h-8 flex-shrink-0 rounded border border-red-900 bg-red-950/40 text-red-400 flex items-center justify-center hover:text-red-300"
+                onclick={(e) => { e.stopImmediatePropagation?.(); e.preventDefault(); deleteTemplateInBuilder(template); }}
+                title="Delete template">
+                <Trash2 class="size-3.5" />
+              </button>
+            </div>
           {/each}
         </div>
       </div>

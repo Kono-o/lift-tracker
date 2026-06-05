@@ -382,4 +382,15 @@ export const db = {
 			.eq("workout_date", todayDateString());
 		if (error) throw error;
 	},
+
+	/* load log for arbitrary date (for week box past/future viewing) */
+	async getLogForDate(dateStr: string) {
+		const { data, error } = await supabase
+			.from("workout_history")
+			.select("*")
+			.eq("workout_date", dateStr)
+			.maybeSingle();
+		if (error) throw error;
+		return data || null;
+	},
 };

@@ -503,8 +503,9 @@ function buildExerciseSnapshotsFromPerformance(
 			const sets: WorkoutSnapshotExerciseSet[] = Array.from(
 				{ length: ex.target_sets },
 				(_, s) => {
+					const raw = performanceSnapshot.reps?.[`${ex.id}-${s}`];
 					const repsCompleted =
-						performanceSnapshot.reps?.[`${ex.id}-${s}`] ?? null;
+						raw != null && raw > 0 ? raw : null;
 					return {
 						set_number: s + 1,
 						reps_completed: repsCompleted,
@@ -589,6 +590,7 @@ async function getExerciseAllTimeBest(exerciseId: string): Promise<number> {
 
 	for (const row of data) {
 		const snapshot = row.workout_snapshot as WorkoutSnapshot;
+		if (snapshot.in_progress || snapshot.skipped || snapshot.is_rest) continue;
 		const match = snapshot.exercises?.find((e) => e.exercise_id === exerciseId);
 		if (!match) continue;
 		for (const set of match.sets ?? []) {
@@ -1190,8 +1192,9 @@ export const db = {
 					const sets: WorkoutSnapshotExerciseSet[] = Array.from(
 						{ length: ex.target_sets },
 						(_, s) => {
+							const raw = performanceSnapshot.reps?.[`${ex.id}-${s}`];
 							const repsCompleted =
-								performanceSnapshot.reps?.[`${ex.id}-${s}`] ?? null;
+								raw != null && raw > 0 ? raw : null;
 							const weight = currentWeight;
 							const hitTarget =
 								repsCompleted !== null && repsCompleted >= ex.target_reps;
@@ -1212,13 +1215,13 @@ export const db = {
 						},
 					);
 
-					const exerciseIsPr = sets.some((s) => s.is_pr);
-					if (exerciseIsPr) prCount += 1;
-
 					const success = sets.every(
 						(s) =>
 							s.reps_completed !== null && s.reps_completed >= ex.target_reps,
 					);
+
+					const exerciseIsPr = success && sets.some((s) => s.is_pr);
+					if (exerciseIsPr) prCount += 1;
 
 					return {
 						exercise_id: ex.id,

@@ -498,7 +498,7 @@ input.font-timer {
 	text-align: right;
 }
 
-/* Status surfaces — fade between neutral / green / yellow */
+/* Status surfaces — color transitions (cancel/erase lerps after scramble) */
 .status-surface {
 	transition:
 		background-color 0.38s ease,
@@ -506,19 +506,28 @@ input.font-timer {
 		color 0.32s ease;
 }
 
-/* Template header / list: snappier completion color */
 .status-surface--prompt {
 	transition:
-		background-color 0.12s ease,
-		border-color 0.12s ease,
-		color 0.1s ease;
+		background-color 0.22s ease,
+		border-color 0.22s ease,
+		color 0.18s ease;
 }
 
-/* Erase: snap template + set colors to grey together */
-.status-surface--instant,
-.status-surface--instant .status-surface,
-.status-surface--instant .tpl-progress-seg {
-	transition-duration: 0s !important;
+.workout-surface-revert-wrap--locked .status-surface,
+.workout-surface-revert-wrap--locked .tpl-progress-seg,
+.workout-surface-revert-wrap--locked .tpl-workout-timer {
+	transition: none !important;
+}
+
+.workout-surface-revert-wrap--lerp .status-surface {
+	transition:
+		background-color 0.4s ease,
+		border-color 0.4s ease,
+		color 0.4s ease;
+}
+
+.tpl-progress-seg {
+	transition: background-color 0.42s ease;
 }
 
 .workout-cta-text-fade {
@@ -693,6 +702,111 @@ input.font-timer {
 	animation: workout-tick-in 0.35s ease-out both;
 }
 
+.tpl-header-toolbar {
+	display: grid;
+	grid-template-columns: 1fr auto 1fr;
+	align-items: center;
+	min-width: 0;
+	column-gap: 0.75rem;
+}
+
+.tpl-toolbar-side {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	gap: 0.5rem;
+}
+
+.tpl-toolbar-side--start {
+	justify-self: start;
+}
+
+.tpl-toolbar-side--end {
+	justify-self: end;
+}
+
+.tpl-name {
+	justify-self: center;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tpl-workout-timer {
+	display: inline-flex;
+	flex: 0 0 auto;
+	align-items: center;
+	justify-content: center;
+	box-sizing: border-box;
+	margin-top: -0.2rem;
+	width: 4.75rem;
+	height: 3.25rem;
+	font-family: var(--font-timer);
+	font-size: 2.25rem;
+	line-height: 1;
+	font-variant-numeric: tabular-nums;
+	border-radius: 0.5rem;
+	border: 1px solid var(--w-neutral-border);
+	background-color: color-mix(in srgb, #000 52%, var(--w-neutral-bg));
+	color: #ffffff;
+	opacity: 0;
+	visibility: hidden;
+	pointer-events: none;
+	transition:
+		opacity 0.45s ease,
+		visibility 0s linear 0.45s;
+}
+
+.tpl-workout-timer--visible {
+	opacity: 1;
+	visibility: visible;
+	pointer-events: auto;
+	transition:
+		opacity 0.45s ease,
+		visibility 0s linear 0s;
+}
+
+.tpl-workout-timer--green,
+.tpl-workout-timer--yellow,
+.tpl-workout-timer--skipped {
+	transition:
+		opacity 0.45s ease,
+		visibility 0s linear 0.45s,
+		background-color 0.42s ease,
+		border-color 0.42s ease,
+		color 0.42s ease;
+}
+
+.tpl-workout-timer--visible.tpl-workout-timer--green,
+.tpl-workout-timer--visible.tpl-workout-timer--yellow,
+.tpl-workout-timer--visible.tpl-workout-timer--skipped {
+	transition:
+		opacity 0.45s ease,
+		visibility 0s linear 0s,
+		background-color 0.42s ease,
+		border-color 0.42s ease,
+		color 0.42s ease;
+}
+
+.tpl-workout-timer--green {
+	background-color: color-mix(in srgb, #000 48%, var(--w-green-bg));
+	border-color: var(--w-green-border);
+	color: var(--w-green-fg);
+}
+
+.tpl-workout-timer--yellow {
+	background-color: color-mix(in srgb, #000 48%, var(--w-yellow-bg));
+	border-color: var(--w-yellow-border);
+	color: var(--w-yellow-fg);
+}
+
+.tpl-workout-timer--skipped {
+	background-color: color-mix(in srgb, #000 42%, var(--w-skipped-bg));
+	border-color: var(--w-skipped-border);
+	color: var(--w-skipped-fg);
+}
+
 .tpl-header-body {
 	display: flex;
 	flex-direction: column;
@@ -701,16 +815,19 @@ input.font-timer {
 }
 
 .tpl-header-slot {
-	flex: 1 1 auto;
+	flex: 0 0 auto;
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	min-height: 1rem;
-	padding: 0.125rem 0;
+	height: 1.125rem;
+	min-height: 1.125rem;
+	max-height: 1.125rem;
+	padding: 0;
 }
 
 .perfect-day-badge,
-.pr-badge {
+.pr-badge,
+.untouched-badge {
 	font-size: 9px;
 	font-weight: 800;
 	letter-spacing: 0.08em;
@@ -733,6 +850,12 @@ input.font-timer {
 	border: 1px solid #a16207;
 }
 
+.untouched-badge {
+	color: var(--w-skipped-fg);
+	background-color: rgb(0 0 0 / 0.45);
+	border: 1px solid var(--w-skipped-border);
+}
+
 .ex-name-row {
 	display: flex;
 	align-items: center;
@@ -744,6 +867,11 @@ input.font-timer {
 .ex-name-row .ex-name {
 	flex: 1 1 auto;
 	min-width: 0;
+}
+
+.set-bubble-unrecorded {
+	color: inherit;
+	pointer-events: none;
 }
 
 @keyframes workout-tick-in {
@@ -758,12 +886,27 @@ input.font-timer {
 }
 
 .tpl-progress-seg {
-	background-color: #1a1a1a;
-	transition: background-color 0.42s ease;
+	background-color: color-mix(in srgb, #fff 6%, var(--w-neutral-bg));
 }
 
 .tpl-progress-seg--lit {
 	transition: background-color 0.42s ease;
+}
+
+.tpl-header.status-surface--green .tpl-progress-seg:not(.tpl-progress-seg--lit) {
+	background-color: color-mix(in srgb, #000 42%, var(--w-green-bg));
+}
+
+.tpl-header.status-surface--yellow .tpl-progress-seg:not(.tpl-progress-seg--lit) {
+	background-color: color-mix(in srgb, #000 42%, var(--w-yellow-bg));
+}
+
+.tpl-header.status-surface--skipped .tpl-progress-seg:not(.tpl-progress-seg--lit) {
+	background-color: color-mix(in srgb, #000 38%, var(--w-skipped-bg));
+}
+
+.tpl-header.status-surface--neutral .tpl-progress-seg:not(.tpl-progress-seg--lit) {
+	background-color: color-mix(in srgb, #fff 6%, var(--w-neutral-bg));
 }
 
 /* Timed exercise: set row + active progress strip */
@@ -1040,6 +1183,9 @@ input.font-timer {
 	}
 
 	.status-surface,
+	.workout-surface-revert-wrap,
+	.workout-surface-revert-wrap--locked .status-surface,
+	.tpl-workout-timer,
 	.tpl-progress-seg,
 	.timer-progress-cube,
 	.set-bubble-hold-fill,

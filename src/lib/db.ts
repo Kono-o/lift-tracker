@@ -127,12 +127,16 @@ export function formatAuthError(
 	if (code === "weak_password" || lower.includes("weak password")) {
 		return "Password is too weak. Use at least 6 characters.";
 	}
+	if (code === "same_password") {
+		return CHANGE_PASSWORD_SAME_AS_OLD;
+	}
 
 	return raw ?? "Sign-in failed. Please try again.";
 }
 
 export const MAX_PASSWORD_LEN = 24;
 export const MIN_PASSWORD_LEN = 6;
+export const CHANGE_PASSWORD_SAME_AS_OLD = "new password cannot be same as old";
 
 /** Live typing: cap password length. */
 export function sanitizePasswordInput(raw: string): string {
@@ -343,6 +347,18 @@ export function isUsernameAccount(user: User | null | undefined): boolean {
 	return usernameFromInternalEmail(user.email ?? "") !== null;
 }
 
+/** Email/username accounts can update password; OAuth-only accounts cannot. */
+export function canChangePassword(user: User | null | undefined): boolean {
+	if (!user) return false;
+	if (isUsernameAccount(user)) return true;
+	const identities = user.identities ?? [];
+	if (identities.some((identity) => identity.provider === "email")) {
+		return true;
+	}
+	const provider = user.app_metadata?.provider;
+	return provider === "email";
+}
+
 /** Read OAuth error params Supabase appends to the redirect URL. */
 export function getAuthRedirectError(): string | null {
 	if (typeof window === "undefined") return null;
@@ -391,7 +407,6 @@ function clearAuthRedirectParams(): void {
 
 export interface Exercise {
 	id: string;
-	template_id: string;
 	user_id: string;
 
 	name: string;
@@ -405,7 +420,67 @@ export interface Exercise {
 
 	increment: number;
 	current_weight: number | null;
-	display_order: number;
+	/** Present when an exercise is loaded in template context. */
+	display_order?: number;
+}
+
+const PERSISTED_EXERCISE_ID_RE =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isPersistedExerciseId(id: string | null | undefined): boolean {
+	return !!id && PERSISTED_EXERCISE_ID_RE.test(id) && !id.startsWith("temp-");
+}
+
+function exerciseFromLink(
+	link: { display_order: number; exercises: Exercise | Exercise[] | null },
+): Exercise | null {
+	const raw = link.exercises;
+	const exercise = Array.isArray(raw) ? raw[0] : raw;
+	if (!exercise) return null;
+	return { ...exercise, display_order: link.display_order };
+}
+
+function mapTemplateExercises(templateRow: {
+	template_exercises?: Array<{
+		display_order: number;
+		exercises: Exercise | Exercise[] | null;
+	}>;
+}): Exercise[] {
+	return (templateRow.template_exercises ?? [])
+		.map(exerciseFromLink)
+		.filter((exercise): exercise is Exercise => exercise !== null)
+		.sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
+}
+
+async function fetchExercisesForTemplate(templateId: string): Promise<Exercise[]> {
+	// Load the ordered links first (more reliable than embedded relation in all setups)
+	const { data: linkRows, error: linkErr } = await supabase
+		.from("template_exercises")
+		.select("exercise_id, display_order")
+		.eq("template_id", templateId)
+		.order("display_order");
+	if (linkErr) throw linkErr;
+
+	const orderedIds = (linkRows ?? []).map((r: any) => r.exercise_id as string);
+	if (orderedIds.length === 0) return [];
+
+	// Then fetch the exercise rows by id (avoids problematic deep embeds)
+	const { data: exRows, error: exErr } = await supabase
+		.from("exercises")
+		.select("*")
+		.in("id", orderedIds);
+	if (exErr) throw exErr;
+
+	const exById = new Map((exRows ?? []).map((e: any) => [e.id as string, e as Exercise]));
+
+	const result = (linkRows ?? [])
+		.map((link: any) => {
+			const ex = exById.get(link.exercise_id);
+			if (!ex) return null;
+			return { ...ex, display_order: link.display_order } as Exercise;
+		})
+		.filter((e): e is Exercise => !!e);
+	return result;
 }
 
 export interface Template {
@@ -413,6 +488,12 @@ export interface Template {
 	user_id: string;
 	name: string;
 	exercises: Exercise[];
+}
+
+export function isTemplateAssignable(
+	template: Pick<Template, "exercises"> | null | undefined,
+): boolean {
+	return !!template && template.exercises.length > 0;
 }
 
 export interface ScheduleRow {
@@ -913,6 +994,39 @@ export const db = {
 		if (error) throw error;
 	},
 
+	async changePassword(newPassword: string) {
+		const passwordError = validatePassword(newPassword);
+		if (passwordError) throw new Error(passwordError);
+
+		const {
+			data: { user },
+			error: userErr,
+		} = await supabase.auth.getUser();
+		if (userErr) throw userErr;
+		if (!user?.email) throw new Error("Not signed in");
+
+		const { data: signInData, error: signInError } =
+			await supabase.auth.signInWithPassword({
+				email: user.email,
+				password: newPassword,
+			});
+		if (!signInError && signInData.session) {
+			throw new Error(CHANGE_PASSWORD_SAME_AS_OLD);
+		}
+
+		const { error } = await supabase.auth.updateUser({ password: newPassword });
+		if (error) {
+			const code =
+				error && typeof error === "object" && "code" in error
+					? String(error.code)
+					: "";
+			if (code === "same_password") {
+				throw new Error(CHANGE_PASSWORD_SAME_AS_OLD);
+			}
+			throw error;
+		}
+	},
+
 	/** Removes all app rows for the signed-in user (RLS / user_id). */
 	async deleteAllUserData() {
 		const {
@@ -1002,10 +1116,15 @@ export const db = {
 		 ================================================== */
 
 	async getAppData() {
-		const [scheduleRes, templatesRes, todayRes] = await Promise.all([
+		const [scheduleRes, templatesRes, libraryRes, todayRes] = await Promise.all([
 			supabase.from("schedule").select("*").order("day_of_week"),
 
-			supabase.from("templates").select(`id, user_id, name, exercises (*)`),
+			// Load templates without embedded join. We hydrate exercises below using
+			// the junction (preferred) or legacy template_id on exercises (for accounts
+			// that predate the shared_exercise_library migration).
+			supabase.from("templates").select(`id, user_id, name`),
+
+			supabase.from("exercises").select("*").order("created_at"),
 
 			supabase
 				.from("workout_history")
@@ -1016,20 +1135,74 @@ export const db = {
 
 		if (scheduleRes.error) throw scheduleRes.error;
 		if (templatesRes.error) throw templatesRes.error;
+		if (libraryRes.error) throw libraryRes.error;
 		if (todayRes.error) throw todayRes.error;
 
-		const templates: Template[] = (templatesRes.data ?? []).map((t: any) => ({
-			id: t.id,
-			user_id: t.user_id,
-			name: t.name,
-			exercises: (t.exercises ?? []).sort(
-				(a: any, b: any) => a.display_order - b.display_order,
-			),
-		}));
+		const exerciseLibrary = (libraryRes.data ?? []) as Exercise[];
+
+		// Load junction links safely. If the table/relation does not exist yet
+		// (migration not run), we fall back to legacy attachment below.
+		let links: Array<{ template_id: string; exercise_id: string; display_order: number }> = [];
+		try {
+			const linksRes = await supabase
+				.from("template_exercises")
+				.select("template_id, exercise_id, display_order")
+				.order("display_order");
+			if (!linksRes.error && linksRes.data) {
+				links = linksRes.data as any;
+			}
+		} catch {
+			// ignore — old DB without the junction table
+		}
+
+		// Build lookup for current exercises
+		const exById = new Map(exerciseLibrary.map((e) => [e.id, e] as const));
+
+		// Legacy index: for pre-migration data where exercises still carry template_id + display_order
+		const legacyByTpl = new Map<string, Exercise[]>();
+		for (const ex of exerciseLibrary as any[]) {
+			const tid = ex?.template_id;
+			if (typeof tid === "string" && tid) {
+				const list = legacyByTpl.get(tid) || [];
+				list.push({ ...ex, display_order: ex.display_order ?? 0 });
+				legacyByTpl.set(tid, list);
+			}
+		}
+
+		const templates: Template[] = (templatesRes.data ?? []).map((t: any) => {
+			// Preferred path: use template_exercises links (post-migration model)
+			let exs: Exercise[] = links
+				.filter((l) => l.template_id === t.id)
+				.sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0))
+				.map((l) => {
+					const base = exById.get(l.exercise_id);
+					if (!base) return null;
+					return { ...base, display_order: l.display_order } as Exercise;
+				})
+				.filter((e): e is Exercise => !!e);
+
+			// Legacy fallback for accounts that never ran the shared exercise library migration.
+			// Exercises may still have a template_id column pointing at the template.
+			if (exs.length === 0) {
+				const leg = legacyByTpl.get(t.id) || [];
+				exs = leg
+					.slice()
+					.sort((a: any, b: any) => (a.display_order ?? 0) - (b.display_order ?? 0))
+					.map((e) => ({ ...e }));
+			}
+
+			return {
+				id: t.id,
+				user_id: t.user_id,
+				name: t.name,
+				exercises: exs,
+			};
+		});
 
 		return {
 			schedule: (scheduleRes.data ?? []) as ScheduleRow[],
 			templates,
+			exerciseLibrary,
 			todayLog: (todayRes.data as WorkoutHistory) ?? null,
 		};
 	},
@@ -1044,6 +1217,18 @@ export const db = {
 
 	async assignTemplateToDay(dayOfWeek: number, templateId: string | null) {
 		const uid = await requireUserId();
+
+		if (templateId) {
+			const { count, error: countErr } = await supabase
+				.from("template_exercises")
+				.select("*", { count: "exact", head: true })
+				.eq("template_id", templateId)
+				.eq("user_id", uid);
+			if (countErr) throw countErr;
+			if (!count) {
+				throw new Error("Add exercises before assigning this template.");
+			}
+		}
 
 		const { error } = await supabase.from("schedule").upsert(
 			{
@@ -1064,7 +1249,7 @@ export const db = {
 
 	async createTemplate(name: string): Promise<Template | null> {
 		const uid = await requireUserId();
-		const safeName = sanitizeTemplateName(name.trim()) || "WORKOUT";
+		const safeName = sanitizeTemplateName(name.trim()) || "NEW TEMPLATE";
 
 		const { data, error } = await supabase
 			.from("templates")
@@ -1089,7 +1274,6 @@ export const db = {
 
 	async updateTemplateName(templateId: string, name: string) {
 		const trimmed = sanitizeTemplateName(name.trim());
-		if (!trimmed) return;
 		const { error } = await supabase
 			.from("templates")
 			.update({ name: trimmed })
@@ -1097,10 +1281,22 @@ export const db = {
 		if (error) throw error;
 	},
 
-	/** Replace all exercises for a template (editor commit). Returns saved rows. */
+	/**
+	 * Sync template membership + exercise rows (shared library; no duplication).
+	 *
+	 * Multiple templates can reference the exact same exercise row (by exercise_id
+	 * via template_exercises join). This is intentional for progressive overload:
+	 * current_weight / increment live on the exercise. Finishing a workout on any
+	 * template that uses the exercise will advance the shared baseline.
+	 *
+	 * Draft items with a real persisted UUID id → UPDATE the canonical exercise
+	 * (definition + overload params), then ensure a link exists.
+	 * Draft items with temp- ids → INSERT new exercise row, then link.
+	 */
 	async saveTemplateExercises(
 		templateId: string,
 		exercises: Array<{
+			id?: string;
 			name: string;
 			exercise_type: "reps" | "time";
 			target_sets: number;
@@ -1113,91 +1309,26 @@ export const db = {
 	): Promise<Exercise[]> {
 		const uid = await requireUserId();
 
-		const { error: deleteErr } = await supabase
-			.from("exercises")
-			.delete()
-			.eq("template_id", templateId);
-		if (deleteErr) throw deleteErr;
-
-		if (exercises.length === 0) return [];
-
 		const validationError = validateDraftExercises(
 			exercises as DraftExerciseLike[],
 		);
 		if (validationError) throw new Error(validationError);
 
-		const rows = exercises.map((d, i) => {
+		if (exercises.length === 0) {
+			const { error: clearErr } = await supabase
+				.from("template_exercises")
+				.delete()
+				.eq("template_id", templateId);
+			if (clearErr) throw clearErr;
+			return [];
+		}
+
+		const savedIds: string[] = [];
+
+		for (let i = 0; i < exercises.length; i++) {
+			const d = exercises[i];
 			const safe = sanitizeExerciseRowForDb(d as DraftExerciseLike);
-			return {
-				template_id: templateId,
-				user_id: uid,
-				name: safe.name || "EXERCISE",
-				exercise_type: safe.exercise_type,
-				target_sets: safe.target_sets ?? 0,
-				target_reps: safe.exercise_type === "reps" ? (safe.target_reps ?? 0) : 0,
-				target_minutes:
-					safe.exercise_type === "time" ? (safe.target_minutes ?? 0) : 0,
-				target_seconds:
-					safe.exercise_type === "time" ? (safe.target_seconds ?? 0) : 0,
-				increment: safe.increment ?? 0,
-				current_weight:
-					safe.exercise_type === "reps" ? (safe.current_weight ?? null) : null,
-				display_order: i,
-			};
-		});
-
-		const { data, error: insertErr } = await supabase
-			.from("exercises")
-			.insert(rows)
-			.select();
-		if (insertErr) throw insertErr;
-		return ((data ?? []) as Exercise[]).sort(
-			(a, b) => a.display_order - b.display_order,
-		);
-	},
-
-	/* ==================================================
-		 EXERCISES
-		 ================================================== */
-
-	async addExerciseToTemplate(
-		templateId: string,
-		name: string,
-		sets: number,
-		reps: number,
-		increment: number,
-		type: "reps" | "time",
-		minutes: number,
-		seconds: number,
-	) {
-		const uid = await requireUserId();
-
-		const { data: existing } = await supabase
-			.from("exercises")
-			.select("display_order")
-			.eq("template_id", templateId);
-
-		const nextOrder =
-			existing && existing.length > 0
-				? Math.max(...existing.map((e: any) => e.display_order)) + 1
-				: 0;
-
-		const draft: DraftExerciseLike = {
-			name: sanitizeExerciseName(name.trim()) || "EXERCISE",
-			exercise_type: type,
-			target_sets: sets,
-			target_reps: reps,
-			target_minutes: minutes,
-			target_seconds: seconds,
-			increment,
-		};
-		const validationError = validateDraftExercise(draft);
-		if (validationError) throw new Error(validationError);
-		const safe = sanitizeExerciseRowForDb(draft);
-
-		const { error } = await supabase.from("exercises").insert([
-			{
-				template_id: templateId,
+			const row = {
 				user_id: uid,
 				name: safe.name,
 				exercise_type: safe.exercise_type,
@@ -1208,13 +1339,54 @@ export const db = {
 				target_seconds:
 					safe.exercise_type === "time" ? (safe.target_seconds ?? 0) : 0,
 				increment: safe.increment ?? 0,
-				current_weight: null,
-				display_order: nextOrder,
-			},
-		]);
+				current_weight:
+					safe.exercise_type === "reps" ? (safe.current_weight ?? null) : null,
+			};
 
-		if (error) throw error;
+			let exerciseId = typeof d.id === "string" ? d.id : "";
+			if (isPersistedExerciseId(exerciseId)) {
+				const { error: updateErr } = await supabase
+					.from("exercises")
+					.update(row)
+					.eq("id", exerciseId);
+				if (updateErr) throw updateErr;
+			} else {
+				const { data, error: insertErr } = await supabase
+					.from("exercises")
+					.insert([row])
+					.select()
+					.single();
+				if (insertErr) throw insertErr;
+				exerciseId = data.id;
+			}
+
+			savedIds.push(exerciseId);
+
+			const { error: linkErr } = await supabase.from("template_exercises").upsert(
+				{
+					template_id: templateId,
+					exercise_id: exerciseId,
+					user_id: uid,
+					display_order: i,
+				},
+				{ onConflict: "template_id,exercise_id" },
+			);
+			if (linkErr) throw linkErr;
+		}
+
+		const { error: pruneErr } = await supabase
+			.from("template_exercises")
+			.delete()
+			.eq("template_id", templateId)
+			.not("exercise_id", "in", `(${savedIds.join(",")})`);
+		if (pruneErr) throw pruneErr;
+
+		return fetchExercisesForTemplate(templateId);
 	},
+
+	/* ==================================================
+		 EXERCISES
+		 ================================================== */
 
 	async deleteExercise(exerciseId: string) {
 		const { error } = await supabase
@@ -1235,13 +1407,14 @@ export const db = {
 		if (error) throw error;
 	},
 
-	async updateExerciseOrder(exercises: Exercise[]) {
+	async updateExerciseOrder(templateId: string, exercises: Exercise[]) {
 		await Promise.all(
 			exercises.map((exercise, index) =>
 				supabase
-					.from("exercises")
+					.from("template_exercises")
 					.update({ display_order: index })
-					.eq("id", exercise.id),
+					.eq("template_id", templateId)
+					.eq("exercise_id", exercise.id),
 			),
 		);
 	},

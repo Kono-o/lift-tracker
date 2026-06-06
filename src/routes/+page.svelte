@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { PUBLIC_SUPABASE_URL } from '$env/static/public';
-  import { db, supabase, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type WorkoutHistory } from '$lib/db';
+  import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type WorkoutHistory } from '$lib/db';
   import { getDbActivitySnapshot, subscribeDbActivity, subscribeDbActivitySnapshot } from '$lib/dbActivity';
   import {
     formatBytes,
@@ -40,7 +40,9 @@
     ChevronUp,
     Dumbbell,
     FileX,
+    List,
     Lock,
+    Minus,
     LockKeyhole,
     LogOut,
     Mail,
@@ -120,6 +122,7 @@
   let viewedLog = $state<any>(null);
   let weekLogs = $state<Record<string, any | null>>({});
   let currentView = $state<'track' | 'swap_template' | 'edit_template'>('track');
+  let templateEditorReturnView = $state<'track' | 'swap_template'>('track');
 
   let selectedDateDisplay = $derived.by(() => {
     const ud = selectedDate;
@@ -170,10 +173,18 @@
   let editingRoutineTemplateNameId = $state<string | null>(null);
   let routineTemplateNameEditOriginal = $state<string | null>(null);
   const routineEditorPendingCreates = new Map<number, Promise<string | null>>();
-  let builderAssignedTemplateId = $derived(builderAssignments[builderEditingDay] ?? null);
+  function effectiveAssignmentTemplateId(templateId: string | null): string | null {
+    if (!templateId) return null;
+    const tpl = templates.find((t) => t.id === templateId);
+    return isTemplateAssignable(tpl) ? templateId : null;
+  }
+
+  let builderAssignedTemplateId = $derived(
+    effectiveAssignmentTemplateId(builderAssignments[builderEditingDay] ?? null),
+  );
   let builderDayAssignmentLabel = $derived.by(() => {
     const day = DAY_NAMES[builderEditingDay].toUpperCase();
-    const tid = builderAssignments[builderEditingDay] ?? null;
+    const tid = effectiveAssignmentTemplateId(builderAssignments[builderEditingDay] ?? null);
     if (tid === null) return `${day} - [ REST DAY ]`;
     const tpl = templates.find((t) => t.id === tid);
     return `${day} - [ ${tpl?.name ?? 'Workout'} ]`;
@@ -187,11 +198,18 @@
     if (workoutState === 'active') return;
     if (!opts.fromWeeklyPlan && !showHeaderEditActions) return;
     templateError = null;
+    templateErrorFading = false;
     editingRoutineTemplateNameId = null;
     routineTemplateNameEditOriginal = null;
     const newAssignments: Record<number, string | null> = {};
     for (const s of schedule) {
-      newAssignments[s.day_of_week] = s.template_id ?? null;
+      const tid = s.template_id ?? null;
+      if (tid) {
+        const tpl = templates.find((t) => t.id === tid);
+        newAssignments[s.day_of_week] = isTemplateAssignable(tpl) ? tid : null;
+      } else {
+        newAssignments[s.day_of_week] = null;
+      }
     }
     builderAssignments = newAssignments;
     builderEditingDay = selectedWeekday;
@@ -205,6 +223,8 @@
   function bootstrapNewcomerAppState() {
     schedule = [];
     templates = [];
+    exerciseLibrary = [];
+    deletedLibraryExerciseIds = new Set();
     todayLog = null;
     viewedLog = null;
     weekLogs = {};
@@ -379,6 +399,32 @@
 
   let accountBusy = $state(false);
   let accountError = $state<string | null>(null);
+  let showChangePasswordForm = $state(false);
+  let changePasswordNew = $state('');
+  let changePasswordConfirm = $state('');
+  let changePasswordError = $state<string | null>(null);
+  let changePasswordSuccess = $state<string | null>(null);
+  let changePasswordFeedbackExiting = $state(false);
+  let changePasswordFeedbackEntering = $state(false);
+  let changePasswordFeedbackExitTimer: ReturnType<typeof setTimeout> | null = null;
+
+  let changePasswordFeedbackVisible = $derived(!!(changePasswordError || changePasswordSuccess));
+  let changePasswordCrossfadeShowFeedback = $derived(
+    changePasswordFeedbackVisible || changePasswordFeedbackExiting,
+  );
+  let changePasswordSubmitBtnLit = $derived(
+    !changePasswordFeedbackVisible ||
+      changePasswordFeedbackExiting ||
+      changePasswordFeedbackEntering,
+  );
+  let changePasswordFeedbackLit = $derived(
+    changePasswordFeedbackVisible &&
+      !changePasswordFeedbackExiting &&
+      !changePasswordFeedbackEntering,
+  );
+  let changePasswordSubmitReady = $derived(
+    !!changePasswordNew && !!changePasswordConfirm,
+  );
 
   let accountDisplayName = $derived(getAuthDisplayName(currentUser));
   let accountProvider = $derived.by(() => {
@@ -387,6 +433,7 @@
     if (!id || id === 'email') return 'Email';
     return String(id).charAt(0).toUpperCase() + String(id).slice(1);
   });
+  let accountCanChangePassword = $derived(canChangePassword(currentUser));
   let accountMemberSince = $derived.by(() => {
     const raw = currentUser?.created_at;
     if (!raw) return '—';
@@ -432,6 +479,7 @@
   // Data arrays
   let schedule = $state<any[]>([]);
   let templates = $state<Template[]>([]);
+  let exerciseLibrary = $state<Exercise[]>([]);
   let todayLog = $state<any>(null);
 
   let setCounts = $derived.by(() => {
@@ -686,6 +734,8 @@
   // Form fields for creation/editing
   let newTemplateName = $state('');
   let templateError = $state<string | null>(null);
+  let templateErrorClearTimer: number | null = null;
+  let templateErrorFading = $state(false);
   let isCreatingTemplate = $state(false);
 
   // Draft state for template editing (local until commit on finish)
@@ -693,6 +743,91 @@
   let draftTemplateName = $state('');
   let selectedExerciseId = $state<string | null>(null);
   let editingExerciseNameId = $state<string | null>(null);
+  let showExerciseLibraryPicker = $state(false);
+  let libraryPickerClosing = $state(false);
+  const LIBRARY_PICKER_MS = 220;
+  let selectedLibraryExerciseId = $state<string | null>(null);
+  let deletedLibraryExerciseIds = $state(new Set<string>());
+
+  let libraryExercisesAvailable = $derived.by(() => {
+    const inDraft = new Set(draftExercises.map((e) => e.id));
+    return exerciseLibrary.filter((ex) => !inDraft.has(ex.id));
+  });
+
+  // Filtered version for the library panel that excludes ones we just optimistically deleted (for instant UI)
+  let availableLibraryForPicker = $derived.by(() => {
+    return libraryExercisesAvailable.filter((ex) => !deletedLibraryExerciseIds.has(ex.id));
+  });
+
+  function closeLibraryPicker() {
+    if (!showExerciseLibraryPicker || libraryPickerClosing) return;
+    libraryPickerClosing = true;
+    selectedLibraryExerciseId = null;
+    deletedLibraryExerciseIds = new Set();
+    setTimeout(() => {
+      showExerciseLibraryPicker = false;
+      libraryPickerClosing = false;
+    }, LIBRARY_PICKER_MS);
+  }
+
+  // Keep the library picker closed whenever there are no exercises left to pick from the library.
+  $effect(() => {
+    if (availableLibraryForPicker.length === 0 && showExerciseLibraryPicker) {
+      closeLibraryPicker();
+    }
+  });
+
+  function selectLibraryExercise(id: string | null) {
+    if (selectedLibraryExerciseId === id) {
+      selectedLibraryExerciseId = null;
+    } else {
+      selectedLibraryExerciseId = id;
+    }
+  }
+
+  function moveLibraryExerciseToTemplate(exercise: Exercise) {
+    if (!editingTemplateId) return;
+    if (draftExercises.some((e) => e.id === exercise.id)) return;
+    const copy = { ...exercise };
+    normalizeDraftExercise(copy);
+    copy.display_order = draftExercises.length;
+    draftExercises = [...draftExercises, copy];
+    selectExercise(exercise.id); // select it in the main template list
+    selectedLibraryExerciseId = null;
+    // it will automatically disappear from libraryExercisesAvailable
+  }
+
+  function deleteLibraryExercise(exercise: Exercise) {
+    if (!editingTemplateId) return;
+    const id = exercise.id;
+
+    // Optimistic: remove immediately from UI for instant feel (no network wait)
+    deletedLibraryExerciseIds = new Set([...deletedLibraryExerciseIds, id]);
+    selectedLibraryExerciseId = null;
+
+    // Also remove from current draft if it was in use here
+    draftExercises = draftExercises.filter((e: any) => e.id !== id);
+    if (selectedExerciseId === id) {
+      selectedExerciseId = draftExercises.length > 0 ? draftExercises[draftExercises.length - 1].id : null;
+    }
+
+    // Fire and forget the actual delete
+    db.deleteExercise(id)
+      .then(() => {
+        // On success, keep it in the deleted set so it stays hidden in this session.
+        // Full refresh on next loadData will reflect the server state.
+      })
+      .catch((err) => {
+        console.error('Failed to delete exercise from library', err);
+        // Revert optimistic delete on error
+        const reverted = new Set(deletedLibraryExerciseIds);
+        reverted.delete(id);
+        deletedLibraryExerciseIds = reverted;
+        // Optionally reload to be safe
+        loadData({ preserveSession: true }).catch(() => {});
+      });
+  }
+
   let editingTemplateId = $state('');
   let templateSaveError = $state<string | null>(null);
   let templateSaveInFlight = $state(false);
@@ -704,7 +839,11 @@
   let selectedDateStr = $derived(toDateStr(selectedDate));
   let selectedWeekday = $derived(selectedDate.getDay());
   let currentDaySchedule = $derived(schedule.find(s => s.day_of_week === selectedWeekday));
-  let activeTemplate = $derived(templates.find(t => t.id === currentDaySchedule?.template_id) || null);
+  let activeTemplate = $derived.by(() => {
+    const tid = effectiveAssignmentTemplateId(currentDaySchedule?.template_id ?? null);
+    if (!tid) return null;
+    return templates.find((t) => t.id === tid) ?? null;
+  });
   let isViewingToday = $derived(selectedDateStr === REAL_TODAY_STR);
   let isFuture = $derived(selectedDateStr > REAL_TODAY_STR);
   /** Reps/times/weight inputs — only while a live session is running. */
@@ -738,12 +877,57 @@
     }
     return arr;
   });
+
+  // Precompute all per-day data for the week strip once per render.
+  // This avoids repeating expensive lookups + function calls inside the Svelte {#each},
+  // which helps a lot on lower-powered phones when expanding the week calendar.
+  let weekDayData = $derived.by(() => {
+    return currentWeekDates.map((dayInfo) => {
+      const isSelected = dayInfo.key === selectedDateStr;
+      const isRealToday = dayInfo.isRealToday;
+      const daySchedule = schedule[dayInfo.weekday];
+      const hasTemplate = !!effectiveAssignmentTemplateId(daySchedule?.template_id ?? null);
+      const isRest = !hasTemplate;
+      const dayLog = isRealToday ? todayLog : (weekLogs[dayInfo.key] ?? null);
+      const dayHasWorkoutLog = !!dayLog && !dayLog.workout_snapshot?.is_rest;
+      const dayDone = isRealToday ? workoutState === 'done' : false;
+      const daySkipped = isRealToday
+        ? workoutState === 'skipped'
+        : logIsSkipped(dayLog);
+      const dayCompletion = dayCalendarCompletionStatus(dayLog, isRealToday);
+
+      // Build the dynamic part of the class string once
+      const dynamicClasses = [
+        (dayDone || (!isRealToday && dayHasWorkoutLog && dayCompletion !== 'neutral' && dayCompletion !== 'skipped' && dayCompletion !== 'untouched'))
+          ? (dayCompletion === 'green' ? 'w-cal-green' : dayCompletion === 'untouched' ? 'w-cal-skipped' : 'w-cal-yellow')
+          : '',
+        (daySkipped || dayCompletion === 'untouched') ? 'w-cal-skipped' : '',
+        (isSelected && !isRealToday && !dayDone && !daySkipped && dayCompletion === 'neutral') ? '!bg-[#1e1e1e] !text-white' : '',
+        (isRealToday && !dayDone && !daySkipped) ? '!bg-white !text-black hover:!text-black' : '',
+        (isRest && !isSelected && !dayDone && !daySkipped) ? 'text-zinc-500' : '',
+      ].filter(Boolean).join(' ');
+
+      return {
+        dayInfo,
+        isSelected,
+        isRealToday,
+        hasTemplate,
+        isRest,
+        dayLog,
+        dayHasWorkoutLog,
+        dayDone,
+        daySkipped,
+        dayCompletion,
+        dynamicClasses,
+      };
+    });
+  });
   let weekPlan = $derived.by(() =>
     Array.from({ length: 7 }, (_, dayOfWeek) => {
       const row = schedule.find((s) => s.day_of_week === dayOfWeek);
       return {
         day: DAYS[dayOfWeek],
-        hasTemplate: !!row?.template_id,
+        hasTemplate: !!effectiveAssignmentTemplateId(row?.template_id ?? null),
       };
     }),
   );
@@ -874,31 +1058,61 @@
       });
   });
 
-  // Fetch logs for all currently visible days in the week strip (so we can display logged status)
+  // Fetch logs for all currently visible days in the week strip (batched + single state update for better perf)
   $effect(() => {
     if (!currentUser) return;
     const visible = currentWeekDates;
+    const missing: string[] = [];
     for (const d of visible) {
       const k = d.key;
       if (k === REAL_TODAY_STR) {
-        weekLogs[k] = todayLog;
+        if (weekLogs[k] !== todayLog) {
+          weekLogs = { ...weekLogs, [k]: todayLog };
+        }
         continue;
       }
-      // skip if we already have it cached for this render
-      if (k in weekLogs) continue;
-      db.getLogForDate(k)
-        .then((log) => {
-          // only keep if still part of visible week
-          if (currentWeekDates.some((dd) => dd.key === k)) {
-            weekLogs = { ...weekLogs, [k]: log };
+      if (!(k in weekLogs)) {
+        missing.push(k);
+      }
+    }
+    if (missing.length === 0) return;
+
+    // Defer the actual fetch slightly when the calendar is animating open.
+    // This prevents the network + state update from competing with the 260ms
+    // CSS transition on low-end phones (big source of perceived lag).
+    const delay = weekCalendarDisplayCollapsed ? 0 : 80;
+
+    setTimeout(() => {
+      // Re-check visibility in case the user navigated away very quickly
+      const stillVisibleNow = new Set(currentWeekDates.map((d) => d.key));
+      const stillMissing = missing.filter((k) => stillVisibleNow.has(k) && !(k in weekLogs));
+      if (stillMissing.length === 0) return;
+
+      Promise.allSettled(
+        stillMissing.map(async (k) => {
+          try {
+            const log = await db.getLogForDate(k);
+            return { k, log };
+          } catch {
+            return { k, log: null };
           }
         })
-        .catch(() => {
-          if (currentWeekDates.some((dd) => dd.key === k)) {
-            weekLogs = { ...weekLogs, [k]: null };
+      ).then((results) => {
+        const stillVisible = new Set(currentWeekDates.map((d) => d.key));
+        const updates: Record<string, any | null> = {};
+        for (const r of results) {
+          if (r.status === 'fulfilled') {
+            const { k, log } = r.value;
+            if (stillVisible.has(k)) {
+              updates[k] = log;
+            }
           }
-        });
-    }
+        }
+        if (Object.keys(updates).length > 0) {
+          weekLogs = { ...weekLogs, ...updates };
+        }
+      });
+    }, delay);
   });
 
   // Keep viewedLog in sync if weekLogs gets populated for the currently selected day
@@ -2265,6 +2479,8 @@
 			]);
 			schedule = data.schedule;
 			templates = data.templates;
+			exerciseLibrary = data.exerciseLibrary ?? [];
+			deletedLibraryExerciseIds = new Set(); // server state is now authoritative
 			todayLog = data.todayLog || null;
 			if (isInitial) {
 				bootSections = buildBootSections(currentUser, schedule, templates, todayLog, recentLogs);
@@ -2384,6 +2600,8 @@
         if (!currentUser && (event === 'SIGNED_OUT' || event === 'INITIAL_SESSION')) {
           schedule = [];
           templates = [];
+          exerciseLibrary = [];
+          deletedLibraryExerciseIds = new Set();
           todayLog = null;
           viewedLog = null;
           weekLogs = {};
@@ -2954,7 +3172,10 @@
           draftExercises = [];
           draftTemplateName = '';
           loadData();
-          currentView = 'track';
+          // Return to previous view (e.g. routine editor) for nesting support
+          const returnView = templateEditorReturnView;
+          templateEditorReturnView = 'track';
+          currentView = returnView;
         });
       }
     }, 20);
@@ -3085,9 +3306,26 @@
     }
   }
 
+  async function clearTemplateFromAllDays(templateId: string) {
+    const affected = schedule.filter((s) => s.template_id === templateId);
+    if (!affected.length) return;
+    await Promise.all(
+      affected.map((s) => db.assignTemplateToDay(s.day_of_week, null)),
+    );
+    for (const row of affected) {
+      applyLocalScheduleAssignment(row.day_of_week, null);
+    }
+    const nextAssignments = { ...builderAssignments };
+    for (let i = 0; i < 7; i++) {
+      if (nextAssignments[i] === templateId) nextAssignments[i] = null;
+    }
+    builderAssignments = nextAssignments;
+  }
+
   function applyLocalScheduleAssignment(dayOfWeek: number, templateId: string | null) {
     const uid = currentUser?.id;
     if (!uid) return;
+    templateId = effectiveAssignmentTemplateId(templateId);
     const now = new Date().toISOString();
     const idx = schedule.findIndex((s) => s.day_of_week === dayOfWeek);
     if (idx >= 0) {
@@ -3128,6 +3366,11 @@
     builderEditingDay = 0;
     editingRoutineTemplateNameId = null;
     routineTemplateNameEditOriginal = null;
+    if (templateErrorClearTimer) {
+      clearTimeout(templateErrorClearTimer);
+      templateErrorClearTimer = null;
+    }
+    templateErrorFading = false;
     templateError = null;
     void syncRoutineEditorAssignments(snapshot, priorAssignments);
   }
@@ -3143,6 +3386,7 @@
     if (userErr || !user) {
       currentUser = null;
       templateError = formatDbError(userErr ?? new Error('Not signed in'));
+      templateErrorFading = false;
       return;
     }
     currentUser = user;
@@ -3153,6 +3397,10 @@
       if (newTid?.startsWith('temp-')) {
         const pending = routineEditorPendingCreates.get(wd);
         newTid = pending ? await pending : null;
+      }
+      if (newTid) {
+        const tpl = templates.find((t) => t.id === newTid);
+        if (!isTemplateAssignable(tpl)) newTid = null;
       }
       const oldTid = priorAssignments.get(wd) ?? null;
       if (newTid !== oldTid) {
@@ -3166,15 +3414,15 @@
     } catch (e) {
       console.error('Routine editor sync failed', e);
       templateError = formatDbError(e);
+      templateErrorFading = false;
       await loadData({ preserveSession: true });
     }
   }
 
-  async function handleCreateTemplate(defaultName?: string) {
-    const name = sanitizeTemplateName((defaultName ?? newTemplateName).trim());
+  async function handleCreateTemplate(defaultName?: string, openAfterCreate = true) {
+    let name = sanitizeTemplateName((defaultName ?? newTemplateName).trim());
     if (!name) {
-      templateError = 'Enter a template name.';
-      return;
+      name = 'NEW TEMPLATE';
     }
 
     const wd =
@@ -3183,17 +3431,20 @@
     if (currentView === 'swap_template') {
       if (!currentUser) {
         templateError = 'Not signed in';
+        templateErrorFading = false;
         return;
       }
       const uid = currentUser.id;
       templateError = null;
+      templateErrorFading = false;
 
       const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const optimistic: Template = { id: tempId, user_id: uid, name, exercises: [] };
       templates = [...templates, optimistic];
-      builderAssignments = { ...builderAssignments, [wd]: tempId };
-      applyLocalScheduleAssignment(wd, tempId);
       newTemplateName = '';
+      if (openAfterCreate) {
+        openTemplateEditor(tempId);
+      }
 
       const createPromise = (async (): Promise<string | null> => {
         try {
@@ -3206,21 +3457,48 @@
             );
             return null;
           }
-          await db.assignTemplateToDay(wd, template.id);
           templates = templates.map((t) => (t.id === tempId ? template : t));
-          if (builderAssignments[wd] === tempId) {
-            builderAssignments = { ...builderAssignments, [wd]: template.id };
+
+          // Update any builder assignments that were pointing to the old temp ID
+          // so selection/assignment "sticks" immediately after optimistic creation
+          let assignmentsUpdated = false;
+          const newAssignments = { ...builderAssignments };
+          for (const [dayStr, tid] of Object.entries(builderAssignments)) {
+            if (tid === tempId) {
+              newAssignments[Number(dayStr)] = template.id;
+              assignmentsUpdated = true;
+            }
           }
-          applyLocalScheduleAssignment(wd, template.id);
+          if (assignmentsUpdated) {
+            builderAssignments = newAssignments;
+          }
+
+          if (openAfterCreate && editingTemplateId === tempId) {
+            editingTemplateId = template.id;
+          }
           return template.id;
         } catch (e) {
           console.error('Create template failed', e);
           templates = templates.filter((t) => t.id !== tempId);
-          if (builderAssignments[wd] === tempId) {
-            builderAssignments = { ...builderAssignments, [wd]: null };
-            applyLocalScheduleAssignment(wd, null);
+
+          // clean up assignments pointing to the failed temp
+          const cleaned = { ...builderAssignments };
+          let changed = false;
+          for (const day in cleaned) {
+            if (cleaned[day] === tempId) {
+              cleaned[Number(day)] = null;
+              changed = true;
+            }
+          }
+          if (changed) builderAssignments = cleaned;
+
+          if (openAfterCreate && editingTemplateId === tempId) {
+            currentView = 'swap_template';
+            editingTemplateId = '';
+            draftExercises = [];
           }
           templateError = formatDbError(e);
+          templateErrorFading = false;
           return null;
         } finally {
           routineEditorPendingCreates.delete(wd);
@@ -3240,33 +3518,36 @@
     if (userErr || !user) {
       currentUser = null;
       templateError = formatDbError(userErr ?? new Error('Not signed in'));
+      templateErrorFading = false;
       return;
     }
     currentUser = user;
 
     templateError = null;
+    templateErrorFading = false;
     isCreatingTemplate = true;
     try {
       const template = await db.createTemplate(name);
       if (!template) {
         templateError = 'Could not create template.';
+        templateErrorFading = false;
         return;
       }
 
-      await db.assignTemplateToDay(wd, template.id);
-
       templates = [...templates, template];
-      applyLocalScheduleAssignment(wd, template.id);
 
       newTemplateName = '';
 
       const rep = new Date(REAL_TODAY);
       rep.setDate(rep.getDate() - rep.getDay() + wd);
       selectedDate = rep;
-      openTemplateEditor(template.id);
+      if (openAfterCreate) {
+        openTemplateEditor(template.id);
+      }
     } catch (e) {
       console.error('Create template failed', e);
       templateError = formatDbError(e);
+      templateErrorFading = false;
     } finally {
       isCreatingTemplate = false;
     }
@@ -3465,12 +3746,115 @@
     if (mode === 'signin') authConfirmPassword = '';
   }
 
+  function finishChangePasswordFeedbackExit() {
+    if (changePasswordFeedbackExitTimer) {
+      clearTimeout(changePasswordFeedbackExitTimer);
+      changePasswordFeedbackExitTimer = null;
+    }
+    changePasswordError = null;
+    changePasswordSuccess = null;
+    changePasswordFeedbackExiting = false;
+    changePasswordFeedbackEntering = false;
+  }
+
+  async function setChangePasswordError(message: string | null) {
+    finishChangePasswordFeedbackExit();
+    changePasswordError = message;
+    if (message) {
+      changePasswordSuccess = null;
+      changePasswordFeedbackEntering = true;
+      await tick();
+      changePasswordFeedbackEntering = false;
+    }
+  }
+
+  async function setChangePasswordSuccess(message: string | null) {
+    finishChangePasswordFeedbackExit();
+    changePasswordSuccess = message;
+    if (message) {
+      changePasswordError = null;
+      changePasswordFeedbackEntering = true;
+      await tick();
+      changePasswordFeedbackEntering = false;
+    }
+  }
+
+  async function clearChangePasswordFeedback() {
+    if (!changePasswordError && !changePasswordSuccess) return;
+    if (changePasswordFeedbackExiting) return;
+    changePasswordFeedbackExiting = true;
+    await tick();
+    changePasswordFeedbackExitTimer = setTimeout(
+      finishChangePasswordFeedbackExit,
+      AUTH_FEEDBACK_CROSSFADE_MS + 20,
+    );
+  }
+
+  function onChangePasswordCrossfadeTransitionEnd(e: TransitionEvent) {
+    if (e.propertyName !== 'opacity' || !changePasswordFeedbackExiting) return;
+    finishChangePasswordFeedbackExit();
+  }
+
+  function resetChangePasswordForm() {
+    showChangePasswordForm = false;
+    changePasswordNew = '';
+    changePasswordConfirm = '';
+    finishChangePasswordFeedbackExit();
+  }
+
+  function toggleChangePasswordForm() {
+    if (accountBusy) return;
+    if (showChangePasswordForm) {
+      resetChangePasswordForm();
+      return;
+    }
+    finishChangePasswordFeedbackExit();
+    showChangePasswordForm = true;
+  }
+
   /** Closes panel and resets hold UI; safe to call during sign-out / auth changes. */
   function resetSettingsPanelUi() {
     showSettingsPanel = false;
     stopSignOutHold();
     stopDeleteAccountHold();
+    resetChangePasswordForm();
     accountError = null;
+  }
+
+  async function handleChangePassword() {
+    if (
+      accountBusy ||
+      !accountCanChangePassword ||
+      changePasswordFeedbackLit ||
+      !changePasswordSubmitReady
+    ) {
+      return;
+    }
+
+    const passwordErr = validatePassword(changePasswordNew);
+    if (passwordErr) {
+      setChangePasswordError(passwordErr);
+      return;
+    }
+    if (changePasswordNew !== changePasswordConfirm) {
+      setChangePasswordError('Passwords do not match.');
+      return;
+    }
+
+    accountBusy = true;
+    finishChangePasswordFeedbackExit();
+    await tick();
+    try {
+      await db.changePassword(changePasswordNew);
+      changePasswordNew = '';
+      changePasswordConfirm = '';
+      setChangePasswordSuccess('Password updated.');
+    } catch (e) {
+      console.error('Change password failed', e);
+      setChangePasswordError(formatAuthError(e));
+    } finally {
+      accountBusy = false;
+    }
   }
 
   async function handleSignOut() {
@@ -3499,6 +3883,7 @@
       resetSettingsPanelUi();
       schedule = [];
       templates = [];
+      exerciseLibrary = [];
       todayLog = null;
       viewedLog = null;
       weekLogs = {};
@@ -3528,21 +3913,49 @@
   }
 
   function createTemplateFromRoutineBuilder() {
-    void handleCreateTemplate('New Template');
+    void handleCreateTemplate('New Template', false);
   }
 
   function assignTemplateToBuilderDay(templateId: string | null) {
+    const targetIsEmpty = templateId !== null && !isTemplateAssignable(templates.find((t) => t.id === templateId));
+    if (targetIsEmpty) {
+      const msg = 'Add exercises to template before assigning.';
+      if (templateErrorClearTimer) clearTimeout(templateErrorClearTimer);
+      templateError = msg;
+      templateErrorFading = false;
+      templateErrorClearTimer = window.setTimeout(() => {
+        templateErrorFading = true;
+        setTimeout(() => {
+          if (templateError === msg) {
+            templateError = null;
+            templateErrorFading = false;
+          }
+          templateErrorClearTimer = null;
+        }, 200);
+      }, 2000);
+    } else {
+      if (templateErrorClearTimer) {
+        clearTimeout(templateErrorClearTimer);
+        templateErrorClearTimer = null;
+      }
+      templateErrorFading = false;
+    }
     if (editingRoutineTemplateNameId && editingRoutineTemplateNameId !== templateId) {
       const prev = templates.find((t) => t.id === editingRoutineTemplateNameId);
       if (prev) void commitRoutineTemplateNameEdit(prev);
+    }
+    if (!targetIsEmpty) {
+      templateError = null;
     }
     builderAssignments = { ...builderAssignments, [builderEditingDay]: templateId };
   }
 
   function beginRoutineTemplateNameEdit(templateId: string) {
-    assignTemplateToBuilderDay(templateId);
-    editingRoutineTemplateNameId = templateId;
+    // Focus/select this row in the list (for edit/delete buttons) even if empty
+    builderAssignments = { ...builderAssignments, [builderEditingDay]: templateId };
     const tpl = templates.find((t) => t.id === templateId);
+    if (isTemplateAssignable(tpl)) assignTemplateToBuilderDay(templateId);
+    editingRoutineTemplateNameId = templateId;
     routineTemplateNameEditOriginal = tpl
       ? sanitizeTemplateName((tpl.name ?? '').trim())
       : null;
@@ -3553,7 +3966,7 @@
     editingRoutineTemplateNameId = null;
     routineTemplateNameEditOriginal = null;
     const trimmed = sanitizeTemplateName((template.name ?? '').trim());
-    const savedName = trimmed || 'WORKOUT';
+    const savedName = trimmed || 'NEW TEMPLATE';
     template.name = savedName;
     if (template.id.startsWith('temp-')) return;
     if (originalName === savedName) return;
@@ -3561,6 +3974,7 @@
     void db.updateTemplateName(template.id, savedName).catch((e) => {
       console.error('Template name save failed', e);
       templateError = 'Could not save template name.';
+      templateErrorFading = false;
       void loadData({ preserveSession: true });
     });
   }
@@ -3568,18 +3982,22 @@
   function templateIdAfterDeletedTemplate(deletedId: string): string | null {
     const idx = templates.findIndex((t) => t.id === deletedId);
     if (idx < 0) return null;
-    if (idx < templates.length - 1) return templates[idx + 1].id;
     if (idx > 0) return templates[idx - 1].id;
+    if (idx < templates.length - 1) return templates[idx + 1].id;
     return null;
   }
 
   function applyBuilderTemplateRemoval(deletedId: string, replacementId: string | null) {
+    const replacementTpl = replacementId
+      ? templates.find((t) => t.id === replacementId)
+      : null;
+    const safeReplacement = isTemplateAssignable(replacementTpl) ? replacementId : null;
     templates = templates.filter((t) => t.id !== deletedId);
     const nextAssignments = { ...builderAssignments };
     for (let i = 0; i < 7; i++) {
       if (nextAssignments[i] === deletedId) {
-        nextAssignments[i] = replacementId;
-        applyLocalScheduleAssignment(i, replacementId);
+        nextAssignments[i] = replacementId; // set raw so the previous template row becomes "selected" in the list (for highlight + edit/delete buttons), even if it is empty
+        applyLocalScheduleAssignment(i, safeReplacement);
       }
     }
     builderAssignments = nextAssignments;
@@ -3608,6 +4026,7 @@
     void db.deleteTemplate(deletedId).catch(async (e) => {
       console.error(e);
       templateError = formatDbError(e);
+      templateErrorFading = false;
       await loadData({ preserveSession: true });
     });
   }
@@ -3634,6 +4053,10 @@
     editingExerciseNameId = null;
     templateSaveError = null;
     resetNewExerciseForm();
+    // Library picker is closed by default. User can open it explicitly with the LIBRARY button.
+    showExerciseLibraryPicker = false;
+    // Remember where we came from so we can return there on close (supports nesting: routine editor → template editor)
+    templateEditorReturnView = currentView === 'swap_template' ? 'swap_template' : 'track';
     currentView = 'edit_template';
   }
 
@@ -3658,9 +4081,8 @@
       normalizeDraftExercise(copy);
       return {
         id: copy.id,
-        template_id: templateId,
         user_id: copy.user_id ?? uid,
-        name: copy.name ?? 'EXERCISE',
+        name: copy.name,
         exercise_type: copy.exercise_type,
         target_sets: copy.target_sets ?? 0,
         target_reps: copy.target_reps ?? 0,
@@ -3685,6 +4107,9 @@
     }
     const saved = await db.saveTemplateExercises(templateId, exercises);
     patchTemplateInCache(templateId, trimmedName || previousName, saved);
+    if (!isTemplateAssignable({ exercises: saved })) {
+      await clearTemplateFromAllDays(templateId);
+    }
     await loadData({ preserveSession: true });
   }
 
@@ -3692,7 +4117,11 @@
     const templateId = editingTemplateId || activeTemplate?.id;
     if (!templateId || templateSaveInFlight) return;
 
-    const snapExercises = draftExercises.map((e) => ({ ...e }));
+    const snapExercises = draftExercises.map((e) => {
+      const copy = { ...e };
+      normalizeDraftExercise(copy);
+      return copy;
+    });
     const snapName = sanitizeTemplateName(draftTemplateName.trim());
     const validationErr = validateDraftExercises(snapExercises);
     if (validationErr) {
@@ -3706,12 +4135,16 @@
     templateSaveError = null;
     patchTemplateInCache(templateId, displayName, draftToExercises(templateId, snapExercises));
 
-    currentView = 'track';
+    // Return to where we came from (supports nesting: routine editor → template editor → back to routine editor)
+    const returnView = templateEditorReturnView;
+    templateEditorReturnView = 'track';
+    currentView = returnView;
     draftExercises = [];
     draftTemplateName = '';
     selectedExerciseId = null;
     editingExerciseNameId = null;
     editingTemplateId = '';
+    deletedLibraryExerciseIds = new Set();
 
     templateSaveInFlight = true;
     void commitDraftExercises(templateId, snapExercises, snapName, previousName)
@@ -3814,6 +4247,8 @@
 
   function addNewExercise() {
     if (!editingTemplateId) return;
+    closeLibraryPicker();
+    // Creates a brand new exercise row on save (temp- id → INSERT in saveTemplateExercises).
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const newEx: any = {
       id: tempId,
@@ -3826,11 +4261,19 @@
       increment: 2.5,
       current_weight: 15,
       display_order: draftExercises.length,
-      template_id: editingTemplateId,
+      user_id: currentUser?.id ?? '',
     };
     draftExercises = [...draftExercises, newEx];
     selectExercise(tempId);
-    // The properties form will read the values directly from the newEx object (no intermediate new* state).
+  }
+
+  function toggleExerciseLibraryPicker() {
+    if (showExerciseLibraryPicker) {
+      closeLibraryPicker();
+    } else {
+      libraryPickerClosing = false;
+      showExerciseLibraryPicker = true;
+    }
   }
 
   function deleteSelectedExercise() {
@@ -3895,7 +4338,7 @@
 
   {#if showSettingsPanel}
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
+      class="settings-panel-overlay"
       role="dialog"
       aria-modal="true"
       aria-label="Account and backend"
@@ -3943,127 +4386,267 @@
             <X class="size-3.5" />
           </button>
         </div>
-        <div class="p-3 space-y-3 text-[10px] leading-snug max-h-[min(70dvh,440px)] overflow-y-auto">
-          {#if supabasePanelLoading && !supabasePanel}
-            <p class="text-zinc-500 py-4 text-center">Loading backend…</p>
-          {:else if supabasePanel}
-            {@const panel = supabasePanel}
-            <div class="settings-panel-brand" aria-hidden="true">
-              <span class="settings-panel-brand__lift">LIFT</span>
-              <span class="settings-panel-brand__dash">—</span>
-              <span class="settings-panel-brand__tracker">TRACKER</span>
-            </div>
-            <div class="settings-panel-table-wrap">
-              <table class="settings-panel-table">
-                <tbody>
-                  {#if currentUser}
+        <div class="settings-panel-body text-[10px] leading-snug">
+          <div class="settings-panel-stats">
+            {#if supabasePanelLoading && !supabasePanel}
+              <p class="settings-panel-loading">Loading backend…</p>
+            {:else if supabasePanel}
+              {@const panel = supabasePanel}
+              <div class="settings-panel-brand" aria-hidden="true">
+                <span class="settings-panel-brand__lift">LIFT</span>
+                <span class="settings-panel-brand__dash">—</span>
+                <span class="settings-panel-brand__tracker">TRACKER</span>
+              </div>
+              <div class="settings-panel-table-wrap">
+                <table class="settings-panel-table">
+                  <tbody>
+                    {#if currentUser}
+                      <tr>
+                        <th scope="row">Provider</th>
+                        <td>{accountProvider}</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Joined</th>
+                        <td>{accountMemberSince}</td>
+                      </tr>
+                    {/if}
+                    {#if panel.health.server}
+                      <tr>
+                        <th scope="row">Server</th>
+                        <td class="settings-panel-table__mono settings-panel-table__truncate" title={panel.health.server}>{panel.health.server}</td>
+                      </tr>
+                    {/if}
+                    {#if panel.health.region}
+                      <tr>
+                        <th scope="row">Edge</th>
+                        <td class="settings-panel-table__mono">{panel.health.region}</td>
+                      </tr>
+                    {/if}
+                    {#if currentUser}
+                      <tr>
+                        <th scope="row">Session</th>
+                        <td>{formatSessionExpiry(panel.expiresAt)}</td>
+                      </tr>
+                    {/if}
                     <tr>
-                      <th scope="row">Provider</th>
-                      <td>{accountProvider}</td>
+                      <th scope="row">Calls</th>
+                      <td>{dbActivitySnapshot.totalPulses}</td>
                     </tr>
                     <tr>
-                      <th scope="row">Joined</th>
-                      <td>{accountMemberSince}</td>
+                      <th scope="row">Size</th>
+                      <td class="settings-panel-table__strong">
+                        {#if panel.usage}
+                          {panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}
+                        {:else if currentUser}
+                          —
+                        {:else}
+                          Sign in
+                        {/if}
+                      </td>
                     </tr>
-                  {/if}
-                  {#if panel.health.server}
-                    <tr>
-                      <th scope="row">Server</th>
-                      <td class="settings-panel-table__mono settings-panel-table__truncate" title={panel.health.server}>{panel.health.server}</td>
-                    </tr>
-                  {/if}
-                  {#if panel.health.region}
-                    <tr>
-                      <th scope="row">Edge</th>
-                      <td class="settings-panel-table__mono">{panel.health.region}</td>
-                    </tr>
-                  {/if}
-                  {#if currentUser}
-                    <tr>
-                      <th scope="row">Session</th>
-                      <td>{formatSessionExpiry(panel.expiresAt)}</td>
-                    </tr>
-                  {/if}
-                  <tr>
-                    <th scope="row">Size</th>
-                    <td class="settings-panel-table__strong">
-                      {#if panel.usage}
-                        {panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}
-                      {:else if currentUser}
-                        —
-                      {:else}
-                        Sign in
-                      {/if}
-                    </td>
-                  </tr>
-                  {#if panel.usage}
-                    <tr>
-                      <th scope="row">Library</th>
-                      <td>{panel.usage.templates} tpl · {panel.usage.exercises} ex</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Logs</th>
-                      <td>{panel.usage.workout_history}</td>
-                    </tr>
-                  {/if}
-                  <tr>
-                    <th scope="row">Calls</th>
-                    <td>{dbActivitySnapshot.totalPulses}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+                    {#if panel.usage}
+                      <tr>
+                        <th scope="row">Library</th>
+                        <td>{panel.usage.templates} tpl · {panel.usage.exercises} ex</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Logs</th>
+                        <td>{panel.usage.workout_history}</td>
+                      </tr>
+                    {/if}
+                  </tbody>
+                </table>
+              </div>
 
-            {#if panel.health.error || panel.sessionError}
-              <p class="text-red-300 px-2.5 py-1.5 rounded-lg border border-red-900/50 bg-red-950/30 leading-snug">
-                {panel.sessionError ?? panel.health.error}
-              </p>
+              {#if panel.health.error || panel.sessionError}
+                <p class="settings-panel-alert">
+                  {panel.sessionError ?? panel.health.error}
+                </p>
+              {/if}
             {/if}
-          {/if}
+          </div>
 
           {#if currentUser}
-            {#if accountError}
-              <p class="text-red-300 px-2.5 py-1.5 rounded-lg border border-red-900/50 bg-red-950/30 leading-snug">
+            <div class="settings-panel-account no-scrollbar">
+            {#if accountError && !showChangePasswordForm}
+              <p class="settings-panel-alert">
                 {accountError}
               </p>
             {/if}
 
-            <div class="settings-panel-actions">
-              <button
-                type="button"
-                title="Hold 2s to sign out"
-                class="settings-panel-action-btn {signOutTapPulseActive ? 'hold-skip-tap-pulse' : signOutProgress > 0 ? 'settings-panel-action-btn--signout-active' : 'settings-panel-action-btn--signout'}"
-                disabled={accountBusy}
-                onmousedown={startSignOutHold}
-                onmouseup={stopSignOutHold}
-                onmouseleave={stopSignOutHold}
-                ontouchstart={startSignOutHold}
-                ontouchend={stopSignOutHold}
-                onanimationend={onSignOutTapPulseEnd}>
-                <div class="settings-panel-action-btn__fill settings-panel-action-btn__fill--signout" style="width: {signOutProgress}%;"></div>
-                <span class="settings-panel-action-btn__label">
-                  <LogOut class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
-                  {accountBusy ? '…' : 'SIGN OUT'}
-                </span>
-              </button>
+            {#if accountCanChangePassword}
+              <div class="settings-panel-password">
+                <button
+                  type="button"
+                  class="settings-panel-action-btn settings-panel-action-btn--full
+                    {showChangePasswordForm ? 'settings-panel-action-btn--password-cancel' : 'settings-panel-action-btn--change-password'}"
+                  disabled={accountBusy}
+                  onclick={toggleChangePasswordForm}
+                >
+                  <span class="settings-panel-action-btn__label">
+                    {#if showChangePasswordForm}
+                      <X class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                      CANCEL
+                    {:else}
+                      <LockKeyhole class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                      CHANGE PASSWORD
+                    {/if}
+                  </span>
+                </button>
 
-              <button
-                type="button"
-                title="Hold 4s to delete account and all data"
-                class="settings-panel-action-btn {deleteAccountTapPulseActive ? 'hold-cancel-tap-pulse' : deleteAccountProgress > 0 ? 'settings-panel-action-btn--delete-active' : 'settings-panel-action-btn--delete'}"
-                disabled={accountBusy}
-                onmousedown={startDeleteAccountHold}
-                onmouseup={stopDeleteAccountHold}
-                onmouseleave={stopDeleteAccountHold}
-                ontouchstart={startDeleteAccountHold}
-                ontouchend={stopDeleteAccountHold}
-                onanimationend={onDeleteAccountTapPulseEnd}>
-                <div class="settings-panel-action-btn__fill settings-panel-action-btn__fill--delete" style="width: {deleteAccountProgress}%;"></div>
-                <span class="settings-panel-action-btn__label">
-                  <Trash2 class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
-                  {accountBusy ? '…' : 'DELETE'}
-                </span>
-              </button>
+                <div
+                  class="auth-confirm-reveal"
+                  class:auth-confirm-reveal--open={showChangePasswordForm}
+                  aria-hidden={!showChangePasswordForm}
+                >
+                  <div class="auth-confirm-reveal__inner">
+                    <form
+                      class="settings-panel-password-form"
+                      onsubmit={(e) => {
+                        e.preventDefault();
+                        if (
+                          accountBusy ||
+                          changePasswordFeedbackLit ||
+                          !changePasswordSubmitReady
+                        ) {
+                          return;
+                        }
+                        void handleChangePassword();
+                      }}
+                    >
+                      <div class="relative">
+                        <Lock class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-zinc-500 pointer-events-none" />
+                        <input
+                          type="password"
+                          autocomplete="new-password"
+                          maxlength={MAX_PASSWORD_LEN}
+                          bind:value={changePasswordNew}
+                          disabled={accountBusy}
+                          placeholder="••••••••"
+                          aria-label="New password"
+                          class="settings-panel-password-input"
+                          oninput={(e) => {
+                            clearChangePasswordFeedback();
+                            changePasswordNew = sanitizePasswordInput((e.currentTarget as HTMLInputElement).value);
+                          }}
+                        />
+                      </div>
+                      <div class="relative">
+                        <LockKeyhole class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-zinc-500 pointer-events-none z-10" />
+                        <input
+                          type="password"
+                          autocomplete="new-password"
+                          maxlength={MAX_PASSWORD_LEN}
+                          bind:value={changePasswordConfirm}
+                          disabled={accountBusy}
+                          placeholder=""
+                          aria-label="Confirm password"
+                          class="settings-panel-password-input"
+                          oninput={(e) => {
+                            clearChangePasswordFeedback();
+                            changePasswordConfirm = sanitizePasswordInput((e.currentTarget as HTMLInputElement).value);
+                          }}
+                        />
+                        {#if !changePasswordConfirm}
+                          <span
+                            class="absolute left-9 top-1/2 -translate-y-1/2 text-[0.6875rem] text-zinc-600 pointer-events-none select-none"
+                            aria-hidden="true"
+                          >••••••••</span>
+                        {/if}
+                      </div>
+                      <div class="auth-submit-crossfade settings-panel-password-save-crossfade">
+                        <button
+                          type="submit"
+                          class="auth-submit-crossfade__layer auth-submit-btn settings-panel-password-save-btn settings-panel-password-save-btn--ready font-black flex items-center justify-center text-center leading-snug
+                            {changePasswordSubmitBtnLit ? 'auth-submit-crossfade__layer--lit auth-submit-crossfade__layer--interactive' : ''}
+                            {changePasswordFeedbackExiting ? 'auth-submit-crossfade__layer--top' : ''}"
+                          disabled={accountBusy || changePasswordFeedbackLit || (!changePasswordSubmitReady && !changePasswordFeedbackExiting)}
+                          aria-hidden={!changePasswordSubmitBtnLit}
+                          aria-busy={accountBusy}
+                          aria-label={accountBusy ? 'Saving password' : 'Save password'}
+                          tabindex={changePasswordSubmitBtnLit ? 0 : -1}
+                        >
+                          {#if accountBusy}
+                            <RefreshCw class="size-3.5 shrink-0 animate-spin" aria-hidden="true" />
+                          {:else}
+                            SAVE PASSWORD
+                          {/if}
+                        </button>
+                        {#if changePasswordCrossfadeShowFeedback}
+                          <div
+                            role="status"
+                            aria-live="polite"
+                            class="auth-submit-crossfade__layer auth-submit-btn auth-submit-btn--feedback settings-panel-password-save-btn font-black flex items-center justify-center text-center leading-snug
+                              {changePasswordError ? 'auth-submit-btn--error' : 'auth-submit-btn--success'}
+                              {changePasswordFeedbackLit ? 'auth-submit-crossfade__layer--lit auth-submit-crossfade__layer--top' : ''}
+                              {changePasswordError && changePasswordFeedbackLit ? 'auth-submit-btn--error-nudge' : ''}"
+                            title={changePasswordError ?? changePasswordSuccess ?? undefined}
+                            ontransitionend={onChangePasswordCrossfadeTransitionEnd}
+                          >
+                            <span class="auth-submit-btn__feedback flex items-center gap-1.5 min-w-0 max-w-full">
+                              {#if changePasswordError}
+                                <CircleAlert class="auth-submit-btn__icon size-3.5 shrink-0" aria-hidden="true" />
+                              {:else}
+                                <CircleCheck class="auth-submit-btn__icon size-3.5 shrink-0" aria-hidden="true" />
+                              {/if}
+                              <span class="line-clamp-2 min-w-0">{changePasswordError ?? changePasswordSuccess}</span>
+                            </span>
+                          </div>
+                        {/if}
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            {/if}
+
+            <div
+              class="settings-panel-actions-reveal"
+              class:settings-panel-actions-reveal--open={!showChangePasswordForm}
+              aria-hidden={showChangePasswordForm}
+            >
+              <div class="settings-panel-actions-reveal__inner">
+                <div class="settings-panel-actions">
+                  <button
+                    type="button"
+                    title="Hold 2s to sign out"
+                    class="settings-panel-action-btn {signOutTapPulseActive ? 'hold-skip-tap-pulse' : signOutProgress > 0 ? 'settings-panel-action-btn--signout-active' : 'settings-panel-action-btn--signout'}"
+                    disabled={accountBusy || showChangePasswordForm}
+                    tabindex={showChangePasswordForm ? -1 : 0}
+                    onmousedown={startSignOutHold}
+                    onmouseup={stopSignOutHold}
+                    onmouseleave={stopSignOutHold}
+                    ontouchstart={startSignOutHold}
+                    ontouchend={stopSignOutHold}
+                    onanimationend={onSignOutTapPulseEnd}>
+                    <div class="settings-panel-action-btn__fill settings-panel-action-btn__fill--signout" style="width: {signOutProgress}%;"></div>
+                    <span class="settings-panel-action-btn__label">
+                      <LogOut class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                      {accountBusy ? '…' : 'SIGN OUT'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    title="Hold 4s to delete account and all data"
+                    class="settings-panel-action-btn {deleteAccountTapPulseActive ? 'hold-cancel-tap-pulse' : deleteAccountProgress > 0 ? 'settings-panel-action-btn--delete-active' : 'settings-panel-action-btn--delete'}"
+                    disabled={accountBusy || showChangePasswordForm}
+                    tabindex={showChangePasswordForm ? -1 : 0}
+                    onmousedown={startDeleteAccountHold}
+                    onmouseup={stopDeleteAccountHold}
+                    onmouseleave={stopDeleteAccountHold}
+                    ontouchstart={startDeleteAccountHold}
+                    ontouchend={stopDeleteAccountHold}
+                    onanimationend={onDeleteAccountTapPulseEnd}>
+                    <div class="settings-panel-action-btn__fill settings-panel-action-btn__fill--delete" style="width: {deleteAccountProgress}%;"></div>
+                    <span class="settings-panel-action-btn__label">
+                      <Trash2 class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                      {accountBusy ? '…' : 'DELETE'}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
             </div>
           {/if}
         </div>
@@ -4191,38 +4774,22 @@
                 ? 'week-calendar-open'
                 : ''}"
           >
-            {#each currentWeekDates as dayInfo (dayInfo.key)}
-              {@const isSelected = dayInfo.key === selectedDateStr}
-              {@const isRealToday = dayInfo.isRealToday}
-              {@const daySchedule = schedule[dayInfo.weekday]}
-              {@const hasTemplate = !!daySchedule?.template_id}
-              {@const isRest = !hasTemplate}
-              {@const dayLog = isRealToday ? todayLog : (weekLogs[dayInfo.key] ?? null)}
-              {@const dayHasWorkoutLog = !!dayLog && !dayLog.workout_snapshot?.is_rest}
-              {@const dayDone = isRealToday ? workoutState === 'done' : false}
-              {@const daySkipped = isRealToday
-                ? workoutState === 'skipped'
-                : logIsSkipped(dayLog)}
-              {@const dayCompletion = dayCalendarCompletionStatus(dayLog, isRealToday)}
+            {#each weekDayData as data (data.dayInfo.key)}
+              {@const d = data.dayInfo}
               <button 
-                class="day-btn aspect-square w-full flex flex-col items-center justify-center gap-0 rounded-md text-[10px] font-bold tracking-wide border-none bg-transparent text-zinc-600 hover:text-white relative origin-center
-                  {(dayDone || (!isRealToday && dayHasWorkoutLog && dayCompletion !== 'neutral' && dayCompletion !== 'skipped' && dayCompletion !== 'untouched')) ? (dayCompletion === 'green' ? 'w-cal-green' : dayCompletion === 'untouched' ? 'w-cal-skipped' : 'w-cal-yellow') : ''} 
-                  {daySkipped || dayCompletion === 'untouched' ? 'w-cal-skipped' : ''} 
-                  {(isSelected && !isRealToday && !dayDone && !daySkipped && dayCompletion === 'neutral') ? '!bg-[#1e1e1e] !text-white' : ''}
-                  {isRealToday && !dayDone && !daySkipped ? '!bg-white !text-black hover:!text-black' : ''} 
-                  {isRest && !isSelected && !dayDone && !daySkipped ? 'text-zinc-500' : ''}"
-                onclick={() => selectDate(dayInfo.date)}
+                class="day-btn aspect-square w-full flex flex-col items-center justify-center gap-0 rounded-md text-[10px] font-bold tracking-wide border-none bg-transparent text-zinc-600 hover:text-white relative origin-center {data.dynamicClasses}"
+                onclick={() => selectDate(d.date)}
                 disabled={workoutState === 'active'}
-                title={DAY_NAMES[dayInfo.weekday] + ' ' + dayInfo.key}
+                title={DAY_NAMES[d.weekday] + ' ' + d.key}
               >
                 <div class="flex flex-col items-center justify-center leading-none">
-                  <span class="text-[8px] font-bold tracking-[1px] {isSelected ? 'opacity-100' : 'opacity-60'}">{dayInfo.letter}</span>
-                  <span class="text-[11px] font-black tabular-nums leading-none">{dayInfo.num}</span>
+                  <span class="text-[8px] font-bold tracking-[1px] {data.isSelected ? 'opacity-100' : 'opacity-60'}">{d.letter}</span>
+                  <span class="text-[11px] font-black tabular-nums leading-none">{d.num}</span>
                 </div>
-                {#if isSelected}
+                {#if data.isSelected}
                   <span class="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-px bg-current rounded-full"></span>
                 {/if}
-                {#if dayHasWorkoutLog && !isSelected && !isRealToday}
+                {#if data.dayHasWorkoutLog && !data.isSelected && !data.isRealToday}
                   <span class="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-0.5 h-0.5 rounded-full bg-[var(--w-yellow-fg)] opacity-60"></span>
                 {/if}
               </button>
@@ -4403,30 +4970,25 @@
           The only workout you regret is the one you never started.
         </div>
 
-        <!-- Create form, same styling as other create sections and pages -->
-        <form
-          class="w-full max-w-xs space-y-2"
-          onsubmit={(e) => { e.preventDefault(); handleCreateTemplate(); }}>
-          <input 
-            placeholder="Template name (e.g. FULL BODY)" 
-            class="w-full bg-black border border-[#1e1e1e] text-xs text-white uppercase p-2 rounded-lg outline-none focus:border-[#2a2a2a]" 
-            autocomplete="off"
-            use:clampedTemplateNameProp={{
-              getValue: () => newTemplateName,
-              setValue: (v) => { newTemplateName = v; },
-            }}
-            disabled={!currentUser || isCreatingTemplate}
-          />
-          {#if templateError}
-            <p class="text-[10px] text-red-300 leading-snug">{templateError}</p>
-          {/if}
-          <button 
-            type="submit"
-            class="w-full h-[52px] rounded-xl font-sans font-black text-[11px] tracking-[0.15em] bg-white text-black transition-all duration-150 hover:brightness-110 disabled:opacity-50"
-            disabled={!currentUser || isCreatingTemplate}>
-            {isCreatingTemplate ? 'CREATING…' : 'CREATE TEMPLATE'}
-          </button>
-        </form>
+        {#if templateError}
+          <p class="text-[10px] text-red-300 leading-snug">{templateError}</p>
+        {/if}
+        <button 
+          type="button"
+          class="w-full max-w-xs h-[52px] rounded-xl font-sans font-black text-[11px] tracking-[0.15em] bg-white text-black border-2 border-transparent transition-all duration-150 hover:brightness-110 disabled:opacity-50 flex items-center justify-center"
+          disabled={!currentUser}
+          onclick={() => {
+            if (workoutState === 'active') return;
+            currentView = 'swap_template';
+            templateError = null;
+            templateErrorFading = false;
+            editingRoutineTemplateNameId = null;
+            routineTemplateNameEditOriginal = null;
+            builderAssignments = {};
+            builderEditingDay = selectedWeekday;
+          }}>
+          CREATE ROUTINE
+        </button>
       </div>
     {:else if isPastNoLog}
       <!-- UNLOGGED for past with truly no history entry (distinguishes from current-schedule backtrack rests) -->
@@ -4805,14 +5367,12 @@
                   {@const s = activeTimerSetIndex}
                   {@const timerCubeCount = 36}
                   {@const timerMet = timeTotal > 0 && countdownSeconds >= timeTotal}
-                  {@const litTimerCubes =
+                  {@const activeCube =
                     timeTotal > 0
-                      ? timerMet
-                        ? timerCubeCount
-                        : Math.min(
-                            timerCubeCount,
-                            Math.floor((countdownSeconds / timeTotal) * timerCubeCount),
-                          )
+                      ? Math.min(
+                          timerCubeCount - 1,
+                          Math.floor((countdownSeconds / timeTotal) * timerCubeCount),
+                        )
                       : 0}
                   <div class="time-active-bar">
                     <span class="time-active-set">S{s + 1}</span>
@@ -4822,10 +5382,21 @@
                         class:timer-progress-cubes--running={countdownRunning}
                       >
                         {#each Array(timerCubeCount) as _, i}
+                          {@const d = activeCube - i}
+                          {@const trailGrey = i < activeCube
+                            ? `#${Math.round(68 + (1 - d / Math.max(1, activeCube)) * 68).toString(16).padStart(2, '0')}`
+                            : ''}
                           <div
                             class="timer-progress-cube"
-                            class:timer-progress-cube--lit={i < litTimerCubes}
-                            class:timer-progress-cube--met={timerMet && i < litTimerCubes}
+                            class:timer-progress-cube--lit={i === activeCube && !timerMet}
+                            class:timer-progress-cube--met={timerMet && i === activeCube}
+                            style={i < activeCube
+                              ? `background-color: ${trailGrey};`
+                              : i === activeCube
+                                ? timerMet
+                                  ? 'background-color: var(--w-green-fg);'
+                                  : 'background-color: #fff;'
+                                : ''}
                           ></div>
                         {/each}
                       </div>
@@ -4927,7 +5498,7 @@
       <div class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none text-center">CLICK DAY TO ASSIGN</div>
       <div class="grid grid-cols-7 gap-1">
         {#each DAYS as d, i}
-          {@const hasTemplate = !!builderAssignments[i]}
+          {@const hasTemplate = !!effectiveAssignmentTemplateId(builderAssignments[i] ?? null)}
           <button
             type="button"
             class="flex flex-col items-center gap-0.5 transition-all duration-150"
@@ -4948,7 +5519,11 @@
       </div>
 
       <div class="space-y-1.5">
-        <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">TEMPLATES</span>
+        <div class="flex items-baseline gap-1 min-h-[10px]">
+          <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">
+            TEMPLATES{#if templateError}<span class="ml-2 text-red-400 normal-case tracking-normal transition-opacity duration-200 {templateErrorFading ? 'opacity-0' : 'opacity-100'}">{templateError}</span>{/if}
+          </span>
+        </div>
         <div class="flex flex-col gap-1 min-w-0">
           <div class="flex items-stretch gap-1 h-8">
             <div
@@ -4970,13 +5545,16 @@
           </div>
 
           {#each templates as template, index (template.id)}
-            {@const isAssigned = builderAssignedTemplateId === template.id}
+            {@const isEmpty = template.exercises.length === 0}
+            {@const rawSelectedId = builderAssignments[builderEditingDay] ?? null}
+            {@const isSelected = rawSelectedId === template.id}
+            {@const isRealAssigned = builderAssignedTemplateId === template.id}
             <div class="flex items-stretch gap-1 h-8">
               <div
-                class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isAssigned ? 'bg-emerald-950/40 border-emerald-800 text-emerald-400' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400'}"
+                class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isRealAssigned ? 'bg-emerald-950/40 border-emerald-800 text-emerald-400' : isEmpty && isSelected ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-400' : isEmpty ? 'bg-[#141414] border-[#1e1e1e] text-zinc-400' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400'}"
               >{index + 1}</div>
               <div
-                class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center cursor-pointer transition-colors {isAssigned ? 'bg-emerald-950/10 border-emerald-500 text-emerald-400 hover:bg-emerald-950/20' : 'bg-[#0d0d0d] border-[#1e1e1e] text-zinc-400 hover:bg-[#141414] hover:border-[#2a2a2a] hover:text-white'}"
+                class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center transition-colors cursor-pointer {isRealAssigned ? 'bg-emerald-950/10 border-emerald-500 text-emerald-400 hover:bg-emerald-950/20' : isEmpty && isSelected ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-400 hover:bg-[#141414]' : isEmpty ? 'bg-[#0d0d0d] border-[#1e1e1e] text-zinc-400 hover:bg-[#141414] hover:border-[#2a2a2a] hover:text-white' : 'bg-[#0d0d0d] border-[#1e1e1e] text-zinc-400 hover:bg-[#141414] hover:border-[#2a2a2a] hover:text-white'}"
                 role="button"
                 tabindex="0"
                 onclick={() => assignTemplateToBuilderDay(template.id)}
@@ -4984,7 +5562,7 @@
               >
                 <div class="flex items-center gap-1 min-w-0 flex-1">
                   {#if editingRoutineTemplateNameId === template.id}
-                    <span class="shrink-0 {isAssigned ? 'text-emerald-400' : 'text-white'}">[</span>
+                    <span class="shrink-0 {isRealAssigned ? 'text-emerald-400' : isEmpty ? 'text-zinc-400' : 'text-white'}">[</span>
                     <input
                       type="text"
                       autocomplete="off"
@@ -4996,30 +5574,37 @@
                       onclick={(e) => e.stopPropagation()}
                       onblur={() => commitRoutineTemplateNameEdit(template)}
                       onkeydown={(e) => {
+                        e.stopPropagation();
                         if (e.key === 'Enter' || e.key === 'Escape') {
                           e.preventDefault();
                           (e.currentTarget as HTMLInputElement).blur();
                         }
                       }}
-                      class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isAssigned ? 'text-emerald-400' : 'text-white'}"
+                      class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isRealAssigned ? 'text-emerald-400' : isEmpty ? 'text-zinc-400' : 'text-white'}"
                     />
-                    <span class="shrink-0 {isAssigned ? 'text-emerald-400' : 'text-white'}">]</span>
+                    <span class="shrink-0 {isRealAssigned ? 'text-emerald-400' : isEmpty ? 'text-zinc-400' : 'text-white'}">]</span>
                   {:else}
                     <span
-                      class="font-medium truncate leading-none flex-1 min-w-0 select-none {isAssigned ? 'text-emerald-400' : 'text-white'}"
+                      class="font-medium truncate leading-none flex-1 min-w-0 select-none {isRealAssigned ? 'text-emerald-400' : isEmpty ? 'text-zinc-400' : 'text-white'}"
                       ondblclick={(e) => {
                         e.stopPropagation();
                         beginRoutineTemplateNameEdit(template.id);
                       }}
                     >[ {template.name} ]</span>
                   {/if}
-                  {#if isAssigned}
-                    <span class="text-[9px] shrink-0 bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800 leading-none">ASSIGNED</span>
+                  {#if !isEmpty}
+                    {@const exCount = template.exercises.length}
+                    <span class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none {isRealAssigned ? 'bg-emerald-950 border-emerald-800 text-emerald-400' : 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-500'}">{exCount} EXERCISE{exCount === 1 ? '' : 'S'}</span>
                   {/if}
-                  {#if isAssigned}
+                  {#if isRealAssigned}
+                    <span class="text-[9px] shrink-0 bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800 leading-none">ASSIGNED</span>
+                  {:else if isEmpty}
+                    <span class="text-[9px] shrink-0 bg-[#1e1e1e] px-1.5 py-0.5 rounded border border-[#2a2a2a] text-zinc-500 leading-none">EMPTY</span>
+                  {/if}
+                  {#if isSelected}
                     <button
                       type="button"
-                      class="w-6 h-6 shrink-0 flex items-center justify-center rounded border border-emerald-800 bg-emerald-950/50 text-emerald-400 hover:text-emerald-300 hover:border-emerald-700 transition-colors"
+                      class="w-6 h-6 shrink-0 flex items-center justify-center rounded border {isRealAssigned ? 'border-emerald-800 bg-emerald-950/50 text-emerald-400 hover:text-emerald-300 hover:border-emerald-700' : 'border-[#2a2a2a] bg-[#1e1e1e] text-zinc-400 hover:text-white hover:border-[#3a3a3a]'} transition-colors"
                       title="Edit template"
                       onclick={(e) => { e.stopPropagation(); openTemplateEditor(template.id); }}
                     >
@@ -5039,10 +5624,6 @@
             </div>
           {/each}
         </div>
-
-        {#if templateError}
-          <p class="text-[10px] text-red-300 leading-snug">{templateError}</p>
-        {/if}
 
         <button
           type="button"
@@ -5105,7 +5686,14 @@
           <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
             <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0">
               {#if draftExercises.length === 0}
-                <div class="text-center py-3 border border-dashed border-[#1e1e1e] rounded text-[10px] text-zinc-500">No exercises yet. Tap + below.</div>
+                <div class="text-center py-3 border border-dashed border-[#1e1e1e] rounded text-[10px] text-zinc-500">
+                  No exercises yet.<br />
+                  {#if libraryExercisesAvailable.length > 0}
+                    Tap NEW to create one, or LIBRARY to pick from exercises you've already made.
+                  {:else}
+                    Tap NEW to create a new exercise.
+                  {/if}
+                </div>
               {/if}
 
               {#each draftExercises as exercise, index (exercise.id)}
@@ -5172,10 +5760,10 @@
                         <button
                           type="button"
                           class="w-6 h-6 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
-                          title="Delete exercise"
+                          title="Remove from template"
                           onclick={(e) => { e.stopPropagation(); deleteSelectedExercise(); }}
                         >
-                          <Trash2 class="size-3 pointer-events-none" />
+                          <Minus class="size-3 pointer-events-none" />
                         </button>
                       {/if}
                     </div>
@@ -5184,15 +5772,94 @@
               {/each}
             </div>
 
-            <button
-              type="button"
-              class="w-full h-7 shrink-0 mt-1.5 rounded border border-[#1e1e1e] bg-white flex items-center justify-center text-black hover:bg-zinc-100 hover:border-[#2a2a2a] transition"
-              onclick={addNewExercise}
-              title="Add exercise"
-              aria-label="Add exercise"
+            <div class="flex items-stretch gap-1 h-7 shrink-0 mt-1.5">
+              <button
+                type="button"
+                class="flex-1 rounded border border-[#1e1e1e] bg-white flex items-center justify-center gap-1 text-black hover:bg-zinc-100 hover:border-[#2a2a2a] transition text-[10px] font-bold tracking-[0.5px]"
+                onclick={addNewExercise}
+                title="Create a brand new exercise definition"
+                aria-label="Create new exercise"
+              >
+                <Plus class="size-3.5" strokeWidth={3} />
+                <span>NEW</span>
+              </button>
+              {#if availableLibraryForPicker.length > 0}
+                <button
+                  type="button"
+                  class="flex-1 rounded border border-[#1e1e1e] bg-[#1e1e1e] flex items-center justify-center gap-1 text-zinc-300 hover:bg-[#141414] hover:border-[#2a2a2a] hover:text-white transition text-[10px] font-bold tracking-[0.5px] {showExerciseLibraryPicker ? 'border-zinc-500 text-white' : ''}"
+                  onclick={toggleExerciseLibraryPicker}
+                  title="Pick from exercises you have already created (reuses the same exercise row for progressive overload across templates)"
+                  aria-label="Add from your exercises"
+                  aria-expanded={showExerciseLibraryPicker}
+                >
+                  <List class="size-3.5" strokeWidth={2.5} />
+                  <span>LIBRARY</span>
+                </button>
+              {/if}
+            </div>
+
+            <div
+              class="library-picker-panel grid"
+              class:library-picker-panel--open={showExerciseLibraryPicker && !libraryPickerClosing}
+              class:library-picker-panel--closing={libraryPickerClosing}
+              style="grid-template-rows: {(showExerciseLibraryPicker && !libraryPickerClosing) ? '1fr' : '0fr'}"
             >
-              <Plus class="size-4" strokeWidth={2.5} />
-            </button>
+              <div class="overflow-hidden min-h-0 {(showExerciseLibraryPicker && !libraryPickerClosing) ? '' : 'pointer-events-none'}">
+                <div class="mt-1.5 rounded border border-[#1e1e1e] bg-[#0d0d0d] p-1.5 space-y-1 max-h-48 overflow-y-auto no-scrollbar">
+                  {#if availableLibraryForPicker.length === 0}
+                    <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
+                      {exerciseLibrary.length === 0
+                        ? 'No saved exercises yet. Create one with NEW.'
+                        : 'All your exercises are already in this template.'}
+                    </p>
+                  {:else}
+                    {#each availableLibraryForPicker as libraryEx (libraryEx.id)}
+                      {@const isReps = libraryEx.exercise_type === 'reps'}
+                      {@const isSelectedLib = selectedLibraryExerciseId === libraryEx.id}
+                      {@const summary = isReps
+                        ? `${libraryEx.target_sets || 0}×${libraryEx.target_reps || 0}`
+                        : `${libraryEx.target_sets || 0}× ${libraryEx.target_minutes || 0}m${String(libraryEx.target_seconds || 0).padStart(2, '0')}s`}
+                      {@const weight = isReps && libraryEx.current_weight != null ? ` · ${libraryEx.current_weight}kg` : ''}
+                      <div
+                        class="w-full h-7 min-w-0 px-1.5 rounded border text-xs transition flex items-center gap-1.5 cursor-pointer {isSelectedLib 
+                          ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-200' 
+                          : 'bg-[#141414] border-[#1e1e1e] text-zinc-300 hover:bg-[#1a1a1a] hover:border-[#2a2a2a] hover:text-white'}"
+                        onclick={() => selectLibraryExercise(libraryEx.id)}
+                        title={isSelectedLib ? '' : 'Select to move or delete'}
+                      >
+                        <div class="flex items-center gap-1.5 flex-1 min-w-0">
+                          {#if isReps}
+                            <Dumbbell class="size-3 shrink-0 text-zinc-400" />
+                          {:else}
+                            <Timer class="size-3 shrink-0 text-zinc-400" />
+                          {/if}
+                          <span class="truncate leading-none text-left font-medium">{libraryEx.name}</span>
+                          <span class="ml-auto text-[10px] text-zinc-500 tabular-nums shrink-0">{summary}{weight}</span>
+                        </div>
+                        {#if isSelectedLib}
+                          <button
+                            type="button"
+                            class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-[#2a2a2a] bg-[#1e1e1e] text-zinc-400 hover:text-white hover:border-[#3a3a3a] transition-colors"
+                            onclick={(e) => { e.stopPropagation(); moveLibraryExerciseToTemplate(libraryEx); }}
+                            title="Move into this template"
+                          >
+                            <ChevronUp class="size-3 pointer-events-none" />
+                          </button>
+                          <button
+                            type="button"
+                            class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-red-900/70 bg-red-950/40 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
+                            onclick={(e) => { e.stopPropagation(); deleteLibraryExercise(libraryEx); }}
+                            title="Delete from library (removes from all templates)"
+                          >
+                            <Trash2 class="size-3 pointer-events-none" />
+                          </button>
+                        {/if}
+                      </div>
+                    {/each}
+                  {/if}
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="col-start-2 row-start-2 flex flex-col min-h-0 self-stretch border-l border-[#1e1e1e] pl-2">

@@ -40,7 +40,6 @@
     ChevronUp,
     Dumbbell,
     FileX,
-    GripVertical,
     Lock,
     LockKeyhole,
     LogOut,
@@ -3878,8 +3877,17 @@
     draggedIndex = null;
   }
 
+  let exerciseRowDragged = false;
+
   function handleDragEnd() {
+    const wasDragging = draggedIndex !== null;
     draggedIndex = null;
+    if (wasDragging) {
+      exerciseRowDragged = true;
+      setTimeout(() => {
+        exerciseRowDragged = false;
+      }, 100);
+    }
   }
 </script>
 
@@ -5104,24 +5112,20 @@
                 {@const isSelected = selectedExerciseId === exercise.id}
                 <div
                   class="flex items-stretch gap-1 h-8"
-                  draggable="true"
-                  ondragstart={(e) => handleDragStart(e, index)}
                   ondragover={handleDragOver}
                   ondrop={(e) => handleDrop(e, index)}
-                  ondragend={handleDragEnd}
                 >
                   <button
                     type="button"
-                    class="w-5 h-8 shrink-0 flex items-center justify-center cursor-grab active:cursor-grabbing border-0 bg-transparent p-0 transition-colors {isSelected ? 'text-emerald-400' : 'text-zinc-400 hover:text-zinc-200'}"
+                    draggable="true"
+                    class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none cursor-grab active:cursor-grabbing transition-colors {isSelected ? 'bg-emerald-950/40 border-emerald-800 text-emerald-400' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
                     title="Drag to reorder — click to select"
-                    onclick={() => selectExercise(exercise.id)}
-                  >
-                    <GripVertical class="size-3 pointer-events-none" />
-                  </button>
-                  <button
-                    type="button"
-                    class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isSelected ? 'bg-emerald-950/40 border-emerald-800 text-emerald-400' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
-                    onclick={() => selectExercise(exercise.id)}
+                    onclick={() => {
+                      if (exerciseRowDragged) return;
+                      selectExercise(exercise.id);
+                    }}
+                    ondragstart={(e) => handleDragStart(e, index)}
+                    ondragend={handleDragEnd}
                   >
                     {index + 1}
                   </button>

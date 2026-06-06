@@ -1,7 +1,19 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { PUBLIC_SUPABASE_URL } from '$env/static/public';
-  import { db, supabase, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isUsernameAccount, isWorkoutInProgress, validateEmail, validateUsername, type Template, type Exercise, type WorkoutHistory } from '$lib/db';
+  import { db, supabase, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type WorkoutHistory } from '$lib/db';
+  import { getDbActivitySnapshot, subscribeDbActivity, subscribeDbActivitySnapshot } from '$lib/dbActivity';
+  import {
+    formatBytes,
+    formatSessionExpiry,
+    formatSupabaseLatencyMs,
+    fetchUserDataUsage,
+    getSupabaseProjectInfo,
+    loadSupabaseHealthSnapshot,
+    loadSupabasePanelSnapshot,
+    SUPABASE_HEALTH_POLL_MS,
+    type SupabasePanelSnapshot,
+  } from '$lib/supabaseStatus';
   import {
     clampTrackedRepsFieldInput,
     clampBaseKgFieldInput,
@@ -31,19 +43,21 @@
     GripVertical,
     Lock,
     LockKeyhole,
+    LogOut,
     Mail,
     Pause,
     Pencil,
     Play,
     Plus,
     Check,
+    CircleAlert,
+    CircleCheck,
     RefreshCw,
     Repeat,
     SkipForward,
     Square,
     Timer,
     Trash2,
-    TriangleAlert,
     User,
     X
   } from '@lucide/svelte';
@@ -75,6 +89,22 @@
   const TODAY_WEEKDAY = REAL_TODAY.getDay();
 
   let clockTimeStr = $state('');
+  let dbIoFlash = $state(false);
+  let dbIoFlashTimer: ReturnType<typeof setTimeout> | null = null;
+  let dbActivitySnapshot = $state(getDbActivitySnapshot());
+  let showSettingsPanel = $state(false);
+  let supabasePanelLoading = $state(false);
+  let supabasePanel = $state<SupabasePanelSnapshot | null>(null);
+  let supabaseHealthPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  function flashDbIoIndicator() {
+    dbIoFlash = true;
+    if (dbIoFlashTimer) clearTimeout(dbIoFlashTimer);
+    dbIoFlashTimer = setTimeout(() => {
+      dbIoFlash = false;
+      dbIoFlashTimer = null;
+    }, 100);
+  }
 
   function updateClock() {
     const now = new Date();
@@ -168,6 +198,28 @@
   }
   let isSyncing = $state(false);
   let hasInitialLoad = $state(false);
+  let newcomerBootstrapPending = $state(false);
+
+  /** Empty app shell for new sign-ups — skips boot overlay, shows START YOUR ROUTINE immediately. */
+  function bootstrapNewcomerAppState() {
+    schedule = [];
+    templates = [];
+    todayLog = null;
+    viewedLog = null;
+    weekLogs = {};
+    workoutState = 'idle';
+    justFinishedStatus = null;
+    activeWorkoutTemplate = null;
+    currentView = 'track';
+    hasInitialLoad = true;
+    isLoading = false;
+    isAuthLoading = false;
+    newcomerBootstrapPending = false;
+    bootOverlayVisible = false;
+    bootOverlayExiting = false;
+    appRevealActive = true;
+  }
+
   let weekCalendarCollapsed = $state(true);
   let weekCalendarClosing = $state(false);
   const WEEK_CALENDAR_MS = 260;
@@ -245,6 +297,78 @@
   let signingIn = $state(false);
   let authError = $state<string | null>(null);
   let authSuccess = $state<string | null>(null);
+  let authFeedbackExiting = $state(false);
+  let authFeedbackEntering = $state(false);
+  let authFeedbackExitTimer: ReturnType<typeof setTimeout> | null = null;
+  const AUTH_FEEDBACK_CROSSFADE_MS = 240;
+
+  let authFeedbackVisible = $derived(!!(authError || authSuccess));
+  let authCrossfadeShowFeedback = $derived(authFeedbackVisible || authFeedbackExiting);
+  let authSubmitBtnLit = $derived(
+    !authFeedbackVisible || authFeedbackExiting || authFeedbackEntering,
+  );
+  let authFeedbackLit = $derived(
+    authFeedbackVisible && !authFeedbackExiting && !authFeedbackEntering,
+  );
+  let authSubmitReady = $derived.by(() => {
+    if (!authPassword) return false;
+    if (authCredentialMethod === 'email') {
+      if (!authEmail.trim()) return false;
+    } else if (!authUsername.trim()) {
+      return false;
+    }
+    if (authMode === 'signup' && !authConfirmPassword) return false;
+    return true;
+  });
+
+  function finishAuthFeedbackExit() {
+    if (authFeedbackExitTimer) {
+      clearTimeout(authFeedbackExitTimer);
+      authFeedbackExitTimer = null;
+    }
+    authError = null;
+    authSuccess = null;
+    authFeedbackExiting = false;
+    authFeedbackEntering = false;
+  }
+
+  async function setAuthError(message: string | null) {
+    finishAuthFeedbackExit();
+    authError = message;
+    if (message) {
+      authSuccess = null;
+      authFeedbackEntering = true;
+      await tick();
+      authFeedbackEntering = false;
+    }
+  }
+
+  async function setAuthSuccess(message: string | null) {
+    finishAuthFeedbackExit();
+    authSuccess = message;
+    if (message) {
+      authError = null;
+      authFeedbackEntering = true;
+      await tick();
+      authFeedbackEntering = false;
+    }
+  }
+
+  async function clearAuthFeedback() {
+    if (!authError && !authSuccess) return;
+    if (authFeedbackExiting) return;
+    authFeedbackExiting = true;
+    await tick();
+    authFeedbackExitTimer = setTimeout(
+      finishAuthFeedbackExit,
+      AUTH_FEEDBACK_CROSSFADE_MS + 20,
+    );
+  }
+
+  function onAuthCrossfadeTransitionEnd(e: TransitionEvent) {
+    if (e.propertyName !== 'opacity' || !authFeedbackExiting) return;
+    finishAuthFeedbackExit();
+  }
 
   let authMode = $state<'signin' | 'signup'>('signin');
   let authCredentialMethod = $state<'username' | 'email'>('username');
@@ -252,7 +376,7 @@
   let authEmail = $state('');
   let authPassword = $state('');
   let authConfirmPassword = $state('');
-  let showAccountPanel = $state(false);
+
   let accountBusy = $state(false);
   let accountError = $state<string | null>(null);
 
@@ -527,8 +651,8 @@
   let workoutProgressSaveGen = 0;
   /** Keep showing in-memory sets until submitWorkoutSession + loadData finish. */
   let finishSyncPending = $state(false);
-  const SIGN_OUT_HOLD_MS = 3000;
-  const DELETE_ACCOUNT_HOLD_MS = 5000;
+  const SIGN_OUT_HOLD_MS = 2000;
+  const DELETE_ACCOUNT_HOLD_MS = 4000;
   const START_CTA_SOURCE = 'START WORKOUT';
   const START_CTA_TARGET = 'FINISH WORKOUT';
   const SKIP_CTA_SOURCE = 'SKIP';
@@ -1682,13 +1806,106 @@
   }
 
   function supabaseProjectLabel(): string {
+    return getSupabaseProjectInfo().host;
+  }
+
+  function openSettingsPanel() {
+    accountError = null;
+    stopSignOutHold();
+    stopDeleteAccountHold();
+    showSettingsPanel = true;
+    void refreshSupabaseUsage();
+  }
+
+  function closeSettingsPanel() {
+    if (accountBusy) return;
+    resetSettingsPanelUi();
+  }
+
+  function applySupabaseHealthError(e: unknown) {
+    const message = formatDbError(e);
+    supabasePanel = {
+      project: getSupabaseProjectInfo(),
+      health: {
+        ok: false,
+        latencyMs: null,
+        server: null,
+        projectRef: null,
+        region: null,
+        error: message,
+      },
+      sessionOk: false,
+      sessionError: message,
+      expiresAt: null,
+      usage: supabasePanel?.usage ?? null,
+    };
+  }
+
+  async function refreshSupabaseHealth() {
     try {
-      const host = new URL(PUBLIC_SUPABASE_URL).hostname;
-      const ref = host.split('.')[0];
-      return ref ? `${ref}.supabase.co` : host;
-    } catch {
-      return 'Supabase';
+      const update = await loadSupabaseHealthSnapshot();
+      supabasePanel = supabasePanel
+        ? { ...supabasePanel, ...update }
+        : {
+            project: getSupabaseProjectInfo(),
+            ...update,
+            usage: null,
+          };
+    } catch (e) {
+      if (!supabasePanel) applySupabaseHealthError(e);
+      else {
+        supabasePanel = {
+          ...supabasePanel,
+          health: {
+            ok: false,
+            latencyMs: null,
+            server: null,
+            projectRef: null,
+            region: null,
+            error: formatDbError(e),
+          },
+        };
+      }
     }
+  }
+
+  async function refreshSupabaseUsage() {
+    if (!currentUser) return;
+    try {
+      const usage = await fetchUserDataUsage();
+      if (supabasePanel) supabasePanel = { ...supabasePanel, usage };
+    } catch {
+      /* keep cached usage */
+    }
+  }
+
+  async function preloadSupabaseBackend() {
+    const showLoading = supabasePanel === null;
+    if (showLoading) supabasePanelLoading = true;
+    try {
+      supabasePanel = await loadSupabasePanelSnapshot();
+    } catch (e) {
+      applySupabaseHealthError(e);
+    } finally {
+      if (showLoading) supabasePanelLoading = false;
+    }
+  }
+
+  function startSupabaseBackgroundSync() {
+    if (supabaseHealthPollTimer) return;
+    void preloadSupabaseBackend();
+    supabaseHealthPollTimer = setInterval(() => {
+      void refreshSupabaseHealth();
+    }, SUPABASE_HEALTH_POLL_MS);
+  }
+
+  function stopSupabaseBackgroundSync() {
+    if (supabaseHealthPollTimer) {
+      clearInterval(supabaseHealthPollTimer);
+      supabaseHealthPollTimer = null;
+    }
+    supabasePanel = null;
+    supabasePanelLoading = false;
   }
 
   type BootBackendPhase = 'checking' | 'syncing' | 'ready' | 'error';
@@ -2023,6 +2240,9 @@
   }
 
  async function loadData(options: { preserveSession?: boolean } = {}) {
+		if (newcomerBootstrapPending && !hasInitialLoad) {
+			bootstrapNewcomerAppState();
+		}
 		const isInitial = !hasInitialLoad;
 		if (isInitial) {
 			isLoading = true;
@@ -2111,6 +2331,10 @@
   onMount(() => {
     updateClock();
     const clockInterval = setInterval(updateClock, 50);
+    const unsubDbActivity = subscribeDbActivity(flashDbIoIndicator);
+    const unsubDbActivitySnapshot = subscribeDbActivitySnapshot(() => {
+      dbActivitySnapshot = getDbActivitySnapshot();
+    });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       void (async () => {
@@ -2136,13 +2360,25 @@
         }
 
         if (currentUser && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
-          bootMessage = 'Welcome back — loading data…';
-          bootSections = buildAuthBootSections(currentUser);
-          loadData();
+          startSupabaseBackgroundSync();
+          if (newcomerBootstrapPending) {
+            bootstrapNewcomerAppState();
+            void loadData({ preserveSession: true });
+          } else if (!hasInitialLoad) {
+            bootMessage = 'Welcome back — loading data…';
+            bootSections = buildAuthBootSections(currentUser);
+            loadData();
+          } else {
+            void loadData({ preserveSession: true });
+          }
         }
 
         if (event === 'SIGNED_OUT' || event === 'SIGNED_IN') {
-          resetAccountPanelUi();
+          resetSettingsPanelUi();
+        }
+
+        if (event === 'SIGNED_OUT' || (event === 'INITIAL_SESSION' && !currentUser)) {
+          stopSupabaseBackgroundSync();
         }
 
         if (!currentUser && (event === 'SIGNED_OUT' || event === 'INITIAL_SESSION')) {
@@ -2156,6 +2392,7 @@
           currentView = 'track';
           hasInitialLoad = false;
           isLoading = false;
+          newcomerBootstrapPending = false;
           bootMessage = 'Checking session…';
           bootSections = [];
         }
@@ -2163,7 +2400,7 @@
     });
 
     const redirectErr = getAuthRedirectError();
-    if (redirectErr) authError = redirectErr;
+    if (redirectErr) setAuthError(redirectErr);
 
     void (async () => {
       try {
@@ -2171,7 +2408,7 @@
         await db.handleAuthCallback();
       } catch (e) {
         console.error('Auth callback failed', e);
-        authError = formatAuthError(e);
+        setAuthError(formatAuthError(e));
       }
       try {
         await supabase.auth.getSession();
@@ -2188,13 +2425,19 @@
 
     return () => {
       clearInterval(clockInterval);
+      stopSupabaseBackgroundSync();
+      unsubDbActivity();
+      unsubDbActivitySnapshot();
+      if (dbIoFlashTimer) clearTimeout(dbIoFlashTimer);
       subscription.unsubscribe();
       document.removeEventListener('visibilitychange', onPageHide);
     };
   });
   onDestroy(() => {
+    finishAuthFeedbackExit();
     flushWorkoutProgressSave();
     if (workoutProgressSaveTimer) clearTimeout(workoutProgressSaveTimer);
+    if (dbIoFlashTimer) clearTimeout(dbIoFlashTimer);
     clearInterval(workoutTimer);
     clearInterval(countdownTimer);
     cancelRepSetHold();
@@ -2928,25 +3171,18 @@
       templateError = 'Enter a template name.';
       return;
     }
-    if (isCreatingTemplate) return;
 
-    const {
-      data: { user },
-      error: userErr,
-    } = await supabase.auth.getUser();
-    if (userErr || !user) {
-      currentUser = null;
-      templateError = formatDbError(userErr ?? new Error('Not signed in'));
-      return;
-    }
-    currentUser = user;
-    const uid = user.id;
     const wd =
       (currentView === 'swap_template' ? builderEditingDay : selectedWeekday) ?? 0;
 
-    templateError = null;
-
     if (currentView === 'swap_template') {
+      if (!currentUser) {
+        templateError = 'Not signed in';
+        return;
+      }
+      const uid = currentUser.id;
+      templateError = null;
+
       const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const optimistic: Template = { id: tempId, user_id: uid, name, exercises: [] };
       templates = [...templates, optimistic];
@@ -2958,6 +3194,13 @@
         try {
           const template = await db.createTemplate(name);
           if (!template) throw new Error('Could not create template');
+          const stillPending = templates.some((t) => t.id === tempId);
+          if (!stillPending) {
+            await db.deleteTemplate(template.id).catch((err) =>
+              console.error('orphan template cleanup failed', err),
+            );
+            return null;
+          }
           await db.assignTemplateToDay(wd, template.id);
           templates = templates.map((t) => (t.id === tempId ? template : t));
           if (builderAssignments[wd] === tempId) {
@@ -2983,6 +3226,20 @@
       return;
     }
 
+    if (isCreatingTemplate) return;
+
+    const {
+      data: { user },
+      error: userErr,
+    } = await supabase.auth.getUser();
+    if (userErr || !user) {
+      currentUser = null;
+      templateError = formatDbError(userErr ?? new Error('Not signed in'));
+      return;
+    }
+    currentUser = user;
+
+    templateError = null;
     isCreatingTemplate = true;
     try {
       const template = await db.createTemplate(name);
@@ -3012,13 +3269,13 @@
 
   async function handleGoogleSignIn() {
     signingIn = true;
-    authError = null;
+    setAuthError(null);
     authSuccess = null;
     try {
       await db.signInWithGoogle();
     } catch (e) {
       console.error('Google sign-in failed', e);
-      authError = formatAuthError(e, 'google');
+      setAuthError(formatAuthError(e, 'google'));
     } finally {
       signingIn = false;
     }
@@ -3026,13 +3283,13 @@
 
   async function handleGitHubSignIn() {
     signingIn = true;
-    authError = null;
+    setAuthError(null);
     authSuccess = null;
     try {
       await db.signInWithGitHub();
     } catch (e) {
       console.error('GitHub sign-in failed', e);
-      authError = formatAuthError(e, 'github');
+      setAuthError(formatAuthError(e, 'github'));
     } finally {
       signingIn = false;
     }
@@ -3040,13 +3297,13 @@
 
   async function handleDiscordSignIn() {
     signingIn = true;
-    authError = null;
+    setAuthError(null);
     authSuccess = null;
     try {
       await db.signInWithDiscord();
     } catch (e) {
       console.error('Discord sign-in failed', e);
-      authError = formatAuthError(e, 'discord');
+      setAuthError(formatAuthError(e, 'discord'));
     } finally {
       signingIn = false;
     }
@@ -3054,13 +3311,13 @@
 
   async function handleXSignIn() {
     signingIn = true;
-    authError = null;
+    setAuthError(null);
     authSuccess = null;
     try {
       await db.signInWithX();
     } catch (e) {
       console.error('X sign-in failed', e);
-      authError = formatAuthError(e, 'x');
+      setAuthError(formatAuthError(e, 'x'));
     } finally {
       signingIn = false;
     }
@@ -3068,47 +3325,53 @@
 
   function toggleEmailAuth() {
     authCredentialMethod = authCredentialMethod === 'email' ? 'username' : 'email';
-    authError = null;
+    setAuthError(null);
     authSuccess = null;
   }
 
   async function handleEmailAuth() {
     const email = authEmail.trim();
     if (!email || !authPassword) {
-      authError = 'Enter your email and password.';
+      setAuthError('Enter your email and password.');
       authSuccess = null;
       return;
     }
     const emailErr = validateEmail(email);
     if (emailErr) {
-      authError = emailErr;
+      setAuthError(emailErr);
       authSuccess = null;
       return;
     }
     if (authMode === 'signup' && authPassword !== authConfirmPassword) {
-      authError = 'Passwords do not match.';
+      setAuthError('Passwords do not match.');
       authSuccess = null;
       return;
     }
-    if (authPassword.length < 6) {
-      authError = 'Password must be at least 6 characters.';
+    const passwordErr = validatePassword(authPassword);
+    if (passwordErr) {
+      setAuthError(passwordErr);
       authSuccess = null;
       return;
     }
 
     signingIn = true;
-    authError = null;
+    setAuthError(null);
     authSuccess = null;
+    await tick();
     try {
       if (authMode === 'signup') {
+        newcomerBootstrapPending = true;
         const { session, user } = await db.signUpWithEmail(email, authPassword);
         if (session) {
           currentUser = user;
+          bootstrapNewcomerAppState();
           authPassword = '';
           authConfirmPassword = '';
         } else {
-          authSuccess =
-            'Account created. Check your email for a confirmation link, then sign in.';
+          newcomerBootstrapPending = false;
+          setAuthSuccess(
+            'Account created. Check your email for a confirmation link, then sign in.',
+          );
           authMode = 'signin';
           authPassword = '';
           authConfirmPassword = '';
@@ -3121,7 +3384,8 @@
       }
     } catch (e) {
       console.error('Email auth failed', e);
-      authError = formatAuthError(e, undefined, 'email');
+      newcomerBootstrapPending = false;
+      setAuthError(formatAuthError(e, undefined, 'email'));
     } finally {
       signingIn = false;
     }
@@ -3130,46 +3394,46 @@
   async function handleUsernameAuth() {
     const username = authUsername.trim();
     if (!username || !authPassword) {
-      authError = 'Enter your username and password.';
+      setAuthError('Enter your username and password.');
       authSuccess = null;
       return;
     }
     const usernameErr = validateUsername(username);
     if (usernameErr) {
-      authError = usernameErr;
+      setAuthError(usernameErr);
       authSuccess = null;
       return;
     }
     if (authMode === 'signup' && authPassword !== authConfirmPassword) {
-      authError = 'Passwords do not match.';
+      setAuthError('Passwords do not match.');
       authSuccess = null;
       return;
     }
-    if (authPassword.length < 6) {
-      authError = 'Password must be at least 6 characters.';
+    const passwordErr = validatePassword(authPassword);
+    if (passwordErr) {
+      setAuthError(passwordErr);
       authSuccess = null;
       return;
     }
 
     signingIn = true;
-    authError = null;
+    setAuthError(null);
     authSuccess = null;
+    await tick();
     try {
       if (authMode === 'signup') {
-        const available = await db.isUsernameAvailable(username);
-        if (!available) {
-          authError = 'This username is already taken. Try another.';
-          return;
-        }
-
+        newcomerBootstrapPending = true;
         const { session, user } = await db.signUpWithUsername(username, authPassword);
         if (session) {
           currentUser = user;
+          bootstrapNewcomerAppState();
           authPassword = '';
           authConfirmPassword = '';
         } else {
-          authSuccess =
-            'Account created. If sign-in fails, disable “Confirm email” in Supabase Auth settings (username accounts have no inbox).';
+          newcomerBootstrapPending = false;
+          setAuthSuccess(
+            'Account created. If sign-in fails, disable “Confirm email” in Supabase Auth settings (username accounts have no inbox).',
+          );
           authMode = 'signin';
           authPassword = '';
           authConfirmPassword = '';
@@ -3182,7 +3446,8 @@
       }
     } catch (e) {
       console.error('Username auth failed', e);
-      authError = formatAuthError(e, undefined, 'username');
+      newcomerBootstrapPending = false;
+      setAuthError(formatAuthError(e, undefined, 'username'));
     } finally {
       signingIn = false;
     }
@@ -3190,36 +3455,24 @@
 
   function setAuthMode(mode: 'signin' | 'signup') {
     authMode = mode;
-    authError = null;
+    setAuthError(null);
     authSuccess = null;
     if (mode === 'signin') authConfirmPassword = '';
   }
 
-  function openAccountPanel() {
-    accountError = null;
-    stopSignOutHold();
-    stopDeleteAccountHold();
-    showAccountPanel = true;
-  }
-
   /** Closes panel and resets hold UI; safe to call during sign-out / auth changes. */
-  function resetAccountPanelUi() {
-    showAccountPanel = false;
+  function resetSettingsPanelUi() {
+    showSettingsPanel = false;
     stopSignOutHold();
     stopDeleteAccountHold();
     accountError = null;
-  }
-
-  function closeAccountPanel() {
-    if (accountBusy) return;
-    resetAccountPanelUi();
   }
 
   async function handleSignOut() {
     if (accountBusy) return;
     accountBusy = true;
     accountError = null;
-    resetAccountPanelUi();
+    resetSettingsPanelUi();
     try {
       await db.signOut();
     } catch (e) {
@@ -3238,7 +3491,7 @@
     try {
       await db.deleteAccount();
       currentUser = null;
-      resetAccountPanelUi();
+      resetSettingsPanelUi();
       schedule = [];
       templates = [];
       todayLog = null;
@@ -3305,22 +3558,50 @@
     });
   }
 
-  async function deleteTemplateInBuilder(tpl: any) {
+  function templateIdAfterDeletedTemplate(deletedId: string): string | null {
+    const idx = templates.findIndex((t) => t.id === deletedId);
+    if (idx < 0) return null;
+    if (idx < templates.length - 1) return templates[idx + 1].id;
+    if (idx > 0) return templates[idx - 1].id;
+    return null;
+  }
+
+  function applyBuilderTemplateRemoval(deletedId: string, replacementId: string | null) {
+    templates = templates.filter((t) => t.id !== deletedId);
+    const nextAssignments = { ...builderAssignments };
+    for (let i = 0; i < 7; i++) {
+      if (nextAssignments[i] === deletedId) {
+        nextAssignments[i] = replacementId;
+        applyLocalScheduleAssignment(i, replacementId);
+      }
+    }
+    builderAssignments = nextAssignments;
+  }
+
+  async function deleteTemplateInBuilder(tpl: Template) {
     if (editingRoutineTemplateNameId === tpl.id) {
       editingRoutineTemplateNameId = null;
     }
-    try {
-      await db.deleteTemplate(tpl.id);
-      // clear from any pending assignments in builder
-      for (let i = 0; i < 7; i++) {
-        if (builderAssignments[i] === tpl.id) {
-          builderAssignments[i] = null;
-        }
-      }
-      await loadData();
-    } catch (e) {
-      console.error(e);
+    const deletedId = tpl.id;
+    const replacementId = templateIdAfterDeletedTemplate(deletedId);
+    const affectedDays: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      if (builderAssignments[i] === deletedId) affectedDays.push(i);
     }
+    applyBuilderTemplateRemoval(deletedId, replacementId);
+
+    if (deletedId.startsWith('temp-')) {
+      for (const wd of affectedDays) {
+        routineEditorPendingCreates.delete(wd);
+      }
+      return;
+    }
+
+    void db.deleteTemplate(deletedId).catch(async (e) => {
+      console.error(e);
+      templateError = formatDbError(e);
+      await loadData({ preserveSession: true });
+    });
   }
 
   function resetNewExerciseForm() {
@@ -3595,85 +3876,179 @@
 
 <div class="app max-w-md mx-auto min-h-screen min-h-dvh select-none text-white bg-[#0a0a0a] p-4 flex flex-col gap-3 font-sans">
 
-  {#if showAccountPanel && currentUser}
+  {#if showSettingsPanel}
     <div
       class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
       role="dialog"
       aria-modal="true"
-      aria-label="Account settings"
-      onclick={(e) => { if (e.target === e.currentTarget) closeAccountPanel(); }}>
-      <div class="w-full max-w-[300px] rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left">
-        <div class="flex items-center justify-between px-3 py-2 border-b border-[#1e1e1e] bg-[#111]">
-          <span class="shrink-0 leading-none select-none">
-            <span class="tracking-[2px] text-[11px] text-white font-black">LIFT</span><span class="text-[11px] text-zinc-500 font-semibold px-0.5">—</span><span class="font-semibold tracking-[0.5px] text-[11px] text-zinc-400">TRACKER</span>
-          </span>
+      aria-label="Account and backend"
+      tabindex="-1"
+      onclick={(e) => { if (e.target === e.currentTarget) closeSettingsPanel(); }}
+    >
+      <div class="settings-panel-dialog w-full rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left">
+        <div class="settings-panel-header">
+          <div class="settings-panel-header__title">
+            {#if currentUser}
+              <div class="settings-panel-header__avatar">{accountInitial}</div>
+              <div class="settings-panel-header__identity">
+                <span class="settings-panel-header__name">{accountDisplayName}</span>
+                <span class="settings-panel-header__user-id" title={currentUser.id}>{currentUser.id}</span>
+              </div>
+            {:else}
+              <span class="settings-panel-header__name text-zinc-400">Backend</span>
+            {/if}
+          </div>
+          <div class="settings-panel-header__supabase" aria-label="Supabase connection">
+            <span class="settings-panel-header__supabase-label">Supabase</span>
+            <span class="settings-panel-header__dot-wrap" aria-hidden="true">
+              <span
+                class="db-io-dot settings-panel-header__dot"
+                class:db-io-dot--active={!!supabasePanel && supabasePanel.health.ok && supabasePanel.sessionOk}
+              ></span>
+            </span>
+            <span class="settings-panel-header__latency">
+              {#if supabasePanelLoading}
+                …
+              {:else if supabasePanel?.health.latencyMs != null}
+                {formatSupabaseLatencyMs(supabasePanel.health.latencyMs)}
+              {:else}
+                —
+              {/if}
+            </span>
+          </div>
           <button
             type="button"
             aria-label="Close"
-            class="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-500 hover:text-white hover:bg-[#1a1a1a] transition"
+            class="settings-panel-header__close"
             disabled={accountBusy}
-            onclick={closeAccountPanel}>
+            onclick={closeSettingsPanel}
+          >
             <X class="size-3.5" />
           </button>
         </div>
-
-        <div class="p-3 space-y-3">
-          <div class="flex items-center gap-2.5">
-            <div class="w-10 h-10 shrink-0 rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] flex items-center justify-center text-sm font-black text-emerald-400">
-              {accountInitial}
+        <div class="p-3 space-y-3 text-[10px] leading-snug max-h-[min(70dvh,440px)] overflow-y-auto">
+          {#if supabasePanelLoading && !supabasePanel}
+            <p class="text-zinc-500 py-4 text-center">Loading backend…</p>
+          {:else if supabasePanel}
+            {@const panel = supabasePanel}
+            <div class="settings-panel-brand" aria-hidden="true">
+              <span class="settings-panel-brand__lift">LIFT</span>
+              <span class="settings-panel-brand__dash">—</span>
+              <span class="settings-panel-brand__tracker">TRACKER</span>
             </div>
-            <div class="min-w-0">
-              <div class="text-xs font-medium text-white truncate">{accountDisplayName}</div>
-              <div class="text-[10px] text-zinc-500 mt-0.5">
-                {accountProvider} · {accountMemberSince}
-              </div>
+            <div class="settings-panel-table-wrap">
+              <table class="settings-panel-table">
+                <tbody>
+                  {#if currentUser}
+                    <tr>
+                      <th scope="row">Provider</th>
+                      <td>{accountProvider}</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Joined</th>
+                      <td>{accountMemberSince}</td>
+                    </tr>
+                  {/if}
+                  {#if panel.health.server}
+                    <tr>
+                      <th scope="row">Server</th>
+                      <td class="settings-panel-table__mono settings-panel-table__truncate" title={panel.health.server}>{panel.health.server}</td>
+                    </tr>
+                  {/if}
+                  {#if panel.health.region}
+                    <tr>
+                      <th scope="row">Edge</th>
+                      <td class="settings-panel-table__mono">{panel.health.region}</td>
+                    </tr>
+                  {/if}
+                  {#if currentUser}
+                    <tr>
+                      <th scope="row">Session</th>
+                      <td>{formatSessionExpiry(panel.expiresAt)}</td>
+                    </tr>
+                  {/if}
+                  <tr>
+                    <th scope="row">Size</th>
+                    <td class="settings-panel-table__strong">
+                      {#if panel.usage}
+                        {panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}
+                      {:else if currentUser}
+                        —
+                      {:else}
+                        Sign in
+                      {/if}
+                    </td>
+                  </tr>
+                  {#if panel.usage}
+                    <tr>
+                      <th scope="row">Library</th>
+                      <td>{panel.usage.templates} tpl · {panel.usage.exercises} ex</td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Logs</th>
+                      <td>{panel.usage.workout_history}</td>
+                    </tr>
+                  {/if}
+                  <tr>
+                    <th scope="row">Calls</th>
+                    <td>{dbActivitySnapshot.totalPulses}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
-          </div>
 
-          <p class="text-[9px] font-mono text-zinc-600 break-all leading-relaxed" title={currentUser.id}>
-            {currentUser.id}
-          </p>
-
-          {#if accountError}
-            <p class="text-[11px] text-red-300 leading-snug px-2.5 py-1.5 rounded-lg border border-red-900/50 bg-red-950/30">
-              {accountError}
-            </p>
+            {#if panel.health.error || panel.sessionError}
+              <p class="text-red-300 px-2.5 py-1.5 rounded-lg border border-red-900/50 bg-red-950/30 leading-snug">
+                {panel.sessionError ?? panel.health.error}
+              </p>
+            {/if}
           {/if}
 
-          <p class="flex items-start gap-1.5 text-[10px] leading-snug text-zinc-500">
-            <TriangleAlert class="size-3 shrink-0 mt-0.5 text-amber-500/90" aria-hidden="true" />
-            <span>Hold <span class="text-amber-400/80 font-bold">SIGN OUT</span> or <span class="text-red-400/80 font-bold">DELETE</span> to confirm.</span>
-          </p>
+          {#if currentUser}
+            {#if accountError}
+              <p class="text-red-300 px-2.5 py-1.5 rounded-lg border border-red-900/50 bg-red-950/30 leading-snug">
+                {accountError}
+              </p>
+            {/if}
 
-          <button
-            type="button"
-            title="Hold to sign out"
-            class="w-full h-10 rounded-lg font-black text-[10px] tracking-[0.12em] flex items-center justify-center bg-[#0d0d0d] border relative overflow-hidden transition-all duration-150 hover:brightness-110 disabled:opacity-60 {signOutTapPulseActive ? 'hold-skip-tap-pulse' : signOutProgress > 0 ? 'border-amber-500 text-[#fbbf24]' : 'border-amber-900/35 text-amber-500/70'}"
-            disabled={accountBusy}
-            onmousedown={startSignOutHold}
-            onmouseup={stopSignOutHold}
-            onmouseleave={stopSignOutHold}
-            ontouchstart={startSignOutHold}
-            ontouchend={stopSignOutHold}
-            onanimationend={onSignOutTapPulseEnd}>
-            <div class="absolute inset-0 z-0 bg-amber-900/40 transition-all duration-[20ms]" style="width: {signOutProgress}%;"></div>
-            <span class="relative z-10">{accountBusy ? '…' : 'SIGN OUT'}</span>
-          </button>
+            <div class="settings-panel-actions">
+              <button
+                type="button"
+                title="Hold 2s to sign out"
+                class="settings-panel-action-btn {signOutTapPulseActive ? 'hold-skip-tap-pulse' : signOutProgress > 0 ? 'settings-panel-action-btn--signout-active' : 'settings-panel-action-btn--signout'}"
+                disabled={accountBusy}
+                onmousedown={startSignOutHold}
+                onmouseup={stopSignOutHold}
+                onmouseleave={stopSignOutHold}
+                ontouchstart={startSignOutHold}
+                ontouchend={stopSignOutHold}
+                onanimationend={onSignOutTapPulseEnd}>
+                <div class="settings-panel-action-btn__fill settings-panel-action-btn__fill--signout" style="width: {signOutProgress}%;"></div>
+                <span class="settings-panel-action-btn__label">
+                  <LogOut class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                  {accountBusy ? '…' : 'SIGN OUT'}
+                </span>
+              </button>
 
-          <button
-            type="button"
-            title="Hold to delete account and all data"
-            class="w-full h-10 rounded-lg font-black text-[10px] tracking-[0.12em] flex items-center justify-center bg-[#0d0d0d] border relative overflow-hidden transition-all duration-150 hover:brightness-110 disabled:opacity-60 {deleteAccountTapPulseActive ? 'hold-cancel-tap-pulse' : deleteAccountProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-red-900/35 text-red-400/70'}"
-            disabled={accountBusy}
-            onmousedown={startDeleteAccountHold}
-            onmouseup={stopDeleteAccountHold}
-            onmouseleave={stopDeleteAccountHold}
-            ontouchstart={startDeleteAccountHold}
-            ontouchend={stopDeleteAccountHold}
-            onanimationend={onDeleteAccountTapPulseEnd}>
-            <div class="absolute inset-0 z-0 bg-red-900/50 transition-all duration-[20ms]" style="width: {deleteAccountProgress}%;"></div>
-            <span class="relative z-10">{accountBusy ? '…' : 'DELETE'}</span>
-          </button>
+              <button
+                type="button"
+                title="Hold 4s to delete account and all data"
+                class="settings-panel-action-btn {deleteAccountTapPulseActive ? 'hold-cancel-tap-pulse' : deleteAccountProgress > 0 ? 'settings-panel-action-btn--delete-active' : 'settings-panel-action-btn--delete'}"
+                disabled={accountBusy}
+                onmousedown={startDeleteAccountHold}
+                onmouseup={stopDeleteAccountHold}
+                onmouseleave={stopDeleteAccountHold}
+                ontouchstart={startDeleteAccountHold}
+                ontouchend={stopDeleteAccountHold}
+                onanimationend={onDeleteAccountTapPulseEnd}>
+                <div class="settings-panel-action-btn__fill settings-panel-action-btn__fill--delete" style="width: {deleteAccountProgress}%;"></div>
+                <span class="settings-panel-action-btn__label">
+                  <Trash2 class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                  {accountBusy ? '…' : 'DELETE'}
+                </span>
+              </button>
+            </div>
+          {/if}
         </div>
       </div>
     </div>
@@ -3732,32 +4107,49 @@
     <div class="flex items-center gap-2 min-h-8 px-2 py-1.5 border-b border-[#1e1e1e] bg-[#111] text-[10px] tracking-[1px]">
       <button
         type="button"
-        title="Account"
-        aria-label="Account settings"
+        title="Account and backend"
+        aria-label="Account and backend"
         class="w-7 h-7 shrink-0 rounded-lg border border-emerald-800 bg-emerald-950/40 text-emerald-400 flex items-center justify-center text-[10px] font-black hover:border-emerald-600 hover:text-emerald-300 transition"
-        onclick={(e) => { e.stopPropagation(); openAccountPanel(); }}
+        onclick={(e) => { e.stopPropagation(); openSettingsPanel(); }}
       >
         {accountInitial}
       </button>
-      <button
-        type="button"
-        class="flex-1 flex items-center gap-2 min-w-0 py-0.5 -my-0.5 px-1 rounded-md transition-colors {weekCalendarLocked ? 'text-zinc-600 cursor-default' : 'text-zinc-500 hover:text-zinc-300 hover:bg-[#1a1a1a]'}"
-        onclick={toggleWeekCalendar}
-        disabled={weekCalendarLocked}
-        aria-expanded={!weekCalendarDisplayCollapsed}
-        aria-disabled={weekCalendarLocked}
-        title={weekCalendarLocked ? 'Week calendar locked during workout' : weekCalendarCollapsed ? 'Expand week' : 'Collapse week'}
-      >
-        <span class="min-w-0 flex-1 truncate text-left leading-none font-bold text-zinc-200 pointer-events-none">{weekBarLabel}</span>
-        {#if !weekCalendarLocked}
-          {#if weekCalendarDisplayCollapsed}
-            <ChevronDown class="size-3.5 shrink-0 text-zinc-400 pointer-events-none" aria-hidden="true" />
-          {:else}
-            <ChevronUp class="size-3.5 shrink-0 text-zinc-400 pointer-events-none" aria-hidden="true" />
+      <div class="flex-1 flex items-center gap-2 min-w-0">
+        <button
+          type="button"
+          class="flex-1 flex items-center gap-2 min-w-0 py-0.5 -my-0.5 px-1 rounded-md transition-colors {weekCalendarLocked ? 'text-zinc-600 cursor-default' : 'text-zinc-500 hover:text-zinc-300 hover:bg-[#1a1a1a]'}"
+          onclick={toggleWeekCalendar}
+          disabled={weekCalendarLocked}
+          aria-expanded={!weekCalendarDisplayCollapsed}
+          aria-disabled={weekCalendarLocked}
+          title={weekCalendarLocked ? 'Week calendar locked during workout' : weekCalendarCollapsed ? 'Expand week' : 'Collapse week'}
+        >
+          <span class="min-w-0 flex-1 truncate text-left leading-none font-bold text-zinc-200 pointer-events-none">{weekBarLabel}</span>
+          {#if !weekCalendarLocked}
+            {#if weekCalendarDisplayCollapsed}
+              <ChevronDown class="size-3.5 shrink-0 text-zinc-400 pointer-events-none" aria-hidden="true" />
+            {:else}
+              <ChevronUp class="size-3.5 shrink-0 text-zinc-400 pointer-events-none" aria-hidden="true" />
+            {/if}
           {/if}
-        {/if}
-        <span class="font-header-clock font-header-clock--fixed shrink-0 text-[10px] text-zinc-500 leading-none pointer-events-none">{clockTimeStr}</span>
-      </button>
+        </button>
+        <span class="header-clock-group shrink-0">
+          <span class="font-header-clock font-header-clock--fixed text-[10px] text-zinc-500 leading-none">{clockTimeStr}</span>
+          <button
+            type="button"
+            class="db-io-dot-btn"
+            aria-label="Account and backend"
+            title="Account and backend"
+            onclick={openSettingsPanel}
+          >
+            <span
+              class="db-io-dot"
+              class:db-io-dot--active={dbIoFlash}
+              aria-hidden="true"
+            ></span>
+          </button>
+        </span>
+      </div>
     </div>
     <div
       class="week-calendar-panel grid"
@@ -4911,20 +5303,10 @@
         </div>
 
         <div class="p-3 text-left">
-          {#if authError}
-            <p class="text-xs text-red-300 leading-snug px-2.5 py-2 mb-2.5 rounded-lg border border-red-900/50 bg-red-950/30">
-              {authError}
-            </p>
-          {:else if authSuccess}
-            <p class="text-xs text-emerald-300 leading-snug px-2.5 py-2 mb-2.5 rounded-lg border border-emerald-900/50 bg-emerald-950/30">
-              {authSuccess}
-            </p>
-          {/if}
-
           <div class="relative mb-3" aria-hidden="true">
             <div class="flex justify-between gap-1.5 pointer-events-none select-none">
               <div
-                class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl border border-[#1e1e1e] flex items-center justify-center bg-[#0a0a0a] text-zinc-400">
+                class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl flex items-center justify-center bg-[#0a0a0a] text-zinc-400">
                 <Mail class="size-5 relative z-0" />
               </div>
               <div
@@ -4932,15 +5314,15 @@
                 <AuthBrandIcon brand="github" class="size-5 text-white relative z-0" />
               </div>
               <div
-                class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl border border-[#dadce0] flex items-center justify-center bg-white">
+                class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl flex items-center justify-center bg-white">
                 <AuthBrandIcon brand="google" class="size-5 relative z-0" />
               </div>
               <div
-                class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl border border-[#4752c4] flex items-center justify-center bg-[#5865F2] text-white">
+                class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl flex items-center justify-center bg-[#5865F2] text-white">
                 <AuthBrandIcon brand="discord" class="size-5 text-white relative z-0" />
               </div>
               <div
-                class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl border border-[#333] flex items-center justify-center bg-black text-white">
+                class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl flex items-center justify-center bg-black text-white">
                 <AuthBrandIcon brand="x" class="size-5 text-white relative z-0" />
               </div>
             </div>
@@ -4958,6 +5340,7 @@
             class="flex flex-col gap-2.5"
             onsubmit={(e) => {
               e.preventDefault();
+              if (signingIn || authError || authSuccess || !authSubmitReady) return;
               if (authCredentialMethod === 'email') handleEmailAuth();
               else handleUsernameAuth();
             }}>
@@ -4971,6 +5354,7 @@
                   disabled={signingIn}
                   placeholder="you@example.com"
                   class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white placeholder:text-zinc-600 outline-none focus:border-zinc-500 disabled:opacity-60"
+                  oninput={clearAuthFeedback}
                 />
               </div>
             {:else}
@@ -4980,10 +5364,15 @@
                   type="text"
                   autocomplete="username"
                   spellcheck="false"
+                  maxlength={MAX_USERNAME_LEN}
                   bind:value={authUsername}
                   disabled={signingIn}
                   placeholder="username"
                   class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white placeholder:text-zinc-600 outline-none focus:border-zinc-500 disabled:opacity-60"
+                  oninput={(e) => {
+                    clearAuthFeedback();
+                    authUsername = sanitizeUsernameInput((e.currentTarget as HTMLInputElement).value);
+                  }}
                 />
               </div>
             {/if}
@@ -4993,10 +5382,15 @@
                 <input
                   type="password"
                   autocomplete={authMode === 'signup' ? 'new-password' : 'current-password'}
+                  maxlength={MAX_PASSWORD_LEN}
                   bind:value={authPassword}
                   disabled={signingIn}
                   placeholder="••••••••"
                   class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white placeholder:text-zinc-600 outline-none focus:border-zinc-500 disabled:opacity-60"
+                  oninput={(e) => {
+                    clearAuthFeedback();
+                    authPassword = sanitizePasswordInput((e.currentTarget as HTMLInputElement).value);
+                  }}
                 />
               </div>
               <div
@@ -5010,12 +5404,17 @@
                     <input
                       type="password"
                       autocomplete="new-password"
+                      maxlength={MAX_PASSWORD_LEN}
                       bind:value={authConfirmPassword}
                       disabled={signingIn || authMode !== 'signup'}
                       placeholder=""
                       tabindex={authMode === 'signup' ? 0 : -1}
                       aria-label="Confirm password"
                       class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white outline-none focus:border-zinc-500 disabled:opacity-60"
+                      oninput={(e) => {
+                        clearAuthFeedback();
+                        authConfirmPassword = sanitizePasswordInput((e.currentTarget as HTMLInputElement).value);
+                      }}
                     />
                     {#if authMode === 'signup' && !authConfirmPassword}
                       <span
@@ -5027,12 +5426,46 @@
                 </div>
               </div>
             </div>
-            <button
-              type="submit"
-              class="h-11 rounded-xl font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-emerald-600 text-white hover:brightness-110 disabled:opacity-60"
-              disabled={signingIn}>
-              {authMode === 'signup' ? 'CREATE ACCOUNT' : 'SIGN IN'}
-            </button>
+            <div class="auth-submit-crossfade h-11 min-h-11">
+              <button
+                type="submit"
+                class="auth-submit-crossfade__layer auth-submit-btn auth-submit-btn--default h-11 min-h-11 rounded-xl font-black text-[11px] tracking-[0.15em] flex items-center justify-center px-3 text-center leading-snug
+                  {authSubmitBtnLit ? 'auth-submit-crossfade__layer--lit auth-submit-crossfade__layer--interactive' : ''}
+                  {authFeedbackExiting ? 'auth-submit-crossfade__layer--top' : ''}"
+                disabled={signingIn || authFeedbackLit || (!authSubmitReady && !authFeedbackExiting)}
+                aria-hidden={!authSubmitBtnLit}
+                aria-busy={signingIn}
+                aria-label={signingIn ? 'Checking credentials' : authMode === 'signup' ? 'Sign up' : 'Sign in'}
+                tabindex={authSubmitBtnLit ? 0 : -1}
+              >
+                {#if signingIn}
+                  <RefreshCw class="size-4 shrink-0 animate-spin" aria-hidden="true" />
+                {:else}
+                  {authMode === 'signup' ? 'SIGN UP' : 'SIGN IN'}
+                {/if}
+              </button>
+              {#if authCrossfadeShowFeedback}
+                <div
+                  role="status"
+                  aria-live="polite"
+                  class="auth-submit-crossfade__layer auth-submit-btn auth-submit-btn--feedback h-11 min-h-11 rounded-xl font-black text-[11px] tracking-[0.15em] flex items-center justify-center px-3 text-center leading-snug
+                    {authError ? 'auth-submit-btn--error' : 'auth-submit-btn--success'}
+                    {authFeedbackLit ? 'auth-submit-crossfade__layer--lit auth-submit-crossfade__layer--top' : ''}
+                    {authError && authFeedbackLit ? 'auth-submit-btn--error-nudge' : ''}"
+                  title={authError ?? authSuccess ?? undefined}
+                  ontransitionend={onAuthCrossfadeTransitionEnd}
+                >
+                  <span class="auth-submit-btn__feedback flex items-center gap-1.5 min-w-0 max-w-full">
+                    {#if authError}
+                      <CircleAlert class="auth-submit-btn__icon size-3.5 shrink-0" aria-hidden="true" />
+                    {:else}
+                      <CircleCheck class="auth-submit-btn__icon size-3.5 shrink-0" aria-hidden="true" />
+                    {/if}
+                    <span class="line-clamp-2 min-w-0">{authError ?? authSuccess}</span>
+                  </span>
+                </div>
+              {/if}
+            </div>
           </form>
         </div>
       </div>

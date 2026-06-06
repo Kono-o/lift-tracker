@@ -16,6 +16,7 @@ begin;
 -- -----------------------------------------------------------------------------
 drop trigger if exists on_auth_user_username on auth.users;
 
+drop function if exists public.get_own_data_usage() cascade;
 drop function if exists public.delete_own_account() cascade;
 drop function if exists public.register_username(text) cascade;
 drop function if exists public.is_username_available(text) cascade;
@@ -90,7 +91,7 @@ create table public.usernames (
   username text primary key,
   user_id uuid not null unique references auth.users (id) on delete cascade,
   created_at timestamptz not null default now(),
-  constraint usernames_format check (username ~ '^[a-z0-9_-]{3,20}$')
+  constraint usernames_format check (username ~ '^[a-z0-9_-]{3,24}$')
 );
 
 -- -----------------------------------------------------------------------------
@@ -254,7 +255,7 @@ as $$
 declare
   u text := lower(trim(p_username));
 begin
-  if u is null or u = '' or u !~ '^[a-z0-9_-]{3,20}$' then
+  if u is null or u = '' or u !~ '^[a-z0-9_-]{3,24}$' then
     return false;
   end if;
   return not exists (select 1 from public.usernames where username = u);
@@ -277,7 +278,7 @@ begin
   if uid is null then
     raise exception 'Not authenticated';
   end if;
-  if u is null or u = '' or u !~ '^[a-z0-9_-]{3,20}$' then
+  if u is null or u = '' or u !~ '^[a-z0-9_-]{3,24}$' then
     raise exception 'Invalid username';
   end if;
   begin
@@ -307,7 +308,7 @@ declare
   u text;
 begin
   u := lower(trim(coalesce(new.raw_user_meta_data->>'username', '')));
-  if u = '' or u !~ '^[a-z0-9_-]{3,20}$' then
+  if u = '' or u !~ '^[a-z0-9_-]{3,24}$' then
     return new;
   end if;
   begin
@@ -352,6 +353,51 @@ $$;
 
 revoke all on function public.delete_own_account() from public;
 grant execute on function public.delete_own_account() to authenticated;
+
+-- -----------------------------------------------------------------------------
+-- 8. Per-user data usage (status panel)
+-- -----------------------------------------------------------------------------
+create or replace function public.get_own_data_usage()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select jsonb_build_object(
+    'templates',
+      coalesce((select count(*)::int from public.templates where user_id = auth.uid()), 0),
+    'exercises',
+      coalesce((select count(*)::int from public.exercises where user_id = auth.uid()), 0),
+    'schedule',
+      coalesce((select count(*)::int from public.schedule where user_id = auth.uid()), 0),
+    'workout_history',
+      coalesce((select count(*)::int from public.workout_history where user_id = auth.uid()), 0),
+    'estimated_bytes',
+      (
+        coalesce(
+          (select sum(octet_length(row_to_json(t)::text))::bigint from public.templates t where t.user_id = auth.uid()),
+          0
+        )
+        + coalesce(
+          (select sum(octet_length(row_to_json(e)::text))::bigint from public.exercises e where e.user_id = auth.uid()),
+          0
+        )
+        + coalesce(
+          (select sum(octet_length(row_to_json(s)::text))::bigint from public.schedule s where s.user_id = auth.uid()),
+          0
+        )
+        + coalesce(
+          (select sum(octet_length(row_to_json(w)::text))::bigint from public.workout_history w where w.user_id = auth.uid()),
+          0
+        )
+      )
+  )
+  where auth.uid() is not null;
+$$;
+
+revoke all on function public.get_own_data_usage() from public;
+grant execute on function public.get_own_data_usage() to authenticated;
 
 commit;
 

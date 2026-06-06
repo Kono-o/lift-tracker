@@ -12,6 +12,7 @@ import {
 	validateDraftExercises,
 	type DraftExerciseLike,
 } from "./exerciseSanitize";
+import { createDbTrackingFetch, pulseDbActivity } from "./dbActivity";
 
 export const supabase = createClient(
 	PUBLIC_SUPABASE_URL,
@@ -22,6 +23,9 @@ export const supabase = createClient(
 			detectSessionInUrl: true,
 			persistSession: true,
 			autoRefreshToken: true,
+		},
+		global: {
+			fetch: createDbTrackingFetch(),
 		},
 	},
 );
@@ -125,6 +129,25 @@ export function formatAuthError(
 	}
 
 	return raw ?? "Sign-in failed. Please try again.";
+}
+
+export const MAX_PASSWORD_LEN = 24;
+export const MIN_PASSWORD_LEN = 6;
+
+/** Live typing: cap password length. */
+export function sanitizePasswordInput(raw: string): string {
+	return raw.slice(0, MAX_PASSWORD_LEN);
+}
+
+export function validatePassword(raw: string): string | null {
+	const password = sanitizePasswordInput(raw);
+	if (password.length < MIN_PASSWORD_LEN) {
+		return `Password must be at least ${MIN_PASSWORD_LEN} characters.`;
+	}
+	if (password.length > MAX_PASSWORD_LEN) {
+		return `Password must be at most ${MAX_PASSWORD_LEN} characters.`;
+	}
+	return null;
 }
 
 /** Human-readable message for Supabase data API errors (templates, schedule, etc.). */
@@ -248,15 +271,30 @@ const LEGACY_USERNAME_EMAIL_SUFFIXES = [
 	"@user.lifttracker.app",
 ] as const;
 
+export const MAX_USERNAME_LEN = 24;
+export const MIN_USERNAME_LEN = 3;
+const USERNAME_PATTERN = /^[a-z0-9_-]+$/;
+
 export function normalizeUsername(raw: string): string {
 	return raw.trim().toLowerCase();
 }
 
+/** Live typing: lowercase, allowed chars only, max length. */
+export function sanitizeUsernameInput(raw: string): string {
+	return normalizeUsername(raw)
+		.replace(/[^a-z0-9_-]/g, "")
+		.slice(0, MAX_USERNAME_LEN);
+}
+
 export function validateUsername(raw: string): string | null {
-	const username = normalizeUsername(raw);
-	if (username.length < 3) return "Username must be at least 3 characters.";
-	if (username.length > 20) return "Username must be at most 20 characters.";
-	if (!/^[a-z0-9_-]+$/.test(username)) {
+	const username = sanitizeUsernameInput(raw);
+	if (username.length < MIN_USERNAME_LEN) {
+		return `Username must be at least ${MIN_USERNAME_LEN} characters.`;
+	}
+	if (username.length > MAX_USERNAME_LEN) {
+		return `Username must be at most ${MAX_USERNAME_LEN} characters.`;
+	}
+	if (!USERNAME_PATTERN.test(username)) {
 		return "Use only letters, numbers, underscores, and hyphens.";
 	}
 	return null;
@@ -687,6 +725,9 @@ export const db = {
 		const validationError = validateUsername(username);
 		if (validationError) throw new Error(validationError);
 
+		const passwordError = validatePassword(password);
+		if (passwordError) throw new Error(passwordError);
+
 		const normalized = normalizeUsername(username);
 
 		const available = await this.isUsernameAvailable(normalized);
@@ -718,36 +759,63 @@ export const db = {
 		const validationError = validateUsername(username);
 		if (validationError) throw new Error(validationError);
 
-		if (!password) {
-			throw Object.assign(new Error("Invalid login credentials"), {
-				code: "invalid_credentials",
-			});
+		const passwordError = validatePassword(password);
+		if (passwordError) throw new Error(passwordError);
+
+		const normalized = normalizeUsername(username);
+		const primaryEmail = usernameToAuthEmail(normalized);
+		const legacyEmails = legacyUsernameAuthEmails(normalized);
+
+		const primary = await supabase.auth.signInWithPassword({
+			email: primaryEmail,
+			password,
+		});
+		if (!primary.error) return primary.data;
+
+		const primaryCode =
+			primary.error && typeof primary.error === "object" && "code" in primary.error
+				? String(primary.error.code)
+				: "";
+
+		if (
+			primaryCode &&
+			primaryCode !== "invalid_credentials" &&
+			primaryCode !== "user_not_found"
+		) {
+			throw primary.error;
 		}
 
-		const emails = [
-			usernameToAuthEmail(username),
-			...legacyUsernameAuthEmails(username),
-		];
-		let lastError: unknown = null;
-		let sawInvalidCredentials = false;
-
-		for (const email of [...new Set(emails)]) {
-			const { data, error } = await supabase.auth.signInWithPassword({
-				email,
-				password,
-			});
-			if (!error) return data;
-			lastError = error;
-			const code =
-				error && typeof error === "object" && "code" in error
-					? String(error.code)
-					: "";
-			if (code === "invalid_credentials") {
-				sawInvalidCredentials = true;
-				continue;
+		if (legacyEmails.length === 0) {
+			if (primaryCode === "invalid_credentials") {
+				throw Object.assign(new Error("Invalid login credentials"), {
+					code: "invalid_credentials",
+				});
 			}
-			throw error;
+			throw primary.error;
 		}
+
+		const legacyAttempts = await Promise.all(
+			legacyEmails.map(async (email) => {
+				const { data, error } = await supabase.auth.signInWithPassword({
+					email,
+					password,
+				});
+				return { data, error };
+			}),
+		);
+
+		const legacySuccess = legacyAttempts.find((attempt) => !attempt.error);
+		if (legacySuccess) return legacySuccess.data;
+
+		const sawInvalidCredentials =
+			primaryCode === "invalid_credentials" ||
+			legacyAttempts.some(
+				(attempt) =>
+					attempt.error &&
+					typeof attempt.error === "object" &&
+					"code" in attempt.error &&
+					attempt.error.code === "invalid_credentials",
+			);
 
 		if (sawInvalidCredentials) {
 			throw Object.assign(new Error("Invalid login credentials"), {
@@ -755,12 +823,19 @@ export const db = {
 			});
 		}
 
-		throw lastError ?? new Error("Sign-in failed");
+		throw (
+			legacyAttempts.find((attempt) => attempt.error)?.error ??
+			primary.error ??
+			new Error("Sign-in failed")
+		);
 	},
 
 	async signUpWithEmail(email: string, password: string) {
 		const emailErr = validateEmail(email);
 		if (emailErr) throw new Error(emailErr);
+
+		const passwordError = validatePassword(password);
+		if (passwordError) throw new Error(passwordError);
 
 		const trimmed = email.trim();
 		const { data, error } = await supabase.auth.signUp({
@@ -782,6 +857,9 @@ export const db = {
 	async signInWithEmail(email: string, password: string) {
 		const emailErr = validateEmail(email);
 		if (emailErr) throw new Error(emailErr);
+
+		const passwordError = validatePassword(password);
+		if (passwordError) throw new Error(passwordError);
 
 		if (!password) {
 			throw Object.assign(new Error("Invalid login credentials"), {
@@ -889,6 +967,7 @@ export const db = {
 			throw new Error("Not signed in");
 		}
 
+		pulseDbActivity();
 		const res = await fetch("/api/delete-account", {
 			method: "POST",
 			headers: { Authorization: `Bearer ${session.access_token}` },

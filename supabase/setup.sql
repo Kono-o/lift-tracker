@@ -8,7 +8,7 @@ create table if not exists public.usernames (
   username text primary key,
   user_id uuid not null unique references auth.users (id) on delete cascade,
   created_at timestamptz not null default now(),
-  constraint usernames_format check (username ~ '^[a-z0-9_-]{3,20}$')
+  constraint usernames_format check (username ~ '^[a-z0-9_-]{3,24}$')
 );
 
 alter table public.usernames enable row level security;
@@ -23,7 +23,7 @@ as $$
 declare
   u text := lower(trim(p_username));
 begin
-  if u is null or u = '' or u !~ '^[a-z0-9_-]{3,20}$' then
+  if u is null or u = '' or u !~ '^[a-z0-9_-]{3,24}$' then
     return false;
   end if;
   return not exists (select 1 from public.usernames where username = u);
@@ -46,7 +46,7 @@ begin
   if uid is null then
     raise exception 'Not authenticated';
   end if;
-  if u is null or u = '' or u !~ '^[a-z0-9_-]{3,20}$' then
+  if u is null or u = '' or u !~ '^[a-z0-9_-]{3,24}$' then
     raise exception 'Invalid username';
   end if;
   begin
@@ -76,7 +76,7 @@ declare
   u text;
 begin
   u := lower(trim(coalesce(new.raw_user_meta_data->>'username', '')));
-  if u = '' or u !~ '^[a-z0-9_-]{3,20}$' then
+  if u = '' or u !~ '^[a-z0-9_-]{3,24}$' then
     return new;
   end if;
   begin

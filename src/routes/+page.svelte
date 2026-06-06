@@ -169,6 +169,7 @@
   let builderAssignments = $state<Record<number, string | null>>({});
   let builderEditingDay = $state<number>(0);
   let editingRoutineTemplateNameId = $state<string | null>(null);
+  let routineTemplateNameEditOriginal = $state<string | null>(null);
   const routineEditorPendingCreates = new Map<number, Promise<string | null>>();
   let builderAssignedTemplateId = $derived(builderAssignments[builderEditingDay] ?? null);
   let builderDayAssignmentLabel = $derived.by(() => {
@@ -188,6 +189,7 @@
     if (!opts.fromWeeklyPlan && !showHeaderEditActions) return;
     templateError = null;
     editingRoutineTemplateNameId = null;
+    routineTemplateNameEditOriginal = null;
     const newAssignments: Record<number, string | null> = {};
     for (const s of schedule) {
       newAssignments[s.day_of_week] = s.template_id ?? null;
@@ -3113,6 +3115,10 @@
   }
 
   function exitRoutineEditor() {
+    if (editingRoutineTemplateNameId) {
+      const pending = templates.find((t) => t.id === editingRoutineTemplateNameId);
+      if (pending) commitRoutineTemplateNameEdit(pending);
+    }
     const snapshot = { ...builderAssignments };
     const priorAssignments = new Map(
       schedule.map((s) => [s.day_of_week, s.template_id ?? null] as const),
@@ -3122,6 +3128,7 @@
     builderAssignments = {};
     builderEditingDay = 0;
     editingRoutineTemplateNameId = null;
+    routineTemplateNameEditOriginal = null;
     templateError = null;
     void syncRoutineEditorAssignments(snapshot, priorAssignments);
   }
@@ -3536,21 +3543,23 @@
   function beginRoutineTemplateNameEdit(templateId: string) {
     assignTemplateToBuilderDay(templateId);
     editingRoutineTemplateNameId = templateId;
+    const tpl = templates.find((t) => t.id === templateId);
+    routineTemplateNameEditOriginal = tpl
+      ? sanitizeTemplateName((tpl.name ?? '').trim())
+      : null;
   }
 
   function commitRoutineTemplateNameEdit(template: Template) {
+    const originalName = routineTemplateNameEditOriginal;
     editingRoutineTemplateNameId = null;
+    routineTemplateNameEditOriginal = null;
     const trimmed = sanitizeTemplateName((template.name ?? '').trim());
-    if (!trimmed) {
-      template.name = 'WORKOUT';
-      return;
-    }
-    template.name = trimmed;
+    const savedName = trimmed || 'WORKOUT';
+    template.name = savedName;
     if (template.id.startsWith('temp-')) return;
-    const previous = templates.find((t) => t.id === template.id)?.name;
-    if (previous === trimmed) return;
-    patchTemplateInCache(template.id, trimmed, template.exercises);
-    void db.updateTemplateName(template.id, trimmed).catch((e) => {
+    if (originalName === savedName) return;
+    patchTemplateInCache(template.id, savedName, template.exercises);
+    void db.updateTemplateName(template.id, savedName).catch((e) => {
       console.error('Template name save failed', e);
       templateError = 'Could not save template name.';
       void loadData({ preserveSession: true });
@@ -3580,6 +3589,7 @@
   async function deleteTemplateInBuilder(tpl: Template) {
     if (editingRoutineTemplateNameId === tpl.id) {
       editingRoutineTemplateNameId = null;
+      routineTemplateNameEditOriginal = null;
     }
     const deletedId = tpl.id;
     const replacementId = templateIdAfterDeletedTemplate(deletedId);

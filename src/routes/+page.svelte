@@ -217,7 +217,7 @@
     newcomerBootstrapPending = false;
     bootOverlayVisible = false;
     bootOverlayExiting = false;
-    appRevealActive = true;
+    stageRevealActive = true;
   }
 
   let weekCalendarCollapsed = $state(true);
@@ -252,7 +252,7 @@
   let showBootScreen = $derived(isAuthLoading || (currentUser !== null && isLoading));
   let bootOverlayVisible = $state(true);
   let bootOverlayExiting = $state(false);
-  let appRevealActive = $state(false);
+  let stageRevealActive = $state(false);
 
   function onBootOverlayTransitionEnd(e: TransitionEvent) {
     if (e.propertyName !== 'opacity' || !bootOverlayExiting) return;
@@ -264,29 +264,28 @@
     if (showBootScreen) {
       bootOverlayVisible = true;
       bootOverlayExiting = false;
-      appRevealActive = false;
-      return;
-    }
-    if (!currentUser) {
-      bootOverlayVisible = false;
-      bootOverlayExiting = false;
-      appRevealActive = false;
+      stageRevealActive = false;
       return;
     }
     let cancelled = false;
     let fallback: ReturnType<typeof setTimeout> | undefined;
+    stageRevealActive = false;
     void tick().then(() => {
       if (cancelled) return;
       requestAnimationFrame(() => {
         if (cancelled) return;
-        appRevealActive = true;
-        if (!bootOverlayVisible) return;
-        bootOverlayExiting = true;
-        fallback = setTimeout(() => {
-          if (!bootOverlayExiting) return;
+        stageRevealActive = true;
+        if (currentUser && bootOverlayVisible) {
+          bootOverlayExiting = true;
+          fallback = setTimeout(() => {
+            if (!bootOverlayExiting) return;
+            bootOverlayVisible = false;
+            bootOverlayExiting = false;
+          }, 340);
+        } else if (!currentUser) {
           bootOverlayVisible = false;
           bootOverlayExiting = false;
-        }, 340);
+        }
       });
     });
     return () => {
@@ -4097,11 +4096,11 @@
   {/snippet}
 
   <div class="app-stage flex-1 flex flex-col min-h-0 w-full relative">
+  <div
+    class="app-stage-reveal flex flex-col flex-1 min-h-0 w-full gap-3"
+    class:app-stage-reveal--active={stageRevealActive}
+  >
   {#if currentUser}
-    <div
-      class="app-main-reveal flex flex-col gap-3 flex-1 min-h-0 w-full"
-      class:app-main-reveal--active={appRevealActive}
-    >
   <!-- Week box: collapsible header + compact day strip -->
   <div class="rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden">
     <div class="flex items-center gap-2 min-h-8 px-2 py-1.5 border-b border-[#1e1e1e] bg-[#111] text-[10px] tracking-[1px]">
@@ -5259,7 +5258,6 @@
       {/if}
     </div>
   {/if}
-    </div>
   {:else if !bootOverlayVisible}
     <div class="flex flex-1 flex-col items-center justify-center pt-0 pb-10 px-2 gap-6 text-center min-h-0 -translate-y-6">
       <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
@@ -5471,6 +5469,7 @@
       </div>
     </div>
   {/if}
+  </div>
 
   {#if bootOverlayVisible}
     <div
@@ -5484,7 +5483,7 @@
   </div>
 
   <div class="mt-auto pt-5 text-center text-[9px] tracking-[1px] text-zinc-500 shrink-0">
-    © 2026 LIFT TRACKER — All rights reserved. Arya
+    © 2026 LIFT TRACKER — All rights reserved by Arya
   </div>
 
 </div>

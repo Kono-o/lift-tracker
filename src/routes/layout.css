@@ -1404,14 +1404,10 @@ input.prop-num-input::-webkit-outer-spin-button {
 		margin-left: 0.375rem;
 	}
 
-	.app-main-reveal,
+	.app-stage-reveal,
 	.boot-overlay,
 	.auth-confirm-reveal {
 		transition-duration: 0.01ms;
-	}
-
-	.app-main-reveal {
-		transform: none;
 	}
 
 	.auth-confirm-reveal--open {
@@ -1427,18 +1423,14 @@ input.prop-num-input::-webkit-outer-spin-button {
 	position: relative;
 }
 
-.app-main-reveal {
+.app-stage-reveal {
 	opacity: 0;
-	transform: translateY(10px);
 	pointer-events: none;
-	transition:
-		opacity 480ms cubic-bezier(0.22, 1, 0.36, 1) 64ms,
-		transform 480ms cubic-bezier(0.22, 1, 0.36, 1) 64ms;
+	transition: opacity 520ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.app-main-reveal--active {
+.app-stage-reveal--active {
 	opacity: 1;
-	transform: translateY(0);
 	pointer-events: auto;
 }
 

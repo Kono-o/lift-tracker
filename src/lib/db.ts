@@ -3,6 +3,15 @@ import {
 	PUBLIC_SUPABASE_URL,
 	PUBLIC_SUPABASE_ANON_KEY,
 } from "$env/static/public";
+import {
+	sanitizeBaseKg,
+	sanitizeExerciseName,
+	sanitizeTemplateName,
+	sanitizeExerciseRowForDb,
+	validateDraftExercise,
+	validateDraftExercises,
+	type DraftExerciseLike,
+} from "./exerciseSanitize";
 
 export const supabase = createClient(
 	PUBLIC_SUPABASE_URL,
@@ -976,10 +985,11 @@ export const db = {
 
 	async createTemplate(name: string): Promise<Template | null> {
 		const uid = await requireUserId();
+		const safeName = sanitizeTemplateName(name.trim()) || "WORKOUT";
 
 		const { data, error } = await supabase
 			.from("templates")
-			.insert([{ name: name.trim(), user_id: uid }])
+			.insert([{ name: safeName, user_id: uid }])
 			.select()
 			.single();
 
@@ -999,7 +1009,7 @@ export const db = {
 	},
 
 	async updateTemplateName(templateId: string, name: string) {
-		const trimmed = name.trim();
+		const trimmed = sanitizeTemplateName(name.trim());
 		if (!trimmed) return;
 		const { error } = await supabase
 			.from("templates")
@@ -1032,19 +1042,30 @@ export const db = {
 
 		if (exercises.length === 0) return [];
 
-		const rows = exercises.map((d, i) => ({
-			template_id: templateId,
-			user_id: uid,
-			name: (d.name || "Exercise").trim() || "Exercise",
-			exercise_type: d.exercise_type,
-			target_sets: d.target_sets ?? 0,
-			target_reps: d.exercise_type === "reps" ? (d.target_reps ?? 0) : 0,
-			target_minutes: d.exercise_type === "time" ? (d.target_minutes ?? 0) : 0,
-			target_seconds: d.exercise_type === "time" ? (d.target_seconds ?? 0) : 0,
-			increment: d.increment ?? 0,
-			current_weight: d.exercise_type === "reps" ? (d.current_weight ?? null) : null,
-			display_order: i,
-		}));
+		const validationError = validateDraftExercises(
+			exercises as DraftExerciseLike[],
+		);
+		if (validationError) throw new Error(validationError);
+
+		const rows = exercises.map((d, i) => {
+			const safe = sanitizeExerciseRowForDb(d as DraftExerciseLike);
+			return {
+				template_id: templateId,
+				user_id: uid,
+				name: safe.name || "EXERCISE",
+				exercise_type: safe.exercise_type,
+				target_sets: safe.target_sets ?? 0,
+				target_reps: safe.exercise_type === "reps" ? (safe.target_reps ?? 0) : 0,
+				target_minutes:
+					safe.exercise_type === "time" ? (safe.target_minutes ?? 0) : 0,
+				target_seconds:
+					safe.exercise_type === "time" ? (safe.target_seconds ?? 0) : 0,
+				increment: safe.increment ?? 0,
+				current_weight:
+					safe.exercise_type === "reps" ? (safe.current_weight ?? null) : null,
+				display_order: i,
+			};
+		});
 
 		const { data, error: insertErr } = await supabase
 			.from("exercises")
@@ -1082,17 +1103,32 @@ export const db = {
 				? Math.max(...existing.map((e: any) => e.display_order)) + 1
 				: 0;
 
+		const draft: DraftExerciseLike = {
+			name: sanitizeExerciseName(name.trim()) || "EXERCISE",
+			exercise_type: type,
+			target_sets: sets,
+			target_reps: reps,
+			target_minutes: minutes,
+			target_seconds: seconds,
+			increment,
+		};
+		const validationError = validateDraftExercise(draft);
+		if (validationError) throw new Error(validationError);
+		const safe = sanitizeExerciseRowForDb(draft);
+
 		const { error } = await supabase.from("exercises").insert([
 			{
 				template_id: templateId,
 				user_id: uid,
-				name: name.trim(),
-				exercise_type: type,
-				target_sets: sets,
-				target_reps: type === "reps" ? reps : 0,
-				target_minutes: type === "time" ? minutes : 0,
-				target_seconds: type === "time" ? seconds : 0,
-				increment,
+				name: safe.name,
+				exercise_type: safe.exercise_type,
+				target_sets: safe.target_sets ?? 0,
+				target_reps: safe.exercise_type === "reps" ? (safe.target_reps ?? 0) : 0,
+				target_minutes:
+					safe.exercise_type === "time" ? (safe.target_minutes ?? 0) : 0,
+				target_seconds:
+					safe.exercise_type === "time" ? (safe.target_seconds ?? 0) : 0,
+				increment: safe.increment ?? 0,
 				current_weight: null,
 				display_order: nextOrder,
 			},
@@ -1111,6 +1147,7 @@ export const db = {
 	},
 
 	async saveExerciseBaseline(exerciseId: string, initialWeight: number) {
+		initialWeight = sanitizeBaseKg(initialWeight);
 		const { error } = await supabase
 			.from("exercises")
 			.update({ current_weight: initialWeight })
@@ -1233,7 +1270,9 @@ export const db = {
 						increment: ex.increment,
 						weight_before: ex.current_weight,
 						weight_after: success
-							? currentWeight + Number(ex.increment)
+							? sanitizeBaseKg(
+									Number(ex.current_weight ?? 0) + Number(ex.increment),
+								)
 							: ex.current_weight,
 						sets,
 					};
@@ -1313,7 +1352,9 @@ export const db = {
 				}).every(Boolean);
 
 				const nextWeight = success
-					? Number(ex.current_weight ?? 0) + Number(ex.increment)
+					? sanitizeBaseKg(
+							Number(ex.current_weight ?? 0) + Number(ex.increment),
+						)
 					: ex.current_weight;
 
 				return supabase

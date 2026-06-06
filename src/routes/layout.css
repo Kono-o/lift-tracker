@@ -50,6 +50,13 @@
 	--w-skipped-bg: rgb(69 10 10 / 0.35);
 	--w-skipped-border: rgb(127 29 29 / 0.4);
 	--w-skipped-fg: #f87171;
+	/* Opaque skipped surface for set bubbles on colored exercise rows */
+	--w-skipped-bg-solid: #450a0a;
+	--w-skipped-border-solid: #7f1d1d;
+	/* Hold/tap feedback on cancel + erase side CTAs */
+	--w-hold-red-bg: #450a0a;
+	--w-hold-red-border: #ef4444;
+	--w-hold-red-fg: #f87171;
 	--w-neutral-bg: #141414;
 	--w-neutral-border: #1e1e1e;
 	/* Active FINISH / START hold (solid, black text) */
@@ -165,9 +172,9 @@
 
 @keyframes hold-cancel-tap-pulse {
 	0% {
-		background-color: var(--w-skipped-bg);
-		border-color: var(--w-skipped-border);
-		color: var(--w-skipped-fg);
+		background-color: var(--w-hold-red-bg);
+		border-color: var(--w-hold-red-border);
+		color: var(--w-hold-red-fg);
 	}
 	100% {
 		background-color: #0d0d0d;
@@ -184,247 +191,6 @@
 	animation: hold-cancel-tap-pulse 0.5s ease-out forwards;
 }
 
-.cancel-btn-held {
-	background-color: var(--w-skipped-bg) !important;
-	border-color: var(--w-skipped-border) !important;
-	color: var(--w-skipped-fg) !important;
-}
-
-@keyframes hold-start-to-yellow {
-	0% {
-		background-color: #ffffff;
-		color: #000000;
-		border-color: transparent;
-		filter: brightness(1);
-		box-shadow: 0 0 0 0 transparent;
-	}
-	20% {
-		background-color: #ffffff;
-		color: #000000;
-		border-color: transparent;
-		filter: brightness(1.25);
-		box-shadow: 0 0 0 2px rgb(250 250 250 / 0.9);
-	}
-	100% {
-		background-color: var(--w-active-yellow);
-		color: #000000;
-		border-color: var(--w-active-yellow);
-		filter: brightness(1);
-		box-shadow: 0 0 0 0 transparent;
-	}
-}
-
-.hold-start-to-yellow {
-	animation: hold-start-to-yellow 0.7s ease-out forwards;
-	border-width: 2px;
-	border-style: solid;
-}
-
-@keyframes hold-start-to-skipped {
-	0% {
-		background-color: #ffffff;
-		color: #000000;
-		border-color: transparent;
-		filter: brightness(1);
-		box-shadow: 0 0 0 0 transparent;
-	}
-	20% {
-		background-color: #ffffff;
-		color: #000000;
-		border-color: transparent;
-		filter: brightness(1.2);
-		box-shadow: 0 0 0 2px rgb(250 250 250 / 0.85);
-	}
-	100% {
-		background-color: var(--w-skipped-bg);
-		color: var(--w-skipped-fg);
-		border-color: var(--w-skipped-border);
-		filter: brightness(1);
-		box-shadow: 0 0 0 0 transparent;
-	}
-}
-
-@keyframes hold-skip-side-to-erase {
-	0% {
-		background-color: #0d0d0d;
-		color: var(--w-yellow-fg);
-		border-color: var(--w-yellow-border);
-	}
-	25% {
-		background-color: var(--w-yellow-bg);
-		color: var(--w-yellow-fg);
-		border-color: var(--w-yellow-border);
-	}
-	100% {
-		background-color: #0d0d0d;
-		color: #71717a;
-		border-color: #1e1e1e;
-	}
-}
-
-.hold-start-to-skipped {
-	animation: hold-start-to-skipped 0.7s ease-out forwards;
-	border-width: 2px;
-	border-style: solid;
-}
-
-.hold-skip-side-to-erase {
-	animation: hold-skip-side-to-erase 0.7s ease-out forwards;
-}
-
-@keyframes hold-complete-green-to-start {
-	0% {
-		background-color: var(--w-green-bg);
-		color: var(--w-green-fg);
-		border-color: var(--w-green-border);
-	}
-	100% {
-		background-color: #ffffff;
-		color: #000000;
-		border-color: transparent;
-	}
-}
-
-@keyframes hold-complete-yellow-to-start {
-	0% {
-		background-color: var(--w-yellow-bg);
-		color: var(--w-yellow-fg);
-		border-color: var(--w-yellow-border);
-	}
-	100% {
-		background-color: #ffffff;
-		color: #000000;
-		border-color: transparent;
-	}
-}
-
-@keyframes hold-skipped-to-start {
-	0% {
-		background-color: var(--w-skipped-bg);
-		color: var(--w-skipped-fg);
-		border-color: var(--w-skipped-border);
-	}
-	100% {
-		background-color: #ffffff;
-		color: #000000;
-		border-color: transparent;
-	}
-}
-
-@keyframes hold-erase-to-skip {
-	0% {
-		background-color: var(--w-skipped-bg);
-		color: var(--w-skipped-fg);
-		border-color: var(--w-skipped-border);
-	}
-	25% {
-		background-color: #0d0d0d;
-		color: #71717a;
-		border-color: #1e1e1e;
-	}
-	100% {
-		background-color: #0d0d0d;
-		color: #71717a;
-		border-color: #1e1e1e;
-	}
-}
-
-@keyframes hold-active-finish-green-to-start {
-	0% {
-		background-color: var(--w-active-green);
-		color: #000000;
-		border-color: var(--w-active-green);
-	}
-	100% {
-		background-color: #ffffff;
-		color: #000000;
-		border-color: transparent;
-	}
-}
-
-@keyframes hold-active-finish-yellow-to-start {
-	0% {
-		background-color: var(--w-active-yellow);
-		color: #000000;
-		border-color: var(--w-active-yellow);
-	}
-	100% {
-		background-color: #ffffff;
-		color: #000000;
-		border-color: transparent;
-	}
-}
-
-@keyframes hold-cancel-to-skip {
-	0% {
-		background-color: var(--w-skipped-bg);
-		color: var(--w-skipped-fg);
-		border-color: var(--w-skipped-border);
-	}
-	25% {
-		background-color: #0d0d0d;
-		color: #71717a;
-		border-color: #1e1e1e;
-	}
-	100% {
-		background-color: #0d0d0d;
-		color: #71717a;
-		border-color: #1e1e1e;
-	}
-}
-
-.hold-complete-green-to-start,
-.hold-complete-yellow-to-start,
-.hold-skipped-to-start,
-.hold-erase-to-skip,
-.hold-active-finish-green-to-start,
-.hold-active-finish-yellow-to-start,
-.hold-cancel-to-skip,
-.hold-start-to-skipped,
-.hold-skip-side-to-erase {
-	animation-duration: 0.7s;
-	animation-timing-function: ease-out;
-	animation-fill-mode: forwards;
-}
-
-.hold-complete-green-to-start {
-	animation-name: hold-complete-green-to-start;
-	border-width: 2px;
-	border-style: solid;
-}
-
-.hold-complete-yellow-to-start {
-	animation-name: hold-complete-yellow-to-start;
-	border-width: 2px;
-	border-style: solid;
-}
-
-.hold-skipped-to-start {
-	animation-name: hold-skipped-to-start;
-	border-width: 2px;
-	border-style: solid;
-}
-
-.hold-erase-to-skip {
-	animation-name: hold-erase-to-skip;
-}
-
-.hold-active-finish-green-to-start {
-	animation-name: hold-active-finish-green-to-start;
-	border-width: 2px;
-	border-style: solid;
-}
-
-.hold-active-finish-yellow-to-start {
-	animation-name: hold-active-finish-yellow-to-start;
-	border-width: 2px;
-	border-style: solid;
-}
-
-.hold-cancel-to-skip {
-	animation-name: hold-cancel-to-skip;
-}
-
 .workout-cta-center,
 .workout-cta-side {
 	font-size: 11px;
@@ -433,7 +199,6 @@
 	line-height: 1.25;
 }
 
-/* Label width follows --cta-ch (interpolated during glitch transitions) */
 .workout-cta-label {
 	display: inline-flex;
 	align-items: center;
@@ -449,10 +214,6 @@
 	line-height: 1.25;
 	white-space: nowrap;
 	margin-right: -0.15em;
-	transition:
-		width 0.06s linear,
-		min-width 0.06s linear,
-		max-width 0.06s linear;
 }
 
 .workout-cta-label-side {
@@ -470,6 +231,17 @@
 .font-timer.text-2xl,
 input.font-timer {
 	font-weight: 400;
+}
+
+/* Template editor property fields — no browser stepper arrows */
+input.prop-num-input {
+	-moz-appearance: textfield;
+	appearance: textfield;
+}
+input.prop-num-input::-webkit-inner-spin-button,
+input.prop-num-input::-webkit-outer-spin-button {
+	-webkit-appearance: none;
+	margin: 0;
 }
 
 .ex-time-digit {
@@ -496,50 +268,6 @@ input.font-timer {
 	display: inline-block;
 	min-width: 8ch;
 	text-align: right;
-}
-
-/* Status surfaces — color transitions (cancel/erase lerps after scramble) */
-.status-surface {
-	transition:
-		background-color 0.38s ease,
-		border-color 0.38s ease,
-		color 0.32s ease;
-}
-
-.status-surface--prompt {
-	transition:
-		background-color 0.22s ease,
-		border-color 0.22s ease,
-		color 0.18s ease;
-}
-
-.workout-surface-revert-wrap--locked .status-surface,
-.workout-surface-revert-wrap--locked .tpl-progress-seg,
-.workout-surface-revert-wrap--locked .tpl-workout-timer {
-	transition: none !important;
-}
-
-.workout-surface-revert-wrap--lerp .status-surface {
-	transition:
-		background-color 0.4s ease,
-		border-color 0.4s ease,
-		color 0.4s ease;
-}
-
-.tpl-progress-seg {
-	transition: background-color 0.42s ease;
-}
-
-.workout-cta-text-fade {
-	transition: opacity 0.22s ease;
-}
-
-.workout-cta-text-fade--no-width {
-	transition:
-		opacity 0.22s ease,
-		width 0s,
-		min-width 0s,
-		max-width 0s;
 }
 
 .status-surface--neutral {
@@ -594,6 +322,12 @@ input.font-timer {
 	color: #000000;
 }
 
+.w-cta-finish {
+	background-color: var(--w-yellow-bg);
+	border-color: var(--w-yellow-border);
+	color: var(--w-yellow-fg);
+}
+
 .w-cal-green {
 	background-color: var(--w-green-bg) !important;
 	color: var(--w-green-fg) !important;
@@ -642,16 +376,6 @@ input.font-timer {
 
 .w-bg-green {
 	background-color: var(--w-green-bg);
-}
-
-.w-hold-skip-active {
-	border-color: var(--w-yellow-border);
-	color: var(--w-yellow-fg);
-}
-
-.w-hold-erase-active {
-	border-color: var(--w-skipped-border);
-	color: var(--w-skipped-fg);
 }
 
 .workout-label-row {
@@ -772,10 +496,7 @@ input.font-timer {
 .tpl-workout-timer--skipped {
 	transition:
 		opacity 0.45s ease,
-		visibility 0s linear 0.45s,
-		background-color 0.42s ease,
-		border-color 0.42s ease,
-		color 0.42s ease;
+		visibility 0s linear 0.45s;
 }
 
 .tpl-workout-timer--visible.tpl-workout-timer--green,
@@ -783,10 +504,7 @@ input.font-timer {
 .tpl-workout-timer--visible.tpl-workout-timer--skipped {
 	transition:
 		opacity 0.45s ease,
-		visibility 0s linear 0s,
-		background-color 0.42s ease,
-		border-color 0.42s ease,
-		color 0.42s ease;
+		visibility 0s linear 0s;
 }
 
 .tpl-workout-timer--green {
@@ -887,10 +605,6 @@ input.font-timer {
 
 .tpl-progress-seg {
 	background-color: color-mix(in srgb, #fff 6%, var(--w-neutral-bg));
-}
-
-.tpl-progress-seg--lit {
-	transition: background-color 0.42s ease;
 }
 
 .tpl-header.status-surface--green .tpl-progress-seg:not(.tpl-progress-seg--lit) {
@@ -1012,7 +726,6 @@ input.font-timer {
 	aspect-ratio: 1;
 	border-radius: 1px;
 	background-color: #1a1a1a;
-	transition: background-color 0.22s ease;
 }
 
 .timer-progress-cube--lit {
@@ -1049,9 +762,9 @@ input.font-timer {
 }
 
 .set-bubble--empty.status-surface--skipped {
-	background-color: var(--w-skipped-bg);
+	background-color: var(--w-skipped-bg-solid);
 	border-style: solid !important;
-	border-color: var(--w-skipped-border) !important;
+	border-color: var(--w-skipped-border-solid) !important;
 	color: var(--w-skipped-fg);
 }
 
@@ -1172,6 +885,30 @@ input.font-timer {
 	animation-delay: calc(var(--week-day-stagger) * 0);
 }
 
+.auth-confirm-reveal {
+	display: grid;
+	grid-template-rows: 0fr;
+	margin-top: 0;
+	opacity: 0;
+	pointer-events: none;
+	transition:
+		grid-template-rows 300ms cubic-bezier(0.22, 1, 0.36, 1),
+		margin-top 300ms cubic-bezier(0.22, 1, 0.36, 1),
+		opacity 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.auth-confirm-reveal--open {
+	grid-template-rows: 1fr;
+	margin-top: 0.625rem;
+	opacity: 1;
+	pointer-events: auto;
+}
+
+.auth-confirm-reveal__inner {
+	overflow: hidden;
+	min-height: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
 	.week-calendar-panel {
 		transition-duration: 0.01ms;
@@ -1183,19 +920,13 @@ input.font-timer {
 	}
 
 	.status-surface,
-	.workout-surface-revert-wrap,
-	.workout-surface-revert-wrap--locked .status-surface,
 	.tpl-workout-timer,
 	.tpl-progress-seg,
 	.timer-progress-cube,
 	.set-bubble-hold-fill,
 	.workout-complete-tick,
 	.workout-tick-slot,
-	.workout-cta-label,
-	.hold-complete-green-to-start,
-	.hold-complete-yellow-to-start,
-	.hold-skipped-to-start,
-	.hold-erase-to-skip {
+	.workout-cta-label {
 		transition-duration: 0.01ms;
 		animation: none;
 	}
@@ -1208,7 +939,8 @@ input.font-timer {
 	}
 
 	.app-main-reveal,
-	.boot-overlay {
+	.boot-overlay,
+	.auth-confirm-reveal {
 		transition-duration: 0.01ms;
 	}
 
@@ -1216,10 +948,12 @@ input.font-timer {
 		transform: none;
 	}
 
-	.header-edit-actions-reveal {
-		animation: none;
+	.auth-confirm-reveal--open {
+		grid-template-rows: 1fr;
+		margin-top: 0.625rem;
 		opacity: 1;
 	}
+
 }
 
 /* Boot → main crossfade (main mounts under overlay so both can animate) */
@@ -1260,18 +994,6 @@ input.font-timer {
 	pointer-events: none;
 }
 
-@keyframes header-edit-actions-in {
-	from {
-		opacity: 0;
-	}
-	to {
-		opacity: 1;
-	}
-}
 
-.header-edit-actions-reveal {
-	opacity: 0;
-	animation: header-edit-actions-in 700ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
-}
 
 

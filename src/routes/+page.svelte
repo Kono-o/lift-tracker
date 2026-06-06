@@ -1,9 +1,23 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
-  import { slide } from 'svelte/transition';
-  import { cubicOut } from 'svelte/easing';
   import { PUBLIC_SUPABASE_URL } from '$env/static/public';
   import { db, supabase, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isUsernameAccount, isWorkoutInProgress, validateEmail, validateUsername, type Template, type Exercise, type WorkoutHistory } from '$lib/db';
+  import {
+    clampTrackedRepsFieldInput,
+    clampBaseKgFieldInput,
+    formatOneDecimal,
+    sanitizeTemplateName,
+    validateDraftExercises,
+    normalizeDraftExercise,
+    DEFAULT_INCREMENT_SEC,
+    DEFAULT_TARGET_MINUTES,
+    syncClampedInput,
+  } from '$lib/exerciseSanitize';
+  import {
+    clampedNumericProp,
+    clampedTemplateNameProp,
+    clampedExerciseNameProp,
+  } from '$lib/clampedInputs';
   import {
     ArrowLeft,
     Bed,
@@ -158,10 +172,9 @@
   let weekCalendarClosing = $state(false);
   const WEEK_CALENDAR_MS = 260;
 
-  function toggleWeekCalendar() {
+  function collapseWeekCalendar() {
     if (weekCalendarCollapsed) {
       weekCalendarClosing = false;
-      weekCalendarCollapsed = false;
       return;
     }
     weekCalendarClosing = true;
@@ -169,6 +182,16 @@
     setTimeout(() => {
       weekCalendarClosing = false;
     }, WEEK_CALENDAR_MS);
+  }
+
+  function toggleWeekCalendar() {
+    if (workoutState === 'active') return;
+    if (weekCalendarCollapsed) {
+      weekCalendarClosing = false;
+      weekCalendarCollapsed = false;
+      return;
+    }
+    collapseWeekCalendar();
   }
 
   // Auth state (powered by new db.ts + Supabase OAuth Google/GitHub)
@@ -255,33 +278,26 @@
     return '?';
   });
   let workoutState = $state<'idle' | 'active' | 'done' | 'skipped'>('idle');
+  let weekCalendarLocked = $derived(workoutState === 'active');
+  let weekCalendarDisplayCollapsed = $derived(
+    weekCalendarLocked || weekCalendarCollapsed,
+  );
 
-  /** Bumps invalidate pending rAF tap-flashes when CTA buttons unmount mid-animation. */
-  let tapPulseGen = { skip: 0, cancel: 0, erase: 0 };
+  $effect(() => {
+    if (workoutState === 'active') {
+      collapseWeekCalendar();
+    }
+  });
 
   $effect(() => {
     if (workoutState !== 'idle') {
-      tapPulseGen.skip++;
-      skipTapPulseActive = false;
       stopSkipHold();
-      cancelStartWorkoutAnim();
     } else {
-      tapPulseGen.skip++;
-      skipTapPulseActive = false;
       stopSkipHold();
-      tapPulseGen.erase++;
-      eraseTapPulseActive = false;
       stopEraseHold();
     }
     if (workoutState !== 'active') {
-      tapPulseGen.cancel++;
-      cancelTapPulseActive = false;
       stopCancelHold();
-      stopFinishHold();
-      stopWorkoutRevert();
-    }
-    if (workoutState === 'idle') {
-      clearFinishCenterFade();
     }
   });
   /** Template locked in when START is pressed (finish uses this even if schedule changes). */
@@ -394,57 +410,34 @@
   let isPerfectDay = $derived(setCounts.total > 0 && setCounts.green === setCounts.total);
 
   function isSkippedWorkoutView(): boolean {
-    const snap = workoutDisplaySnapshot();
-    if (snap) return snap.surfaceMode === 'skipped';
-    if (workoutRevert?.frozenHeaderSurface === 'skipped') return true;
     if (isViewingToday) {
+      if (workoutState === 'idle') return false;
       return workoutState === 'skipped' || (!!todayLog && logIsSkipped(todayLog));
     }
     return logIsSkipped(viewedLog);
   }
 
-  function workoutDisplaySnapshot(): WorkoutDisplaySnapshot | null {
-    return workoutRevert?.snapshot ?? null;
-  }
-
   function displayTrackedReps(): Record<string, number> {
-    const snap = workoutDisplaySnapshot();
-    if (snap) return snap.trackedReps;
-    if (workoutRevert?.frozenTrackedReps) return workoutRevert.frozenTrackedReps;
     return trackedReps;
   }
 
   function displayCompletedTimers(): Record<string, { result: string; met: boolean }> {
-    const snap = workoutDisplaySnapshot();
-    if (snap) return snap.completedTimers;
-    if (workoutRevert?.frozenCompletedTimers) return workoutRevert.frozenCompletedTimers;
     return completedTimers;
   }
 
-  /** Live completion for badges/meta (not the color-lerp paint frame). */
   let headerCompletionDisplay = $derived.by((): HeaderCompletionStatus => {
-    const snap = workoutDisplaySnapshot();
-    if (snap) return snap.completion;
-    if (workoutRevert?.phase === 'color-lerp' && workoutRevert.lerpStarted) return 'neutral';
     if (isViewingToday) {
       return (justFinishedStatus ?? todayCompletionStatus) as HeaderCompletionStatus;
     }
     return viewedCompletionStatus as HeaderCompletionStatus;
   });
 
-  /** Frozen tick/badge completion during color-lerp (not surface color). */
   function headerOutcomeCompletion(): HeaderCompletionStatus {
-    const snap = workoutDisplaySnapshot();
-    if (snap) return snap.completion;
-    if (workoutRevert?.frozenCompletion) return workoutRevert.frozenCompletion;
     return headerCompletionDisplay;
   }
 
   let isUntouchedDay = $derived.by(() => {
     if (isSkippedWorkoutView()) return true;
-    const snap = workoutDisplaySnapshot();
-    if (snap?.completion === 'untouched') return true;
-    if (workoutRevert?.frozenCompletion === 'untouched') return true;
     if (!isCompletedWorkoutView()) return false;
     return headerOutcomeCompletion() === 'untouched';
   });
@@ -456,10 +449,7 @@
   });
 
   let progressBarColor = $derived.by(() => {
-    const barStatus =
-      workoutState === 'active'
-        ? sessionStatus
-        : (workoutRevert?.frozenHeaderSurface ?? headerSurfaceStatus);
+    const barStatus = workoutState === 'active' ? sessionStatus : headerSurfaceStatus;
     if (barStatus === 'green') return 'var(--w-green-fg)';
     if (barStatus === 'yellow') return 'var(--w-yellow-fg)';
     if (barStatus === 'skipped') return 'var(--w-skipped-fg)';
@@ -471,7 +461,8 @@
   }
 
   let todayCompletionStatus = $derived.by(() => {
-    if (workoutState === 'skipped' || skipRevertAnimating) return 'skipped';
+    if (workoutState === 'idle') return 'neutral';
+    if (workoutState === 'skipped') return 'skipped';
     if (finishSyncPending && justFinishedStatus) return justFinishedStatus;
     if (workoutState === 'active' && isWorkoutInProgress(todayLog)) return 'neutral';
     if (!todayLog) return 'neutral';
@@ -512,11 +503,12 @@
   let cancelHoldTimer: any = null;
   let cancelProgress = $state(0);
   let cancelTapPulseActive = $state(false);
-  let eraseTapPulseActive = $state(false);
+
   let deleteTemplateHoldTimer: any = null;
   let deleteTemplateProgress = $state(0);
   let eraseHoldTimer: any = null;
   let eraseProgress = $state(0);
+  let eraseTapPulseActive = $state(false);
   let signOutHoldTimer: ReturnType<typeof setInterval> | null = null;
   let signOutProgress = $state(0);
   let signOutTapPulseActive = $state(false);
@@ -524,7 +516,7 @@
   let deleteAccountProgress = $state(0);
   let deleteAccountTapPulseActive = $state(false);
   const HOLD_CONFIRM_MS = 1000;
-  const FAST_HOLD_CONFIRM_MS = 500;
+
   const REP_SET_HOLD_MS = 250;
   const ACTIVE_SESSION_STORAGE_KEY = 'lift-tracker:active-session';
   const WORKOUT_PROGRESS_SAVE_MS = 450;
@@ -537,9 +529,6 @@
   let finishSyncPending = $state(false);
   const SIGN_OUT_HOLD_MS = 3000;
   const DELETE_ACCOUNT_HOLD_MS = 5000;
-  const START_WORKOUT_ANIM_MS = 700;
-  const WORKOUT_REVERT_COLOR_MS = 400;
-  const FINISH_CTA_FADE_MS = 220;
   const START_CTA_SOURCE = 'START WORKOUT';
   const START_CTA_TARGET = 'FINISH WORKOUT';
   const SKIP_CTA_SOURCE = 'SKIP';
@@ -557,155 +546,18 @@
     'workout-cta-label workout-cta-label-side relative z-10 transition-[letter-spacing] group-hover:tracking-[0.2em]';
   const CENTER_CTA_MAX_CH = 16;
   const SIDE_CTA_MAX_CH = 6;
-  const START_CTA_SCRAMBLE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-
   function ctaChStyle(text: string, maxCh: number): string {
     const ch = Math.min(Math.max(text.length, 1), maxCh);
     return `--cta-ch:${ch};--cta-ch-side-max:${maxCh}`;
   }
 
-  /** Character count eases from source length → target length over the glitch. */
-  function ctaLengthAt(progress: number, source: string, target: string): number {
-    const p = Math.min(Math.max(progress, 0), 1);
-    if (p >= 1) return target.length;
-    if (p <= 0) return source.length;
-    return Math.max(1, Math.round(source.length + (target.length - source.length) * p));
-  }
-
-  function mixRgb(
-    t: number,
-    from: [number, number, number],
-    to: [number, number, number],
-  ): string {
-    const r = Math.round(from[0] + (to[0] - from[0]) * t);
-    const g = Math.round(from[1] + (to[1] - from[1]) * t);
-    const b = Math.round(from[2] + (to[2] - from[2]) * t);
-    return `rgb(${r}, ${g}, ${b})`;
-  }
-
-  /** Hold-to-confirm: fade from normal fill to inverted (dark fill + light text + border). */
-  function holdInvertButtonStyle(
-    t: number,
-    normalBg: [number, number, number],
-    normalFg: [number, number, number],
-    invertedBg: [number, number, number],
-    invertedFg: [number, number, number],
-    borderRgb: [number, number, number],
-  ): string {
-    const p = Math.min(Math.max(t, 0), 1);
-    const bg = mixRgb(p, normalBg, invertedBg);
-    const fg = mixRgb(p, normalFg, invertedFg);
-    const border =
-      p > 0
-        ? `2px solid rgba(${borderRgb[0]}, ${borderRgb[1]}, ${borderRgb[2]}, ${p})`
-        : '2px solid transparent';
-    return `background-color: ${bg}; color: ${fg}; border: ${border};`;
-  }
-
-  let startWorkoutAnimating = $state(false);
-  let startWorkoutAnimTimer: ReturnType<typeof setTimeout> | null = null;
-  let startCtaScrambleRaf = 0;
-  let startCtaLabel = $state(START_CTA_SOURCE);
-  let sideCtaLabel = $state(SKIP_CTA_SOURCE);
   type HeaderSurfaceStatus = 'green' | 'yellow' | 'skipped' | 'neutral';
   type HeaderCompletionStatus = 'green' | 'yellow' | 'untouched' | 'neutral' | 'skipped';
-  type WorkoutRevertKind = 'cancel' | 'erase';
-  type WorkoutRevertPhase = 'scramble' | 'color-lerp';
-  type WorkoutDisplaySnapshot = {
-    headerSurface: HeaderSurfaceStatus;
-    completion: HeaderCompletionStatus;
-    trackedReps: Record<string, number>;
-    completedTimers: Record<string, { result: string; met: boolean }>;
-    surfaceMode: 'active' | 'done' | 'skipped';
-    cancelWasPerfect: boolean;
-    setCounts: { total: number; done: number; green: number };
-  };
-  type WorkoutRevertState = {
-    kind: WorkoutRevertKind;
-    phase: WorkoutRevertPhase;
-    /** False on first color-lerp frame (hold workout hues), then true to lerp surfaces + CTA together. */
-    lerpStarted: boolean;
-    snapshot: WorkoutDisplaySnapshot | null;
-    frozenSetCounts: { total: number; done: number; green: number } | null;
-    frozenHeaderSurface: HeaderSurfaceStatus | null;
-    frozenCompletion: HeaderCompletionStatus | null;
-    frozenTrackedReps: Record<string, number> | null;
-    frozenCompletedTimers: Record<string, { result: string; met: boolean }> | null;
-    centerLabel: string;
-    sideLabel: string;
-  };
-  let workoutRevert = $state<WorkoutRevertState | null>(null);
-  let workoutRevertScrambleRaf = 0;
-  let workoutRevertRunId = 0;
-  let workoutRevertActive = $derived(workoutRevert !== null);
   let headerTimerInDom = $state(false);
   let headerTimerOpaque = $state(false);
   let headerTimerFadeTimer: ReturnType<typeof setTimeout> | null = null;
   /** Duration captured at finish — keeps header timer stable until todayLog reloads. */
   let finishedHeaderDuration = $state(0);
-  let skipRevertAnimating = $state(false);
-  let skipRevertAnimTimer: ReturnType<typeof setTimeout> | null = null;
-  let skipRevertScrambleRaf = 0;
-  let skipRevertCenterLabel = $state(START_CTA_SOURCE);
-  let skipRevertSideLabel = $state(SKIP_CTA_SOURCE);
-  let finishHoldTimer: ReturnType<typeof setInterval> | null = null;
-  let finishHoldProgress = $state(0);
-  let finishCenterFading = $state(false);
-  let finishCenterLabel = $state(START_CTA_TARGET);
-  let finishCenterOpacity = $state(1);
-  let finishFadeWasPerfect = $state(false);
-  let finishFadeTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function clearFinishCenterFade() {
-    if (finishFadeTimer) clearTimeout(finishFadeTimer);
-    finishFadeTimer = null;
-    finishCenterFading = false;
-    finishCenterLabel = START_CTA_TARGET;
-    finishCenterOpacity = 1;
-    finishFadeWasPerfect = false;
-  }
-
-  function startFinishCenterFade() {
-    if (finishFadeTimer) clearTimeout(finishFadeTimer);
-    finishCenterFading = true;
-    finishCenterLabel = START_CTA_TARGET;
-    finishCenterOpacity = 1;
-    void tick().then(() =>
-      tick().then(() => {
-        finishCenterOpacity = 0;
-        finishFadeTimer = setTimeout(() => {
-          finishCenterLabel = COMPLETE_CTA_SOURCE;
-          void tick().then(() => {
-            finishCenterOpacity = 1;
-            finishFadeTimer = setTimeout(() => {
-              finishFadeTimer = null;
-              finishCenterFading = false;
-            }, FINISH_CTA_FADE_MS);
-          });
-        }, FINISH_CTA_FADE_MS);
-      }),
-    );
-  }
-
-  const finishHoldButtonStyle = $derived(
-    isPerfectDay
-      ? holdInvertButtonStyle(
-          finishHoldProgress / 100,
-          [74, 222, 128],
-          [0, 0, 0],
-          [20, 83, 45],
-          [74, 222, 128],
-          [74, 222, 128],
-        )
-      : holdInvertButtonStyle(
-          finishHoldProgress / 100,
-          [251, 191, 36],
-          [0, 0, 0],
-          [63, 42, 0],
-          [251, 191, 36],
-          [251, 191, 36],
-        ),
-  );
 
   // Form fields for creation/editing
   let newTemplateName = $state('');
@@ -735,14 +587,10 @@
   let workoutExercisesEditable = $derived(
     isViewingToday && workoutState === 'active' && !isFuture,
   );
-  let headerEditActionsFading = $derived(
-    finishSyncPending || finishCenterFading || startWorkoutAnimating,
-  );
   let showHeaderEditActions = $derived.by(() => {
     if (!isViewingToday || selectedDateStr < REAL_TODAY_STR) return false;
-    if (workoutRevertActive) return false;
-    if (workoutState === 'skipped') return false;
-    if (workoutState === 'done') return !finishCenterFading;
+    if (workoutState === 'skipped' || workoutState === 'done') return false;
+    if (finishSyncPending) return false;
     return workoutState === 'idle';
   });
   let currentWeekDates = $derived.by(() => {
@@ -788,18 +636,29 @@
     return `${DAY_NAMES[selectedWeekday].toUpperCase()}'S WORKOUT`;
   });
 
-  let viewedCompletionStatus = $derived.by(() => {
-    const log = viewedLog;
+  let viewedCompletionStatus = $derived.by(() =>
+    completionStatusForLog(viewedLog),
+  );
+
+  type DayCalendarStatus = 'green' | 'yellow' | 'neutral' | 'untouched' | 'skipped';
+
+  /** Per-day status for week strip (never reuse the selected day's status on other cells). */
+  function completionStatusForLog(log: any | null | undefined): DayCalendarStatus {
     if (!log) return 'neutral';
     if (logIsSkipped(log)) return 'skipped';
     if (log.workout_snapshot?.is_rest) return 'neutral';
-    return completionStatusFromSnapshot(log.workout_snapshot);
-  });
+    if (isWorkoutInProgress(log)) return 'neutral';
+    const status = completionStatusFromSnapshot(log.workout_snapshot);
+    if (status === 'untouched') return 'untouched';
+    return status === 'neutral' ? 'yellow' : status;
+  }
 
-  function captureActiveSessionHeaderSurface(): HeaderSurfaceStatus {
-    if (isPerfectDay) return 'green';
-    if (setCounts.done > 0) return 'yellow';
-    return 'neutral';
+  function dayCalendarCompletionStatus(
+    dayLog: any | null | undefined,
+    isRealToday: boolean,
+  ): DayCalendarStatus {
+    if (isRealToday) return todayCompletionStatus as DayCalendarStatus;
+    return completionStatusForLog(dayLog);
   }
 
   function completionToHeaderSurface(completion: HeaderCompletionStatus): HeaderSurfaceStatus {
@@ -809,92 +668,49 @@
     return 'neutral';
   }
 
-  function captureCompletedHeaderSurface(): HeaderSurfaceStatus {
-    const completion = (
-      isViewingToday
-        ? (justFinishedStatus ?? todayCompletionStatus)
-        : viewedCompletionStatus
-    ) as HeaderCompletionStatus;
-    return completionToHeaderSurface(completion);
-  }
-
-  function captureWorkoutDisplaySnapshot(
-    surfaceMode: 'active' | 'done' | 'skipped',
-  ): WorkoutDisplaySnapshot {
-    let tracked = { ...trackedReps };
-    let times = { ...completedTimers };
-    if (surfaceMode !== 'active' && isViewingToday) {
-      const template = activeWorkoutTemplate ?? activeTemplate;
-      const log = todayLogForDisplay() ?? todayLog;
-      if (template && log) {
-        const hydrated = hydrateTrackingFromLog(log, template);
-        tracked = hydrated.reps;
-        times = hydrated.times;
+  function exerciseStatusFromTracking(
+    exercise: Exercise,
+    repsMap: Record<string, number>,
+    timersMap: Record<string, { result: string; met: boolean }>,
+  ): 'green' | 'yellow' | 'neutral' {
+    if (exercise.exercise_type === 'time') {
+      let loggedSetsCount = 0;
+      let allMet = true;
+      for (let s = 0; s < exercise.target_sets; s++) {
+        const t = timersMap[`${exercise.id}-${s}`];
+        if (t !== undefined && t !== null) {
+          loggedSetsCount++;
+          if (!t.met) allMet = false;
+        } else {
+          allMet = false;
+        }
       }
-    }
-    const completion = (
-      surfaceMode === 'active'
-        ? 'neutral'
-        : isViewingToday
-          ? (justFinishedStatus ?? todayCompletionStatus)
-          : viewedCompletionStatus
-    ) as HeaderCompletionStatus;
-    const headerSurface =
-      surfaceMode === 'active'
-        ? captureActiveSessionHeaderSurface()
-        : completionToHeaderSurface(completion);
-    return {
-      headerSurface,
-      completion,
-      trackedReps: tracked,
-      completedTimers: times,
-      surfaceMode,
-      cancelWasPerfect: isPerfectDay,
-      setCounts: { total: setCounts.total, done: setCounts.done, green: setCounts.green },
-    };
-  }
-
-  function revertCenterCtaHoldClass(
-    kind: WorkoutRevertKind,
-    surface: HeaderSurfaceStatus,
-    cancelWasPerfect: boolean,
-  ): string {
-    if (kind === 'cancel') {
-      return cancelWasPerfect ? 'w-cta-active-green' : 'w-cta-active-yellow';
-    }
-    if (surface === 'skipped') return 'w-cta-skipped';
-    if (surface === 'yellow') return 'w-cta-complete-yellow';
-    if (surface === 'green') return 'w-cta-complete-green';
-    return 'w-cta-skipped';
-  }
-
-  /** Template header/exercise chrome — decoupled from todayLog during erase lerp. */
-  let displayHeaderSurface = $derived.by((): HeaderSurfaceStatus => {
-    const rev = workoutRevert;
-    if (rev?.phase === 'color-lerp') {
-      if (!rev.lerpStarted && rev.frozenHeaderSurface) return rev.frozenHeaderSurface;
+      if (loggedSetsCount === exercise.target_sets && allMet) return 'green';
+      if (loggedSetsCount > 0) return 'yellow';
       return 'neutral';
     }
-    const snap = workoutDisplaySnapshot();
-    if (snap) return snap.headerSurface;
-    return headerSurfaceStatus;
-  });
 
-  function revertProgressCounts(): { total: number; done: number; green: number } {
-    const snap = workoutDisplaySnapshot();
-    if (snap) return snap.setCounts;
-    if (workoutRevert?.frozenSetCounts) return workoutRevert.frozenSetCounts;
-    return setCounts;
+    let loggedSetsCount = 0;
+    let allRepsMetTarget = true;
+    for (let s = 0; s < exercise.target_sets; s++) {
+      const reps = repsMap[`${exercise.id}-${s}`];
+      if (repsSetIsRecorded(reps)) {
+        loggedSetsCount++;
+        if (!repsSetMeetsTarget(reps, exercise.target_reps)) allRepsMetTarget = false;
+      } else {
+        allRepsMetTarget = false;
+      }
+    }
+    if (loggedSetsCount === exercise.target_sets && allRepsMetTarget) return 'green';
+    if (loggedSetsCount > 0) return 'yellow';
+    return 'neutral';
   }
 
   /** Header + routine icons: green / yellow / red(skipped) / neutral */
   let headerSurfaceStatus = $derived.by((): HeaderSurfaceStatus => {
-    const snap = workoutDisplaySnapshot();
-    if (snap) return snap.headerSurface;
     if (
       isViewingToday &&
-      (skipRevertAnimating ||
-        workoutState === 'skipped' ||
+      (workoutState === 'skipped' ||
         todayCompletionStatus === 'skipped' ||
         logIsSkipped(todayLog))
     ) {
@@ -1034,7 +850,6 @@
   }
 
   let headerTimerSeconds = $derived.by(() => {
-    if (workoutRevertActive) return 0;
     if (workoutState === 'active' || finishSyncPending) return workoutDuration;
     if (isViewingToday) {
       if (workoutState === 'done') {
@@ -1057,7 +872,6 @@
   let headerTimerSecondsPart = $derived((headerTimerSeconds % 60).toString().padStart(2, '0'));
 
   let headerTimerVisible = $derived.by(() => {
-    if (workoutRevertActive) return false;
     if (workoutState === 'active' || finishSyncPending) return true;
     if (isViewingToday && workoutState === 'done') {
       return headerTimerSeconds > 0 || finishedHeaderDuration > 0;
@@ -1078,7 +892,7 @@
 
   /** Keep header timer mounted and visible through finish + DB sync. */
   $effect(() => {
-    if (workoutRevertActive || headerTimerFadeTimer) return;
+    if (headerTimerFadeTimer) return;
 
     const keepTimer =
       workoutState === 'active' ||
@@ -1095,15 +909,17 @@
   });
 
   function useLiveSessionTracking() {
-    const snap = workoutDisplaySnapshot();
-    if (snap) return snap.surfaceMode === 'active';
-    const rev = workoutRevert;
-    if (rev?.phase === 'color-lerp' && !rev.lerpStarted && rev.frozenTrackedReps) return true;
     return workoutState === 'active' || finishSyncPending;
   }
 
   function todayLogForDisplay() {
-    if (!isViewingToday || !todayLog || logIsSkipped(todayLog) || todayLog.workout_snapshot?.is_rest) {
+    if (
+      !isViewingToday ||
+      workoutState === 'idle' ||
+      !todayLog ||
+      logIsSkipped(todayLog) ||
+      todayLog.workout_snapshot?.is_rest
+    ) {
       return null;
     }
     if (finishSyncPending || isWorkoutInProgress(todayLog)) {
@@ -1114,12 +930,8 @@
 
   /** Finished workout (today done or past logged day) — not active, skipped, or rest. */
   function isCompletedWorkoutView(): boolean {
-    if (workoutRevert?.phase === 'color-lerp') return false;
-    const snap = workoutDisplaySnapshot();
-    if (snap) return snap.surfaceMode === 'done';
-
     if (isViewingToday) {
-      if (workoutState === 'skipped' || skipRevertAnimating) return false;
+      if (workoutState === 'skipped') return false;
       return workoutState === 'done';
     }
     const log = viewedLog;
@@ -1239,21 +1051,10 @@
   }
 
   function showWorkoutHeaderOutcomeIcon(): boolean {
-    const snap = workoutDisplaySnapshot();
-    if (snap && snap.surfaceMode !== 'active') return true;
-    if (
-      workoutRevert?.phase === 'color-lerp' &&
-      !workoutRevert.lerpStarted &&
-      workoutRevert.frozenCompletion &&
-      workoutRevert.frozenCompletion !== 'neutral'
-    ) {
-      return true;
-    }
     if (isViewingToday) {
       return (
         workoutState === 'done' ||
         workoutState === 'skipped' ||
-        skipRevertAnimating ||
         (!!todayLog && logIsSkipped(todayLog))
       );
     }
@@ -1331,7 +1132,6 @@
   }
 
   function getExerciseStatus(exercise: Exercise): 'green' | 'yellow' | 'neutral' | 'skipped' {
-    if (workoutRevert?.phase === 'color-lerp' && workoutRevert.lerpStarted) return 'neutral';
     if (isSkippedWorkoutView()) return 'skipped';
     if (isCompletedWorkoutView() && exerciseIsUntouched(exercise)) return 'skipped';
     if (isViewingToday && useLiveSessionTracking()) {
@@ -2245,9 +2045,7 @@
 			]);
 			schedule = data.schedule;
 			templates = data.templates;
-			if (!workoutRevertActive) {
-				todayLog = data.todayLog || null;
-			}
+			todayLog = data.todayLog || null;
 			if (isInitial) {
 				bootSections = buildBootSections(currentUser, schedule, templates, todayLog, recentLogs);
 				bootMessage = 'Almost ready…';
@@ -2279,11 +2077,9 @@
 				justFinishedStatus = null;
 			}
 			// sync today + week cache + viewed on (re)load
-			if (!workoutRevertActive) {
-				weekLogs = { ...weekLogs, [REAL_TODAY_STR]: todayLog };
-				if (isViewingToday) {
-					viewedLog = todayLog;
-				}
+			weekLogs = { ...weekLogs, [REAL_TODAY_STR]: todayLog };
+			if (isViewingToday) {
+				viewedLog = todayLog;
 			}
 		} catch (err) {
 			console.error(err);
@@ -2402,24 +2198,7 @@
     clearInterval(workoutTimer);
     clearInterval(countdownTimer);
     cancelRepSetHold();
-    cancelStartWorkoutAnim();
-    stopWorkoutRevert();
-    stopSkipRevertAnim();
   });
-
-  function pulseEraseTapFlash() {
-    tapPulseGen.erase++;
-    const gen = tapPulseGen.erase;
-    eraseTapPulseActive = false;
-    requestAnimationFrame(() => {
-      if (gen !== tapPulseGen.erase || (workoutState !== 'done' && workoutState !== 'skipped')) return;
-      eraseTapPulseActive = true;
-    });
-  }
-
-  function onEraseTapPulseEnd(e: AnimationEvent) {
-    if (e.animationName === 'hold-cancel-tap-pulse') eraseTapPulseActive = false;
-  }
 
   function computeWorkoutFinishStatus(
     template: Template,
@@ -2460,7 +2239,6 @@
       return;
     }
     workoutActionError = null;
-    clearCtaTapPulses();
     stopSkipHold();
     activeWorkoutTemplate = template;
     workoutProgressSaveGen++;
@@ -2498,7 +2276,6 @@
   }
 
   function applyCancelWorkoutState() {
-    stopFinishHold();
     if (workoutProgressSaveTimer) {
       clearTimeout(workoutProgressSaveTimer);
       workoutProgressSaveTimer = null;
@@ -2539,16 +2316,11 @@
     }
 
     workoutActionError = null;
-    clearInterval(countdownTimer);
-    countdownRunning = false;
-    activeTimerExerciseId = null;
-    activeTimerSetIndex = null;
-    countdownSeconds = 0;
+    saveActiveTimerIfAny();
     skipProgress = 0;
     cancelProgress = 0;
     deleteTemplateProgress = 0;
     eraseProgress = 0;
-    finishHoldProgress = 0;
 
     const elapsed = workoutElapsedSeconds();
     workoutDuration = elapsed;
@@ -2565,7 +2337,6 @@
     const justFinished = computeWorkoutFinishStatus(template, snapshot);
 
     justFinishedStatus = justFinished;
-    finishFadeWasPerfect = isPerfectDay;
     if (workoutProgressSaveTimer) {
       clearTimeout(workoutProgressSaveTimer);
       workoutProgressSaveTimer = null;
@@ -2575,7 +2346,6 @@
     clearActiveSessionBackup();
     activeWorkoutTemplate = null;
     workoutState = 'done';
-    startFinishCenterFade();
 
     void syncWorkoutFinish(template, snapshot, duration);
   }
@@ -2585,15 +2355,26 @@
     snapshot: { reps: Record<string, number>; times: Record<string, { result: string; met: boolean }> },
     duration: number,
   ) {
+    const opGen = workoutProgressSaveGen;
     try {
       await db.submitWorkoutSession(template, snapshot, duration);
-      workoutProgressSaveGen++;
+      if (opGen !== workoutProgressSaveGen) {
+        await db.deleteWorkoutLog().catch((err) => console.error('finish undo after erase failed', err));
+        return;
+      }
       await loadData({ preserveSession: true });
+      if (opGen !== workoutProgressSaveGen) return;
     } catch (err) {
+      if (opGen !== workoutProgressSaveGen) return;
       console.error('finish workout failed', err);
       workoutActionError = formatDbError(err);
       await loadData({ preserveSession: true });
     } finally {
+      if (opGen !== workoutProgressSaveGen) {
+        finishSyncPending = false;
+        justFinishedStatus = null;
+        return;
+      }
       finishSyncPending = false;
       justFinishedStatus = null;
       const fromLog = durationSecondsFromLog(todayLog);
@@ -2669,8 +2450,9 @@
     const key = `${exerciseId}-${setIndex}`;
     const inputEl = document.getElementById(`input-${key}`) as HTMLInputElement;
     if (inputEl) {
-      const value = parseInt(inputEl.value);
-      if (!isNaN(value) && value > 0) {
+      const { value, display } = clampTrackedRepsFieldInput(inputEl.value);
+      syncClampedInput(inputEl, display);
+      if (inputEl.value.trim() !== '' && value > 0) {
         trackedReps = { ...trackedReps, [key]: value };
       } else {
         const next = { ...trackedReps };
@@ -2705,14 +2487,29 @@
     clearInterval(countdownTimer);
     countdownRunning = false;
     const key = `${exerciseId}-${setIndex}`;
-    completedTimers[key] = {
-      result: `${Math.floor(countdownSeconds / 60).toString().padStart(2, '0')}m${(countdownSeconds % 60).toString().padStart(2, '0')}s`,
-      met: countdownSeconds >= targetSeconds
+    completedTimers = {
+      ...completedTimers,
+      [key]: {
+        result: `${Math.floor(countdownSeconds / 60).toString().padStart(2, '0')}m${(countdownSeconds % 60).toString().padStart(2, '0')}s`,
+        met: countdownSeconds >= targetSeconds,
+      },
     };
     activeTimerExerciseId = null;
     activeTimerSetIndex = null;
     countdownSeconds = 0;
     scheduleWorkoutProgressSave();
+  }
+
+  function saveActiveTimerIfAny() {
+    if (activeTimerExerciseId == null || activeTimerSetIndex == null) return;
+    const template = activeWorkoutTemplate ?? activeTemplate;
+    const exercise = template?.exercises?.find((e) => e.id === activeTimerExerciseId);
+    if (!exercise || exercise.exercise_type !== 'time') {
+      cancelActiveTimer();
+      return;
+    }
+    const targetSeconds = (exercise.target_minutes || 0) * 60 + (exercise.target_seconds || 0);
+    stopAndSaveTimedSet(activeTimerExerciseId, activeTimerSetIndex, targetSeconds);
   }
 
   function cancelActiveTimer() {
@@ -2723,296 +2520,22 @@
     countdownSeconds = 0;
   }
 
-  function clearCtaTapPulses() {
-    tapPulseGen.skip++;
-    tapPulseGen.cancel++;
-    tapPulseGen.erase++;
-    cancelStartWorkoutAnim();
-    stopWorkoutRevert();
-    stopSkipRevertAnim();
-    skipTapPulseActive = false;
-    cancelTapPulseActive = false;
-    eraseTapPulseActive = false;
-  }
-
-  function pulseSkipTapFlash() {
-    tapPulseGen.skip++;
-    const gen = tapPulseGen.skip;
-    skipTapPulseActive = false;
-    requestAnimationFrame(() => {
-      if (gen !== tapPulseGen.skip || workoutState !== 'idle') return;
-      skipTapPulseActive = true;
-    });
-  }
-
-  function pulseCancelTapFlash() {
-    tapPulseGen.cancel++;
-    const gen = tapPulseGen.cancel;
-    cancelTapPulseActive = false;
-    requestAnimationFrame(() => {
-      if (gen !== tapPulseGen.cancel || workoutState !== 'active') return;
-      cancelTapPulseActive = true;
-    });
-  }
-
-  function onSkipTapPulseEnd(e: AnimationEvent) {
-    if (e.animationName === 'hold-skip-tap-pulse') skipTapPulseActive = false;
-  }
-
-  function onCancelTapPulseEnd(e: AnimationEvent) {
-    if (e.animationName === 'hold-cancel-tap-pulse') cancelTapPulseActive = false;
-  }
-
-  function randomStartCtaChar() {
-    return START_CTA_SCRAMBLE_CHARS[Math.floor(Math.random() * START_CTA_SCRAMBLE_CHARS.length)]!;
-  }
-
-  /** Glitch text: length interpolates source→target; spaces preserved; target locks L→R. */
-  function computeCtaScramble(progress: number, source: string, target: string): string {
-    if (progress >= 1) return target;
-    const p = Math.min(Math.max(progress, 0), 1);
-    const len = ctaLengthAt(p, source, target);
-    const glitchStart = 0.3;
-    let out = '';
-    for (let i = 0; i < len; i++) {
-      const src = source[i];
-      const tgt = target[i];
-      if (p < glitchStart) {
-        if (src === ' ') out += ' ';
-        else if (src === undefined) out += randomStartCtaChar();
-        else {
-          const hold = glitchStart * (0.06 + (i / Math.max(len, 1)) * 0.75);
-          out += p < hold ? src : randomStartCtaChar();
-        }
-        continue;
-      }
-      const lockP = (p - glitchStart) / (1 - glitchStart);
-      const lockCount = Math.floor(lockP * target.length);
-      if (i < lockCount && tgt !== undefined) out += tgt === ' ' ? ' ' : tgt;
-      else if (tgt === ' ') out += ' ';
-      else out += randomStartCtaChar();
-    }
-    return out;
-  }
-
-  function stopStartCtaScramble(resetLabels = true) {
-    if (startCtaScrambleRaf) cancelAnimationFrame(startCtaScrambleRaf);
-    startCtaScrambleRaf = 0;
-    if (resetLabels) {
-      startCtaLabel = START_CTA_SOURCE;
-      sideCtaLabel = SKIP_CTA_SOURCE;
-    }
-  }
-
-  function startStartCtaScramble() {
-    stopStartCtaScramble(true);
-    const animStart = performance.now();
-    const tick = (now: number) => {
-      const progress = Math.min((now - animStart) / START_WORKOUT_ANIM_MS, 1);
-      if (progress >= 1) {
-        startCtaLabel = START_CTA_TARGET;
-        sideCtaLabel = SKIP_CTA_TARGET;
-        startCtaScrambleRaf = 0;
-        return;
-      }
-      startCtaLabel = computeCtaScramble(progress, START_CTA_SOURCE, START_CTA_TARGET);
-      sideCtaLabel = computeCtaScramble(progress, SKIP_CTA_SOURCE, SKIP_CTA_TARGET);
-      startCtaScrambleRaf = requestAnimationFrame(tick);
-    };
-    startCtaScrambleRaf = requestAnimationFrame(tick);
-  }
-
-  function cancelStartWorkoutAnim() {
-    if (startWorkoutAnimTimer) clearTimeout(startWorkoutAnimTimer);
-    startWorkoutAnimTimer = null;
-    startWorkoutAnimating = false;
-    stopStartCtaScramble();
-  }
-
-  function stopWorkoutRevert() {
-    workoutRevertRunId++;
-    if (workoutRevertScrambleRaf) cancelAnimationFrame(workoutRevertScrambleRaf);
-    workoutRevertScrambleRaf = 0;
-    workoutRevert = null;
-    resetHeaderTimerDisplay();
-  }
-
-  function workoutRevertDelay(ms: number, runId: number) {
-    return new Promise<void>((resolve) => {
-      setTimeout(() => {
-        if (runId === workoutRevertRunId) resolve();
-      }, ms);
-    });
-  }
-
-  function runRevertCtaScramble(
-    centerFrom: string,
-    sideFrom: string,
-    centerTo: string,
-    sideTo: string,
-    onUpdate: (center: string, side: string) => void,
-    runId: number,
-  ) {
-    if (workoutRevertScrambleRaf) cancelAnimationFrame(workoutRevertScrambleRaf);
-    const animStart = performance.now();
-    return new Promise<void>((resolve) => {
-      const frame = (now: number) => {
-        if (runId !== workoutRevertRunId) {
-          workoutRevertScrambleRaf = 0;
-          resolve();
-          return;
-        }
-        const progress = Math.min((now - animStart) / START_WORKOUT_ANIM_MS, 1);
-        if (progress >= 1) {
-          onUpdate(centerTo, sideTo);
-          workoutRevertScrambleRaf = 0;
-          resolve();
-          return;
-        }
-        onUpdate(
-          computeCtaScramble(progress, centerFrom, centerTo),
-          computeCtaScramble(progress, sideFrom, sideTo),
-        );
-        workoutRevertScrambleRaf = requestAnimationFrame(frame);
-      };
-      onUpdate(centerFrom, sideFrom);
-      workoutRevertScrambleRaf = requestAnimationFrame(frame);
-    });
-  }
-
-  /** Cancel/erase: scramble CTAs → commit → color lerp to neutral (no opacity). */
-  async function runWorkoutRevert(opts: {
-    kind: WorkoutRevertKind;
-    snapshot: WorkoutDisplaySnapshot;
-    centerFrom: string;
-    sideFrom: string;
-    centerTo: string;
-    sideTo: string;
-    commit: () => void;
-  }) {
-    stopWorkoutRevert();
-    const runId = ++workoutRevertRunId;
-    resetHeaderTimerDisplay();
-    workoutRevert = {
-      kind: opts.kind,
-      phase: 'scramble',
-      lerpStarted: false,
-      snapshot: opts.snapshot,
-      frozenSetCounts: null,
-      frozenHeaderSurface: null,
-      frozenCompletion: null,
-      frozenTrackedReps: null,
-      frozenCompletedTimers: null,
-      centerLabel: opts.centerFrom,
-      sideLabel: opts.sideFrom,
-    };
-
-    await runRevertCtaScramble(
-      opts.centerFrom,
-      opts.sideFrom,
-      opts.centerTo,
-      opts.sideTo,
-      (center, side) => {
-        if (!workoutRevert || runId !== workoutRevertRunId) return;
-        workoutRevert.centerLabel = center;
-        workoutRevert.sideLabel = side;
-      },
-      runId,
-    );
-    if (runId !== workoutRevertRunId || !workoutRevert) return;
-
-    opts.commit();
-    workoutRevert = {
-      ...workoutRevert,
-      phase: 'color-lerp',
-      lerpStarted: false,
-      snapshot: null,
-      frozenSetCounts: {
-        total: opts.snapshot.setCounts.total,
-        done: opts.snapshot.setCounts.done,
-        green: opts.snapshot.setCounts.green,
-      },
-      frozenHeaderSurface: opts.snapshot.headerSurface,
-      frozenCompletion: opts.snapshot.completion,
-      frozenTrackedReps: opts.snapshot.trackedReps,
-      frozenCompletedTimers: opts.snapshot.completedTimers,
-      centerLabel: opts.centerTo,
-      sideLabel: opts.sideTo,
-    };
-    await tick();
-    if (runId !== workoutRevertRunId || !workoutRevert) return;
-
-    workoutRevert = {
-      ...workoutRevert,
-      lerpStarted: true,
-      frozenTrackedReps: null,
-      frozenCompletedTimers: null,
-    };
-    await tick();
-    if (runId !== workoutRevertRunId) return;
-
-    await workoutRevertDelay(WORKOUT_REVERT_COLOR_MS, runId);
-    if (runId !== workoutRevertRunId) return;
-
-    const revertKind = workoutRevert?.kind;
-    workoutRevert = null;
-    if (revertKind === 'erase') {
-      const dateKey = selectedDateStr;
-      weekLogs = { ...weekLogs, [dateKey]: null };
-      if (dateKey === REAL_TODAY_STR) {
-        todayLog = null;
-      }
-      if (selectedDateStr === dateKey) {
-        viewedLog = null;
-      }
-    }
-  }
-
-  function stopSkipRevertScramble(resetLabels = true) {
-    if (skipRevertScrambleRaf) cancelAnimationFrame(skipRevertScrambleRaf);
-    skipRevertScrambleRaf = 0;
-    if (resetLabels) {
-      skipRevertCenterLabel = START_CTA_SOURCE;
-      skipRevertSideLabel = SKIP_CTA_SOURCE;
-    }
-  }
-
-  function startSkipRevertScramble() {
-    stopSkipRevertScramble(false);
-    skipRevertCenterLabel = START_CTA_SOURCE;
-    skipRevertSideLabel = SKIP_CTA_SOURCE;
-    const animStart = performance.now();
-    const tick = (now: number) => {
-      const progress = Math.min((now - animStart) / START_WORKOUT_ANIM_MS, 1);
-      if (progress >= 1) {
-        skipRevertCenterLabel = SKIPPED_CTA_SOURCE;
-        skipRevertSideLabel = ERASE_CTA_SOURCE;
-        skipRevertScrambleRaf = 0;
-        return;
-      }
-      skipRevertCenterLabel = computeCtaScramble(progress, START_CTA_SOURCE, SKIPPED_CTA_SOURCE);
-      skipRevertSideLabel = computeCtaScramble(progress, SKIP_CTA_SOURCE, ERASE_CTA_SOURCE);
-      skipRevertScrambleRaf = requestAnimationFrame(tick);
-    };
-    skipRevertScrambleRaf = requestAnimationFrame(tick);
-  }
-
-  function stopSkipRevertAnim() {
-    if (skipRevertAnimTimer) clearTimeout(skipRevertAnimTimer);
-    skipRevertAnimTimer = null;
-    skipRevertAnimating = false;
-    stopSkipRevertScramble(true);
-  }
-
   async function syncSkipWorkout() {
+    const opGen = workoutProgressSaveGen;
     try {
       workoutActionError = null;
       await db.skipWorkout(activeTemplate?.id || null, activeTemplate?.name || null);
+      if (opGen !== workoutProgressSaveGen) {
+        await db.deleteWorkoutLog().catch((err) => console.error('skip undo after erase failed', err));
+        return;
+      }
       await loadData({ preserveSession: true });
+      if (opGen !== workoutProgressSaveGen) return;
       if (logIsSkipped(todayLog)) {
         workoutState = 'skipped';
       }
     } catch (err) {
+      if (opGen !== workoutProgressSaveGen) return;
       console.error('skip workout failed', err);
       workoutActionError = formatDbError(err);
       workoutState = 'idle';
@@ -3033,132 +2556,103 @@
   }
 
   function beginSkipRevert() {
-    if (skipRevertAnimating || workoutState !== 'idle' || !isViewingToday || startWorkoutAnimating) {
-      return;
-    }
+    if (workoutState !== 'idle' || !isViewingToday) return;
     stopSkipHold();
-    stopSkipRevertAnim();
-    skipRevertAnimating = true;
     justFinishedStatus = null;
-    // Optimistic from frame 0: stale completed todayLog + idle state otherwise flashes yellow
+    resetHeaderTimerDisplay();
     applySkipOptimisticLog();
-    startSkipRevertScramble();
-    skipRevertAnimTimer = setTimeout(() => {
-      skipRevertAnimTimer = null;
-      stopSkipRevertScramble(false);
-      skipRevertCenterLabel = SKIPPED_CTA_SOURCE;
-      skipRevertSideLabel = ERASE_CTA_SOURCE;
-      workoutState = 'skipped';
-      skipRevertAnimating = false;
-      applySkipOptimisticLog();
-      void syncSkipWorkout();
-    }, START_WORKOUT_ANIM_MS);
+    workoutState = 'skipped';
+    void syncSkipWorkout();
   }
 
   function beginCancelRevert() {
-    if (workoutRevertActive || workoutState !== 'active' || !isViewingToday) return;
+    if (workoutState !== 'active' || !isViewingToday) return;
     stopCancelHold();
-    stopFinishHold();
-    const snapshot = captureWorkoutDisplaySnapshot('active');
-    void runWorkoutRevert({
-      kind: 'cancel',
-      snapshot,
-      centerFrom: START_CTA_TARGET,
-      sideFrom: SKIP_CTA_TARGET,
-      centerTo: START_CTA_SOURCE,
-      sideTo: SKIP_CTA_SOURCE,
-      commit: () => applyCancelWorkoutState(),
-    });
+    resetHeaderTimerDisplay();
+    applyCancelWorkoutState();
   }
 
   function applyEraseLocalReset() {
+    if (workoutProgressSaveTimer) {
+      clearTimeout(workoutProgressSaveTimer);
+      workoutProgressSaveTimer = null;
+    }
+    workoutProgressSaveGen++;
+    finishSyncPending = false;
     justFinishedStatus = null;
+    finishedHeaderDuration = 0;
     clearActiveSessionBackup();
     resetHeaderWorkoutTimer();
     trackedReps = {};
     completedTimers = {};
     activeWorkoutTemplate = null;
-    // Keep todayLog until eraseWorkoutLog after revert so exercise rows can lerp with the header.
+    const dateKey = selectedDateStr;
+    weekLogs = { ...weekLogs, [dateKey]: null };
+    if (dateKey === REAL_TODAY_STR) {
+      todayLog = null;
+    }
+    if (selectedDateStr === dateKey) {
+      viewedLog = null;
+    }
   }
 
   function beginEraseRevert() {
-    if (
-      workoutRevertActive ||
-      skipRevertAnimating ||
-      (workoutState !== 'done' && workoutState !== 'skipped')
-    ) {
-      return;
-    }
+    if (workoutState !== 'done' && workoutState !== 'skipped') return;
     stopEraseHold();
-    const surfaceMode = workoutState === 'skipped' ? 'skipped' : 'done';
-    const centerFrom = workoutState === 'skipped' ? SKIPPED_CTA_SOURCE : COMPLETE_CTA_SOURCE;
-    const snapshot = captureWorkoutDisplaySnapshot(surfaceMode);
-    void (async () => {
-      await runWorkoutRevert({
-        kind: 'erase',
-        snapshot,
-        centerFrom,
-        sideFrom: ERASE_CTA_SOURCE,
-        centerTo: START_CTA_SOURCE,
-        sideTo: SKIP_CTA_SOURCE,
-        commit: () => {
-          applyEraseLocalReset();
-          workoutState = 'idle';
-        },
-      });
-      if (!workoutRevertActive) {
-        void eraseWorkoutLog();
-      }
-    })();
+    resetHeaderTimerDisplay();
+    applyEraseLocalReset();
+    workoutState = 'idle';
+    void eraseWorkoutLog();
   }
 
   function handleStartWorkoutTap(e: Event) {
     e.preventDefault();
-    if (workoutState !== 'idle' || !isViewingToday || startWorkoutAnimating || skipRevertAnimating) {
-      return;
-    }
-    cancelStartWorkoutAnim();
-    startWorkoutAnimating = true;
-    startStartCtaScramble();
-    startWorkoutAnimTimer = setTimeout(() => {
-      startWorkoutAnimTimer = null;
-      stopStartCtaScramble(false);
-      startWorkout();
-      startWorkoutAnimating = false;
-    }, START_WORKOUT_ANIM_MS);
+    if (workoutState !== 'idle' || !isViewingToday) return;
+    startWorkout();
   }
 
-  function startFinishHold(e: Event) {
-    if (e.cancelable) e.preventDefault();
-    if (workoutState !== 'active' || !isViewingToday || workoutRevertActive) return;
-    const startTime = Date.now();
-    finishHoldTimer = setInterval(() => {
-      finishHoldProgress = Math.min(((Date.now() - startTime) / FAST_HOLD_CONFIRM_MS) * 100, 100);
-      if (finishHoldProgress >= 100) {
-        clearInterval(finishHoldTimer!);
-        finishHoldTimer = null;
-        finishHoldProgress = 0;
-        finishWorkout();
-      }
-    }, 20);
+  function handleFinishWorkoutTap(e: Event) {
+    e.preventDefault();
+    if (workoutState !== 'active' || !isViewingToday) return;
+    finishWorkout();
   }
 
-  function stopFinishHold() {
-    if (finishHoldTimer) clearInterval(finishHoldTimer);
-    finishHoldTimer = null;
-    finishHoldProgress = 0;
+  function pulseSkipTapFlash() {
+    skipTapPulseActive = false;
+    requestAnimationFrame(() => {
+      skipTapPulseActive = true;
+    });
+  }
+
+  function pulseCancelTapFlash() {
+    cancelTapPulseActive = false;
+    requestAnimationFrame(() => {
+      cancelTapPulseActive = true;
+    });
+  }
+
+  function pulseEraseTapFlash() {
+    eraseTapPulseActive = false;
+    requestAnimationFrame(() => {
+      eraseTapPulseActive = true;
+    });
+  }
+
+  function onSkipTapPulseEnd(e: AnimationEvent) {
+    if (e.animationName === 'hold-skip-tap-pulse') skipTapPulseActive = false;
+  }
+
+  function onCancelTapPulseEnd(e: AnimationEvent) {
+    if (e.animationName === 'hold-cancel-tap-pulse') cancelTapPulseActive = false;
+  }
+
+  function onEraseTapPulseEnd(e: AnimationEvent) {
+    if (e.animationName === 'hold-cancel-tap-pulse') eraseTapPulseActive = false;
   }
 
   function startSkipHold(e: Event) {
     if (e.cancelable) e.preventDefault();
-    if (
-      workoutState !== 'idle' ||
-      !isViewingToday ||
-      startWorkoutAnimating ||
-      skipRevertAnimating
-    ) {
-      return;
-    }
+    if (workoutState !== 'idle' || !isViewingToday) return;
     pulseSkipTapFlash();
     let startTime = Date.now();
     skipHoldTimer = setInterval(() => {
@@ -3176,13 +2670,12 @@
     clearInterval(skipHoldTimer);
     skipHoldTimer = null;
     skipProgress = 0;
-    tapPulseGen.skip++;
     skipTapPulseActive = false;
   }
 
   function startCancelHold(e: Event) {
     if (e.cancelable) e.preventDefault();
-    if (workoutState !== 'active' || workoutRevertActive) return;
+    if (workoutState !== 'active' || !isViewingToday) return;
     pulseCancelTapFlash();
     let startTime = Date.now();
     cancelHoldTimer = setInterval(() => {
@@ -3199,7 +2692,6 @@
     clearInterval(cancelHoldTimer);
     cancelHoldTimer = null;
     cancelProgress = 0;
-    tapPulseGen.cancel++;
     cancelTapPulseActive = false;
   }
 
@@ -3228,12 +2720,7 @@
 
   function startEraseHold(e: Event) {
     if (e.cancelable) e.preventDefault();
-    if (
-      workoutRevertActive ||
-      skipRevertAnimating ||
-      startWorkoutAnimating ||
-      (workoutState !== 'done' && workoutState !== 'skipped')
-    ) {
+    if (workoutState !== 'done' && workoutState !== 'skipped') {
       return;
     }
     pulseEraseTapFlash();
@@ -3252,7 +2739,6 @@
     clearInterval(eraseHoldTimer);
     eraseHoldTimer = null;
     eraseProgress = 0;
-    tapPulseGen.erase++;
     eraseTapPulseActive = false;
   }
 
@@ -3326,18 +2812,30 @@
 
   async function eraseWorkoutLog() {
     const dateKey = selectedDateStr;
+    const opGen = workoutProgressSaveGen;
     stopEraseHold();
     stopSkipHold();
     try {
       workoutActionError = null;
       await db.deleteWorkoutLog(isViewingToday ? undefined : dateKey);
+      if (opGen !== workoutProgressSaveGen) return;
       weekLogs = { ...weekLogs, [dateKey]: null };
       if (selectedDateStr === dateKey) {
         viewedLog = null;
         if (isViewingToday) todayLog = null;
       }
       await loadData({ preserveSession: true });
+      if (opGen !== workoutProgressSaveGen) return;
+      if (isViewingToday) {
+        todayLog = null;
+        viewedLog = null;
+        weekLogs = { ...weekLogs, [REAL_TODAY_STR]: null };
+      } else {
+        weekLogs = { ...weekLogs, [dateKey]: null };
+        if (selectedDateStr === dateKey) viewedLog = null;
+      }
     } catch (err) {
+      if (opGen !== workoutProgressSaveGen) return;
       console.error('erase workout failed', err);
       workoutActionError = 'Could not erase workout log.';
       await loadData({ preserveSession: true });
@@ -3425,7 +2923,7 @@
   }
 
   async function handleCreateTemplate(defaultName?: string) {
-    const name = (defaultName ?? newTemplateName).trim();
+    const name = sanitizeTemplateName((defaultName ?? newTemplateName).trim());
     if (!name) {
       templateError = 'Enter a template name.';
       return;
@@ -3790,9 +3288,9 @@
 
   function commitRoutineTemplateNameEdit(template: Template) {
     editingRoutineTemplateNameId = null;
-    const trimmed = (template.name ?? '').trim();
+    const trimmed = sanitizeTemplateName((template.name ?? '').trim());
     if (!trimmed) {
-      template.name = 'Workout';
+      template.name = 'WORKOUT';
       return;
     }
     template.name = trimmed;
@@ -3837,9 +3335,13 @@
     const tpl = templates.find((t) => t.id === id);
     if (!tpl) return;
     editingTemplateId = id;
-    draftExercises = tpl.exercises.map((e) => ({ ...e }));
-    draftTemplateName = tpl.name;
-    selectedExerciseId = null;
+    draftExercises = tpl.exercises.map((e) => {
+      const copy = { ...e };
+      normalizeDraftExercise(copy);
+      return copy;
+    });
+    draftTemplateName = sanitizeTemplateName(tpl.name);
+    selectedExerciseId = draftExercises.length > 0 ? draftExercises[0].id : null;
     editingExerciseNameId = null;
     templateSaveError = null;
     resetNewExerciseForm();
@@ -3862,20 +3364,24 @@
   function draftToExercises(templateId: string, draft: any[]): Exercise[] {
     const tpl = templates.find((t) => t.id === templateId);
     const uid = tpl?.user_id ?? currentUser?.id ?? '';
-    return draft.map((d, i) => ({
-      id: d.id,
-      template_id: templateId,
-      user_id: d.user_id ?? uid,
-      name: d.name ?? 'Exercise',
-      exercise_type: d.exercise_type,
-      target_sets: d.target_sets ?? 0,
-      target_reps: d.target_reps ?? 0,
-      target_minutes: d.target_minutes ?? 0,
-      target_seconds: d.target_seconds ?? 0,
-      increment: d.increment ?? 0,
-      current_weight: d.current_weight ?? null,
-      display_order: i,
-    }));
+    return draft.map((d, i) => {
+      const copy = { ...d };
+      normalizeDraftExercise(copy);
+      return {
+        id: copy.id,
+        template_id: templateId,
+        user_id: copy.user_id ?? uid,
+        name: copy.name ?? 'EXERCISE',
+        exercise_type: copy.exercise_type,
+        target_sets: copy.target_sets ?? 0,
+        target_reps: copy.target_reps ?? 0,
+        target_minutes: copy.target_minutes ?? 0,
+        target_seconds: copy.target_seconds ?? 0,
+        increment: copy.increment ?? 0,
+        current_weight: copy.current_weight ?? null,
+        display_order: i,
+      };
+    });
   }
 
   async function commitDraftExercises(
@@ -3898,10 +3404,15 @@
     if (!templateId || templateSaveInFlight) return;
 
     const snapExercises = draftExercises.map((e) => ({ ...e }));
-    const snapName = draftTemplateName;
+    const snapName = sanitizeTemplateName(draftTemplateName.trim());
+    const validationErr = validateDraftExercises(snapExercises);
+    if (validationErr) {
+      templateSaveError = validationErr;
+      return;
+    }
     const previousName =
       templates.find((t) => t.id === templateId)?.name ?? snapName;
-    const displayName = snapName.trim() || previousName;
+    const displayName = snapName || previousName;
 
     templateSaveError = null;
     patchTemplateInCache(templateId, displayName, draftToExercises(templateId, snapExercises));
@@ -3986,12 +3497,38 @@
     node.select();
   }
 
+  function touchDraft() {
+    draftExercises = [...draftExercises];
+  }
+
+  function switchDraftExerciseType(
+    ex: {
+      exercise_type: 'reps' | 'time';
+      increment: number;
+      target_minutes?: number;
+      target_seconds?: number;
+    },
+    type: 'reps' | 'time',
+  ) {
+    ex.exercise_type = type;
+    if (type === 'time') {
+      ex.target_minutes = DEFAULT_TARGET_MINUTES;
+      if ((ex.target_seconds ?? 0) === 0) {
+        ex.target_seconds = 30;
+      }
+      ex.increment = DEFAULT_INCREMENT_SEC;
+    } else {
+      ex.increment = 2.5;
+    }
+    touchDraft();
+  }
+
   function addNewExercise() {
     if (!editingTemplateId) return;
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const newEx: any = {
       id: tempId,
-      name: 'New Exercise',
+      name: 'NEW EXERCISE',
       exercise_type: 'reps',
       target_sets: 3,
       target_reps: 12,
@@ -4204,27 +3741,31 @@
       </button>
       <button
         type="button"
-        class="flex-1 flex items-center gap-2 min-w-0 py-0.5 -my-0.5 px-1 rounded-md text-zinc-500 hover:text-zinc-300 hover:bg-[#1a1a1a] transition-colors"
+        class="flex-1 flex items-center gap-2 min-w-0 py-0.5 -my-0.5 px-1 rounded-md transition-colors {weekCalendarLocked ? 'text-zinc-600 cursor-default' : 'text-zinc-500 hover:text-zinc-300 hover:bg-[#1a1a1a]'}"
         onclick={toggleWeekCalendar}
-        aria-expanded={!weekCalendarCollapsed}
-        title={weekCalendarCollapsed ? 'Expand week' : 'Collapse week'}
+        disabled={weekCalendarLocked}
+        aria-expanded={!weekCalendarDisplayCollapsed}
+        aria-disabled={weekCalendarLocked}
+        title={weekCalendarLocked ? 'Week calendar locked during workout' : weekCalendarCollapsed ? 'Expand week' : 'Collapse week'}
       >
         <span class="min-w-0 flex-1 truncate text-left leading-none font-bold text-zinc-200 pointer-events-none">{weekBarLabel}</span>
-        {#if weekCalendarCollapsed}
-          <ChevronDown class="size-3.5 shrink-0 text-zinc-400 pointer-events-none" aria-hidden="true" />
-        {:else}
-          <ChevronUp class="size-3.5 shrink-0 text-zinc-400 pointer-events-none" aria-hidden="true" />
+        {#if !weekCalendarLocked}
+          {#if weekCalendarDisplayCollapsed}
+            <ChevronDown class="size-3.5 shrink-0 text-zinc-400 pointer-events-none" aria-hidden="true" />
+          {:else}
+            <ChevronUp class="size-3.5 shrink-0 text-zinc-400 pointer-events-none" aria-hidden="true" />
+          {/if}
         {/if}
         <span class="font-header-clock font-header-clock--fixed shrink-0 text-[10px] text-zinc-500 leading-none pointer-events-none">{clockTimeStr}</span>
       </button>
     </div>
     <div
       class="week-calendar-panel grid"
-      class:week-calendar-panel--open={!weekCalendarCollapsed}
+      class:week-calendar-panel--open={!weekCalendarDisplayCollapsed}
       class:week-calendar-panel--closing={weekCalendarClosing}
-      style="grid-template-rows: {weekCalendarCollapsed ? '0fr' : '1fr'}"
+      style="grid-template-rows: {weekCalendarDisplayCollapsed ? '0fr' : '1fr'}"
     >
-      <div class="overflow-hidden min-h-0 {weekCalendarCollapsed ? 'pointer-events-none' : ''}">
+      <div class="overflow-hidden min-h-0 {weekCalendarDisplayCollapsed ? 'pointer-events-none' : ''}">
         <div class="flex items-stretch">
           <button 
             class="w-5 shrink-0 flex items-center justify-center bg-[#141414] border-r border-[#1e1e1e] text-zinc-400 hover:text-white active:bg-[#0d0d0d] transition disabled:opacity-40"
@@ -4237,7 +3778,7 @@
           <div
             class="day-strip grid grid-cols-7 gap-0.5 flex-1 min-w-0 bg-[#141414] p-1 {weekCalendarClosing
               ? 'week-calendar-closing'
-              : !weekCalendarCollapsed
+              : !weekCalendarDisplayCollapsed
                 ? 'week-calendar-open'
                 : ''}"
           >
@@ -4251,18 +3792,14 @@
               {@const dayHasWorkoutLog = !!dayLog && !dayLog.workout_snapshot?.is_rest}
               {@const dayDone = isRealToday ? workoutState === 'done' : false}
               {@const daySkipped = isRealToday
-                ? workoutState === 'skipped' || skipRevertAnimating
-                : !!dayLog?.is_skipped}
-              {@const effStatus = skipRevertAnimating && isRealToday
-                ? 'skipped'
-                : isRealToday
-                  ? (justFinishedStatus ?? todayCompletionStatus)
-                  : viewedCompletionStatus}
+                ? workoutState === 'skipped'
+                : logIsSkipped(dayLog)}
+              {@const dayCompletion = dayCalendarCompletionStatus(dayLog, isRealToday)}
               <button 
                 class="day-btn aspect-square w-full flex flex-col items-center justify-center gap-0 rounded-md text-[10px] font-bold tracking-wide border-none bg-transparent text-zinc-600 hover:text-white relative origin-center
-                  {(dayDone || (isSelected && !isRealToday && viewedLog && viewedCompletionStatus !== 'neutral' && viewedCompletionStatus !== 'skipped' && viewedCompletionStatus !== 'untouched')) ? (effStatus === 'green' ? 'w-cal-green' : effStatus === 'untouched' ? 'w-cal-skipped' : 'w-cal-yellow') : ''} 
-                  {daySkipped || effStatus === 'untouched' ? 'w-cal-skipped' : ''} 
-                  {(isSelected && !isRealToday && !dayDone && !daySkipped && !(viewedLog && viewedCompletionStatus !== 'neutral')) ? '!bg-[#1e1e1e] !text-white' : ''} 
+                  {(dayDone || (!isRealToday && dayHasWorkoutLog && dayCompletion !== 'neutral' && dayCompletion !== 'skipped' && dayCompletion !== 'untouched')) ? (dayCompletion === 'green' ? 'w-cal-green' : dayCompletion === 'untouched' ? 'w-cal-skipped' : 'w-cal-yellow') : ''} 
+                  {daySkipped || dayCompletion === 'untouched' ? 'w-cal-skipped' : ''} 
+                  {(isSelected && !isRealToday && !dayDone && !daySkipped && dayCompletion === 'neutral') ? '!bg-[#1e1e1e] !text-white' : ''}
                   {isRealToday && !dayDone && !daySkipped ? '!bg-white !text-black hover:!text-black' : ''} 
                   {isRest && !isSelected && !dayDone && !daySkipped ? 'text-zinc-500' : ''}"
                 onclick={() => selectDate(dayInfo.date)}
@@ -4312,81 +3849,19 @@
             <span class={workoutSideLabelClass} style={ctaChStyle('STATS', SIDE_CTA_MAX_CH)}>STATS</span>
           </button>
 
-          {#if workoutRevert}
-            {@const rev = workoutRevert}
-            {@const snap = rev.snapshot}
-            {@const holdSurface =
-              snap?.headerSurface ?? rev.frozenHeaderSurface ?? ('neutral' as HeaderSurfaceStatus)}
-            {@const centerHoldClass = revertCenterCtaHoldClass(
-              rev.kind,
-              holdSurface,
-              snap?.cancelWasPerfect ?? false,
-            )}
-            {@const centerClass =
-              rev.lerpStarted
-                ? 'bg-white text-black border-transparent'
-                : `${centerHoldClass} border-transparent`}
-            {@const centerText = rev.phase === 'scramble' ? rev.centerLabel : START_CTA_SOURCE}
-            {@const sideText = rev.phase === 'scramble' ? rev.sideLabel : SKIP_CTA_SOURCE}
-            <button
-              type="button"
-              disabled
-              class="{workoutCenterBtnClass} {centerClass} transition-[background-color,border-color,color] duration-[400ms] ease-out pointer-events-none"
-            >
-              <span
-                class={workoutCenterLabelClass}
-                style={ctaChStyle(centerText, CENTER_CTA_MAX_CH)}
-              >{centerText}</span>
-            </button>
-            <button
-              type="button"
-              disabled
-              class="{workoutSideBtnClass} border bg-[#0d0d0d] border-[#1e1e1e] text-zinc-500 transition-[background-color,border-color,color] duration-[400ms] ease-out pointer-events-none"
-            >
-              <span
-                class={workoutSideLabelClass}
-                style={ctaChStyle(sideText, SIDE_CTA_MAX_CH)}
-              >{sideText}</span>
-            </button>
-          {:else if workoutState === 'idle'}
-            {#if skipRevertAnimating && isViewingToday}
-              <button
-                type="button"
-                disabled
-                class="{workoutCenterBtnClass} border-transparent hold-start-to-skipped"
-              >
-                <span
-                  class={workoutCenterLabelClass}
-                  style={ctaChStyle(skipRevertCenterLabel, CENTER_CTA_MAX_CH)}
-                >{skipRevertCenterLabel}</span>
-              </button>
-              <button
-                type="button"
-                disabled
-                class="{workoutSideBtnClass} border bg-[#0d0d0d] w-hold-skip-active hold-skip-side-to-erase"
-              >
-                <span
-                  class={workoutSideLabelClass}
-                  style={ctaChStyle(skipRevertSideLabel, SIDE_CTA_MAX_CH)}
-                >{skipRevertSideLabel}</span>
-              </button>
-            {:else}
+          {#if workoutState === 'idle'}
               <!-- Center: START WORKOUT (wider) or GO TO TODAY when on non-today -->
               {#if isViewingToday}
                 <button
                   type="button"
-                  class="{workoutCenterBtnClass} border-transparent bg-white text-black {startWorkoutAnimating ? 'hold-start-to-yellow' : ''}"
-                  disabled={startWorkoutAnimating}
+                  class="{workoutCenterBtnClass} border-transparent bg-white text-black"
                   onclick={handleStartWorkoutTap}
                 >
                   <span
                     class={workoutCenterLabelClass}
-                    style={ctaChStyle(
-                      startWorkoutAnimating ? startCtaLabel : START_CTA_SOURCE,
-                      CENTER_CTA_MAX_CH,
-                    )}
+                    style={ctaChStyle(START_CTA_SOURCE, CENTER_CTA_MAX_CH)}
                   >
-                    {startWorkoutAnimating ? startCtaLabel : START_CTA_SOURCE}
+                    {START_CTA_SOURCE}
                   </span>
                 </button>
               {:else}
@@ -4397,8 +3872,7 @@
               <!-- Right: SKIP (hold, narrow) -- grayed when not today -->
               <button
                 type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] {!isViewingToday ? 'opacity-40 pointer-events-none' : ''} {startWorkoutAnimating ? 'pointer-events-none' : ''} {skipTapPulseActive ? 'hold-skip-tap-pulse' : skipProgress > 0 ? 'w-hold-skip-active' : 'border-[#1e1e1e] text-zinc-500'}"
-                disabled={startWorkoutAnimating}
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {skipTapPulseActive ? 'hold-skip-tap-pulse' : skipProgress > 0 ? 'border-amber-500 text-[#fbbf24]' : 'border-[#1e1e1e] text-zinc-500'} {!isViewingToday ? 'opacity-40 pointer-events-none' : ''}"
                 onmousedown={startSkipHold}
                 onmouseup={stopSkipHold}
                 onmouseleave={stopSkipHold}
@@ -4407,28 +3881,19 @@
                 onanimationend={onSkipTapPulseEnd}
               >
                 <div class="absolute inset-0 z-0 bg-amber-900/40 transition-all duration-[20ms]" style="width: {skipProgress}%;"></div>
-              <span
-                class={workoutSideLabelClass}
-                style={ctaChStyle(
-                  startWorkoutAnimating ? sideCtaLabel : SKIP_CTA_SOURCE,
-                  SIDE_CTA_MAX_CH,
-                )}
-              >
-                {startWorkoutAnimating ? sideCtaLabel : SKIP_CTA_SOURCE}
-              </span>
+                <span
+                  class={workoutSideLabelClass}
+                  style={ctaChStyle(SKIP_CTA_SOURCE, SIDE_CTA_MAX_CH)}
+                >
+                  {SKIP_CTA_SOURCE}
+                </span>
               </button>
-            {/if}
           {:else if workoutState === 'active'}
               <!-- Center: FINISH (wider) -->
               <button
                 type="button"
-                class="{workoutCenterBtnClass} border-transparent {!isViewingToday ? 'opacity-40 pointer-events-none' : ''} {isPerfectDay ? 'w-cta-active-green' : 'w-cta-active-yellow'}"
-                {...(finishHoldProgress > 0 ? { style: finishHoldButtonStyle } : {})}
-                onmousedown={startFinishHold}
-                onmouseup={stopFinishHold}
-                onmouseleave={stopFinishHold}
-                ontouchstart={startFinishHold}
-                ontouchend={stopFinishHold}
+                class="{workoutCenterBtnClass} {isPerfectDay ? 'w-cta-complete-green' : 'w-cta-finish'} {!isViewingToday ? 'opacity-40 pointer-events-none' : ''}"
+                onclick={handleFinishWorkoutTap}
               >
                 <span
                   class={workoutCenterLabelClass}
@@ -4437,7 +3902,7 @@
               </button>
               <!-- Right: CANCEL (hold, narrow) -->
               <button
-                class="{workoutSideBtnClass} group border outline-none {!isViewingToday ? 'opacity-40 pointer-events-none' : ''} {cancelProgress > 0 ? 'cancel-btn-held' : cancelTapPulseActive ? 'hold-cancel-tap-pulse' : 'border-[#1e1e1e] bg-[#0d0d0d] text-zinc-500'}"
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {cancelTapPulseActive ? 'hold-cancel-tap-pulse' : cancelProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'} {!isViewingToday ? 'opacity-40 pointer-events-none' : ''}"
                 onmousedown={startCancelHold}
                 onmouseup={stopCancelHold}
                 onmouseleave={stopCancelHold}
@@ -4445,27 +3910,24 @@
                 ontouchend={stopCancelHold}
                 onanimationend={onCancelTapPulseEnd}
               >
-                <div class="absolute inset-0 z-0 bg-red-600/45 transition-all duration-[20ms]" style="width: {cancelProgress}%;"></div>
+                <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {cancelProgress}%;"></div>
                 <span class={workoutSideLabelClass} style={ctaChStyle(SKIP_CTA_TARGET, SIDE_CTA_MAX_CH)}>CANCEL</span>
               </button>
           {:else if workoutState === 'done'}
             {@const effectiveStatus = justFinishedStatus ?? todayCompletionStatus}
             {@const isUntouchedComplete = effectiveStatus === 'untouched'}
             {@const isYellowComplete = !isUntouchedComplete && (effectiveStatus === 'yellow' || effectiveStatus === 'neutral')}
-              {@const completeIsYellow = finishCenterFading
-                ? !finishFadeWasPerfect
-                : isYellowComplete}
               <button
-                class="{workoutCenterBtnClass} cursor-default {!isViewingToday ? 'opacity-40 pointer-events-none' : ''} {finishCenterFading ? 'pointer-events-none' : ''} {isUntouchedComplete ? 'w-cta-skipped' : completeIsYellow ? 'w-cta-complete-yellow' : 'w-cta-complete-green'}"
+                class="{workoutCenterBtnClass} cursor-default {!isViewingToday ? 'opacity-40 pointer-events-none' : ''} {isUntouchedComplete ? 'w-cta-skipped' : isYellowComplete ? 'w-cta-complete-yellow' : 'w-cta-complete-green'}"
               >
                 <span
-                  class="{workoutCenterLabelClass}{finishCenterFading ? ' workout-cta-text-fade workout-cta-text-fade--no-width' : ''}"
-                  style="{ctaChStyle(COMPLETE_CTA_SOURCE, CENTER_CTA_MAX_CH)}{finishCenterFading ? `;opacity:${finishCenterOpacity}` : ''}"
-                >{finishCenterFading ? finishCenterLabel : COMPLETE_CTA_SOURCE}</span>
+                  class={workoutCenterLabelClass}
+                  style={ctaChStyle(COMPLETE_CTA_SOURCE, CENTER_CTA_MAX_CH)}
+                >{COMPLETE_CTA_SOURCE}</span>
               </button>
               <button
                 type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] hover:brightness-110 {!isViewingToday ? 'opacity-40 pointer-events-none' : ''} {finishCenterFading ? 'pointer-events-none' : ''} {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'w-hold-erase-active' : 'border-[#1e1e1e] text-zinc-500'}"
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'} {!isViewingToday ? 'opacity-40 pointer-events-none' : ''}"
                 onmousedown={startEraseHold}
                 onmouseup={stopEraseHold}
                 onmouseleave={stopEraseHold}
@@ -4473,7 +3935,7 @@
                 ontouchend={stopEraseHold}
                 onanimationend={onEraseTapPulseEnd}
               >
-                <div class="absolute inset-0 z-0 bg-red-900/50 transition-all duration-[20ms]" style="width: {eraseProgress}%;"></div>
+                <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {eraseProgress}%;"></div>
                 <span class={workoutSideLabelClass} style={ctaChStyle(ERASE_CTA_SOURCE, SIDE_CTA_MAX_CH)}>ERASE</span>
               </button>
           {:else if workoutState === 'skipped'}
@@ -4487,7 +3949,7 @@
               </button>
               <button
                 type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] hover:brightness-110 {!isViewingToday ? 'opacity-40 pointer-events-none' : ''} {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'w-hold-erase-active' : 'border-[#1e1e1e] text-zinc-500'}"
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'} {!isViewingToday ? 'opacity-40 pointer-events-none' : ''}"
                 onmousedown={startEraseHold}
                 onmouseup={stopEraseHold}
                 onmouseleave={stopEraseHold}
@@ -4495,7 +3957,7 @@
                 ontouchend={stopEraseHold}
                 onanimationend={onEraseTapPulseEnd}
               >
-                <div class="absolute inset-0 z-0 bg-red-900/50 transition-all duration-[20ms]" style="width: {eraseProgress}%;"></div>
+                <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {eraseProgress}%;"></div>
                 <span class={workoutSideLabelClass} style={ctaChStyle(ERASE_CTA_SOURCE, SIDE_CTA_MAX_CH)}>ERASE</span>
               </button>
           {/if}
@@ -4537,9 +3999,13 @@
           class="w-full max-w-xs space-y-2"
           onsubmit={(e) => { e.preventDefault(); handleCreateTemplate(); }}>
           <input 
-            placeholder="Template name (e.g. Full Body, Push/Pull)" 
-            class="w-full bg-black border border-[#1e1e1e] text-xs text-white p-2 rounded-lg outline-none focus:border-[#2a2a2a]" 
-            bind:value={newTemplateName}
+            placeholder="Template name (e.g. FULL BODY)" 
+            class="w-full bg-black border border-[#1e1e1e] text-xs text-white uppercase p-2 rounded-lg outline-none focus:border-[#2a2a2a]" 
+            autocomplete="off"
+            use:clampedTemplateNameProp={{
+              getValue: () => newTemplateName,
+              setValue: (v) => { newTemplateName = v; },
+            }}
             disabled={!currentUser || isCreatingTemplate}
           />
           {#if templateError}
@@ -4657,31 +4123,27 @@
       {@const workoutTickVisible =
         showWorkoutHeaderOutcomeIcon() && (tickStatus === 'green' || tickStatus === 'yellow')}
       {@const workoutCrossVisible = showWorkoutHeaderCross()}
-      {@const headerSkipped = displayHeaderSurface === 'skipped'}
+      {@const headerSkipped = headerSurfaceStatus === 'skipped'}
       {@const showHeaderTimers = headerTimerInDom}
       {@const headerTimerTheme = headerSkipped
         ? 'tpl-workout-timer--skipped'
-        : displayHeaderSurface === 'green'
+        : headerSurfaceStatus === 'green'
           ? 'tpl-workout-timer--green'
-          : displayHeaderSurface === 'yellow'
+          : headerSurfaceStatus === 'yellow'
             ? 'tpl-workout-timer--yellow'
             : 'tpl-workout-timer--neutral'}
+      <div class="flex flex-col gap-3">
       <div
-        class="workout-surface-revert-wrap flex flex-col gap-3"
-        class:workout-surface-revert-wrap--locked={workoutRevert?.snapshot != null}
-        class:workout-surface-revert-wrap--lerp={workoutRevert?.phase === 'color-lerp' && workoutRevert.lerpStarted}
-      >
-      <div
-        class="tpl-header status-surface status-surface--prompt rounded-xl px-3 py-1 flex flex-col gap-0.5 {displayHeaderSurface === 'green'
+        class="tpl-header status-surface status-surface--prompt rounded-xl px-3 py-1 flex flex-col gap-0.5 {headerSurfaceStatus === 'green'
           ? 'status-surface--green'
-          : displayHeaderSurface === 'yellow'
+          : headerSurfaceStatus === 'yellow'
             ? 'status-surface--yellow'
             : headerSkipped
               ? 'status-surface--skipped'
               : 'status-surface--neutral'} {isFuture ? 'opacity-80' : ''}"
       >
         <div class="text-center leading-none">
-          <div class="workout-label-row text-xs uppercase tracking-[1.5px] {headerSkipped ? 'w-fg-skipped' : displayHeaderSurface === 'green' ? 'w-fg-green' : displayHeaderSurface === 'yellow' ? 'w-fg-yellow' : 'text-zinc-500'}">
+          <div class="workout-label-row text-xs uppercase tracking-[1.5px] {headerSkipped ? 'w-fg-skipped' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-zinc-500'}">
             <span class="workout-label-text">{workoutLabel}</span>
             <span
               class="workout-tick-slot"
@@ -4705,12 +4167,10 @@
               {#if showHeaderEditActions}
                 <button
                   type="button"
-                  class="w-10 h-10 rounded-lg shrink-0 flex items-center justify-center border bg-transparent self-center transition-opacity hover:bg-[#1a1a1a] hover:text-white {displayHeaderSurface === 'green' ? 'w-hdr-icon-green' : displayHeaderSurface === 'yellow' ? 'w-hdr-icon-yellow' : displayHeaderSurface === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'} {headerEditActionsFading ? 'opacity-0 pointer-events-none duration-[700ms]' : isFuture ? 'opacity-70 pointer-events-none duration-150' : 'opacity-100 duration-150'}"
+                  class="w-10 h-10 rounded-lg shrink-0 flex items-center justify-center border bg-transparent self-center hover:bg-[#1a1a1a] hover:text-white {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'}"
                   onclick={() => enterRoutineBuilder()}
                   title="Routine editor"
                 ><CalendarDays class="size-5" /></button>
-              {:else}
-                <div class="w-10 h-10 shrink-0" aria-hidden="true"></div>
               {/if}
               {#if showHeaderTimers}
                 <span
@@ -4719,7 +4179,7 @@
                 >{headerTimerMinutes}</span>
               {/if}
             </div>
-            <span class="tpl-name min-w-0 text-xl font-semibold tracking-tight leading-none text-center {headerSkipped ? 'w-fg-skipped' : displayHeaderSurface === 'green' ? 'w-fg-green' : displayHeaderSurface === 'yellow' ? 'w-fg-yellow' : 'text-white'}">[ {dispTemplate?.name || 'Workout'} ]</span>
+            <span class="tpl-name min-w-0 text-xl font-semibold tracking-tight leading-none text-center {headerSkipped ? 'w-fg-skipped' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-white'}">[ {dispTemplate?.name || 'Workout'} ]</span>
             <div class="tpl-toolbar-side tpl-toolbar-side--end">
               {#if showHeaderTimers}
                 <span
@@ -4730,12 +4190,10 @@
               {#if showHeaderEditActions}
                 <button
                   type="button"
-                  class="w-10 h-10 rounded-lg shrink-0 flex items-center justify-center border bg-transparent self-center transition-opacity hover:bg-[#1a1a1a] hover:text-white {displayHeaderSurface === 'green' ? 'w-hdr-icon-green' : displayHeaderSurface === 'yellow' ? 'w-hdr-icon-yellow' : displayHeaderSurface === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'} {headerEditActionsFading ? 'opacity-0 pointer-events-none duration-[700ms]' : isFuture ? 'opacity-70 pointer-events-none duration-150' : 'opacity-100 duration-150'}"
+                  class="w-10 h-10 rounded-lg shrink-0 flex items-center justify-center border bg-transparent self-center hover:bg-[#1a1a1a] hover:text-white {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'}"
                   onclick={() => openTemplateEditor()}
                   title="Edit Exercises"
                 ><Pencil class="size-5" /></button>
-              {:else}
-                <div class="w-10 h-10 shrink-0" aria-hidden="true"></div>
               {/if}
             </div>
           </div>
@@ -4745,7 +4203,7 @@
             {:else if !useHistorical && isPerfectDay}
               <span class="perfect-day-badge">PERFECT DAY</span>
             {:else}
-              <div class="tpl-header-meta text-xs uppercase tracking-wide leading-none {headerSkipped ? 'w-fg-skipped-muted' : displayHeaderSurface === 'green' ? 'w-fg-green' : displayHeaderSurface === 'yellow' ? 'w-fg-yellow' : 'text-zinc-500'}">
+              <div class="tpl-header-meta text-xs uppercase tracking-wide leading-none {headerSkipped ? 'w-fg-skipped-muted' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-zinc-500'}">
                 {exCount} EXERCISES • {setCount} SETS
               </div>
             {/if}
@@ -4753,7 +4211,7 @@
           {#if useHistorical}
             <div class="h-1 w-full w-bg-green rounded-[1px] shrink-0"></div>
           {:else}
-            {@const progressCounts = revertProgressCounts()}
+            {@const progressCounts = setCounts}
             <div class="flex gap-[1px] h-1 w-full shrink-0">
             {#each Array(progressCounts.total) as _, i}
               <div
@@ -4789,7 +4247,8 @@
           {@const logSrc = isViewingToday ? todayLog : viewedLog}
           {@const isDoneViewed = !!logSrc?.workout_snapshot?.exercises && (isViewingToday ? (workoutState === 'done') : true)}
           {@const loggedEx = isDoneViewed ? getLoggedEx(logSrc, exercise.id) : null}
-          {@const displayCurrentWeight = loggedEx?.weight_before ?? exercise.current_weight}
+          {@const displayCurrentWeight = formatOneDecimal(loggedEx?.weight_before ?? exercise.current_weight ?? 0)}
+          {@const displayIncrementKg = formatOneDecimal(exercise.increment)}
           <div
             class="p-3 flex gap-1 status-surface {workoutExercisesEditable ? 'hover:brightness-110' : ''} {index > 0 ? (exRed ? 'border-t border-[color:var(--w-skipped-border)]' : 'border-t border-[#1e1e1e]') : ''} {exSurfaceClass}"
           >
@@ -4802,7 +4261,7 @@
             <div class="flex-1 flex flex-col gap-1.5">
               <div class="ex-top flex justify-between gap-3 {isTimeEx ? 'ex-top--time items-center' : 'items-start'}">
               <div class="truncate pr-2 min-w-0">
-                <div class="ex-name-row {workoutExercisesEditable ? 'hover:brightness-110' : ''} transition-all">
+                <div class="ex-name-row {workoutExercisesEditable ? 'hover:brightness-110' : ''}">
                   {#if exercise.exercise_type === 'reps'}
                     <Dumbbell class="size-3.5 shrink-0 {exRed ? 'text-current' : 'text-white'}" />
                   {:else}
@@ -4817,7 +4276,7 @@
                 </div>
                 <div class="ex-meta text-xs mt-0.5 tracking-wide {exRed ? 'w-fg-skipped-muted' : 'text-zinc-400'}">
                   {#if exercise.exercise_type === 'reps'}
-                    {exercise.target_sets}×{exercise.target_reps} @{displayCurrentWeight ?? 0}kg +{exercise.increment}kg
+                    {exercise.target_sets}×{exercise.target_reps} @{displayCurrentWeight}kg +{displayIncrementKg}kg
                   {:else}
                     {exercise.target_sets}× {exercise.target_minutes}m {exercise.target_seconds.toString().padStart(2, '0')}s +{exercise.increment}s
                   {/if}
@@ -4830,11 +4289,18 @@
                 {:else}
                   <!-- Narrow baseline input (fits ~3 digits) in the KG position, right-aligned -->
                   <div class="flex items-baseline justify-end">
-                    <input type="number" placeholder="80" class="font-timer text-2xl leading-none text-white bg-transparent border-none outline-none w-12 text-right"
+                    <input type="text" inputmode="decimal" autocomplete="off" placeholder="80" class="prop-num-input font-timer text-2xl leading-none text-white bg-transparent border-none outline-none w-12 text-right"
                       disabled={!workoutExercisesEditable}
+                      use:clampedNumericProp={{
+                        kind: 'baseKg',
+                        getValue: () => exercise.current_weight ?? 0,
+                        setValue: () => {},
+                      }}
                       onchange={async (e) => {
-                        const val = parseFloat((e.target as HTMLInputElement).value);
-                        if (val >= 0) { await db.saveExerciseBaseline(exercise.id, val); await loadData({ preserveSession: true }); }
+                        const input = e.currentTarget as HTMLInputElement;
+                        const { value } = clampBaseKgFieldInput(input.value);
+                        await db.saveExerciseBaseline(exercise.id, value);
+                        await loadData({ preserveSession: true });
                       }} />
                     <span class="unit text-[10px] text-zinc-400 font-normal ml-1 tracking-[1px]">KG</span>
                   </div>
@@ -4895,8 +4361,13 @@
                           <X class="size-3.5 shrink-0 opacity-90" strokeWidth={2.5} />
                         </div>
                       {:else if isEditingThisSet}
-                        <input type="number" id="input-{exercise.id}-{s}" value={repsValue !== undefined ? repsValue : ''} placeholder={exercise.target_reps.toString()}
-                          class="absolute inset-0 z-10 w-full h-full bg-transparent border-none outline-none text-center font-sans text-[10px] font-extrabold text-white"
+                        <input type="text" inputmode="numeric" autocomplete="off" id="input-{exercise.id}-{s}" placeholder={exercise.target_reps.toString()}
+                          class="prop-num-input absolute inset-0 z-10 w-full h-full bg-transparent border-none outline-none text-center font-sans text-[10px] font-extrabold text-white"
+                          use:clampedNumericProp={{
+                            kind: 'trackedReps',
+                            getValue: () => repsValue ?? 0,
+                            setValue: () => {},
+                          }}
                           onblur={() => saveManualRepEdit(exercise.id, s)}
                           onkeydown={(e) => { if (e.key === 'Enter') saveManualRepEdit(exercise.id, s); }} />
                       {:else}
@@ -5107,12 +4578,13 @@
                     <span class="shrink-0 {isAssigned ? 'text-emerald-400' : 'text-white'}">[</span>
                     <input
                       type="text"
-                      value={template.name}
+                      autocomplete="off"
                       use:focusExerciseNameInput
-                      onclick={(e) => e.stopPropagation()}
-                      oninput={(e) => {
-                        template.name = (e.currentTarget as HTMLInputElement).value;
+                      use:clampedTemplateNameProp={{
+                        getValue: () => template.name,
+                        setValue: (v) => { template.name = v; },
                       }}
+                      onclick={(e) => e.stopPropagation()}
                       onblur={() => commitRoutineTemplateNameEdit(template)}
                       onkeydown={(e) => {
                         if (e.key === 'Enter' || e.key === 'Escape') {
@@ -5120,7 +4592,7 @@
                           (e.currentTarget as HTMLInputElement).blur();
                         }
                       }}
-                      class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs flex-1 min-w-0 truncate leading-none {isAssigned ? 'text-emerald-400' : 'text-white'}"
+                      class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isAssigned ? 'text-emerald-400' : 'text-white'}"
                     />
                     <span class="shrink-0 {isAssigned ? 'text-emerald-400' : 'text-white'}">]</span>
                   {:else}
@@ -5179,7 +4651,8 @@
   {:else if currentView === 'edit_template'}
     <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3">
       <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
-        <button 
+        <button
+          type="button"
           class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
           onclick={exitEditTemplate}
           title="Save and go back"
@@ -5187,20 +4660,30 @@
           <ArrowLeft class="size-4" />
         </button>
         <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">TEMPLATE EDITOR</span>
-        <input 
-          bind:value={draftTemplateName} 
-          class="flex-1 min-w-0 h-8 bg-black border border-[#1e1e1e] text-xs text-white text-center px-2.5 rounded-lg outline-none focus:border-[#2a2a2a] placeholder:text-zinc-600"
-          placeholder="Template name"
-          disabled={!editingTemplate}
-        />
+        <div class="flex-1 min-w-0 flex items-center">
+          <input
+            autocomplete="off"
+            class="w-full h-8 bg-black border text-xs font-medium uppercase text-center px-2 rounded outline-none placeholder:text-zinc-600 {editingTemplate ? 'border-emerald-700 text-emerald-400 focus:border-emerald-600' : 'border-[#1e1e1e] text-white focus:border-[#2a2a2a]'}"
+            placeholder="Template name"
+            disabled={!editingTemplate}
+            use:clampedTemplateNameProp={{
+              getValue: () => draftTemplateName,
+              setValue: (v) => { draftTemplateName = v; },
+            }}
+          />
+        </div>
       </div>
+      {#if templateSaveError && currentView === 'edit_template'}
+        <p class="text-[10px] text-red-300 leading-snug">{templateSaveError}</p>
+      {/if}
 
       {#if !editingTemplate}
         <div class="text-center py-6">
           <p class="text-xs text-zinc-500 mb-2">No template loaded for this weekday.</p>
-          <button class="px-3 py-1 bg-[#141414] border border-[#1e1e1e] text-xs font-bold rounded-lg" onclick={() => enterRoutineBuilder()}>Assign or Create</button>
+          <button type="button" class="h-8 px-3 bg-[#141414] border border-[#1e1e1e] text-xs font-bold rounded" onclick={() => enterRoutineBuilder()}>Assign or Create</button>
         </div>
       {:else}
+        <div class="space-y-1.5">
         <!-- Exercises + properties: shared grid keeps headers, divider, and footers aligned -->
         <div class="grid grid-cols-[minmax(0,1fr)_9.25rem] gap-x-2 gap-y-1.5 items-stretch">
           <div class="col-start-1 row-start-1 h-5 flex items-center">
@@ -5210,15 +4693,15 @@
             <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">PROPERTIES</span>
           </div>
 
-          <div class="col-start-1 row-start-2 flex flex-col gap-1 min-h-0 min-w-0 self-stretch">
-            {#if draftExercises.length === 0}
-              <div class="text-center py-3 border border-dashed border-[#1e1e1e] rounded-lg text-[10px] text-zinc-500">No exercises yet. Tap + below.</div>
-            {/if}
+          <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
+            <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0">
+              {#if draftExercises.length === 0}
+                <div class="text-center py-3 border border-dashed border-[#1e1e1e] rounded text-[10px] text-zinc-500">No exercises yet. Tap + below.</div>
+              {/if}
 
-            <div class="space-y-1 flex-1 min-h-0">
               {#each draftExercises as exercise, index (exercise.id)}
                 {@const isSelected = selectedExerciseId === exercise.id}
-                <div 
+                <div
                   class="flex items-stretch gap-1 h-8"
                   draggable="true"
                   ondragstart={(e) => handleDragStart(e, index)}
@@ -5254,12 +4737,13 @@
                       {#if editingExerciseNameId === exercise.id}
                         <input
                           type="text"
-                          value={exercise.name}
+                          autocomplete="off"
                           use:focusExerciseNameInput
-                          onclick={(e) => e.stopPropagation()}
-                          oninput={(e) => {
-                            exercise.name = (e.currentTarget as HTMLInputElement).value;
+                          use:clampedExerciseNameProp={{
+                            getValue: () => exercise.name,
+                            setValue: (v) => { exercise.name = v; touchDraft(); },
                           }}
+                          onclick={(e) => e.stopPropagation()}
                           onblur={endExerciseNameEdit}
                           onkeydown={(e) => {
                             if (e.key === 'Enter' || e.key === 'Escape') {
@@ -5267,8 +4751,8 @@
                               (e.currentTarget as HTMLInputElement).blur();
                             }
                           }}
-                          class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs flex-1 min-w-0 truncate leading-none {isSelected ? 'text-emerald-400' : 'text-white'}"
-                          placeholder="Name"
+                          class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isSelected ? 'text-emerald-400' : 'text-white'}"
+                          placeholder="NAME"
                         />
                       {:else}
                         <span
@@ -5297,10 +4781,11 @@
 
             <button
               type="button"
-              class="w-full h-7 shrink-0 mt-1.5 rounded border border-[#1e1e1e] bg-white flex items-center justify-center text-black hover:bg-zinc-100 hover:border-[#2a2a2a] transition active:scale-[0.99]"
+              class="w-full h-7 shrink-0 mt-1.5 rounded border border-[#1e1e1e] bg-white flex items-center justify-center text-black hover:bg-zinc-100 hover:border-[#2a2a2a] transition"
               onclick={addNewExercise}
               title="Add exercise"
-              aria-label="Add exercise">
+              aria-label="Add exercise"
+            >
               <Plus class="size-4" strokeWidth={2.5} />
             </button>
           </div>
@@ -5312,22 +4797,22 @@
                 {#if ex}
                   <div class="space-y-2">
                   <div
-                    class="relative grid grid-cols-2 rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
+                    class="relative grid grid-cols-2 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
                     role="group"
                     aria-label="Exercise type">
                     <div
-                      class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded-md border border-[#2a2a2a] bg-[#141414] transition-transform duration-200 ease-out"
+                      class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
                       style="transform: translateX({ex.exercise_type === 'time' ? 'calc(100% + 4px)' : '0'})"
                     ></div>
                     <button
                       type="button"
-                      class="relative z-10 h-7 flex items-center justify-center text-[9px] font-bold tracking-[0.12em] transition-colors {ex.exercise_type === 'reps' ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'}"
-                      onclick={() => { ex.exercise_type = 'reps'; }}
+                      class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.12em] transition-colors {ex.exercise_type === 'reps' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                      onclick={() => switchDraftExerciseType(ex, 'reps')}
                     >REPS</button>
                     <button
                       type="button"
-                      class="relative z-10 h-7 flex items-center justify-center text-[9px] font-bold tracking-[0.12em] transition-colors {ex.exercise_type === 'time' ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'}"
-                      onclick={() => { ex.exercise_type = 'time'; }}
+                      class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.12em] transition-colors {ex.exercise_type === 'time' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                      onclick={() => switchDraftExerciseType(ex, 'time')}
                     >TIME</button>
                   </div>
 
@@ -5335,48 +4820,49 @@
                     <div class="grid grid-cols-2 gap-1 text-[9px]">
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Sets</span>
-                        <input type="number" class="w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" value={ex.target_sets} oninput={(e) => { ex.target_sets = +(e.currentTarget as HTMLInputElement).value; }} />
+                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'sets', getValue: () => ex.target_sets, setValue: (v) => { ex.target_sets = v; touchDraft(); } }} />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Reps</span>
-                        <input type="number" class="w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" value={ex.target_reps} oninput={(e) => { ex.target_reps = +(e.currentTarget as HTMLInputElement).value; }} />
+                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'reps', getValue: () => ex.target_reps, setValue: (v) => { ex.target_reps = v; touchDraft(); } }} />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Base kg</span>
-                        <input type="number" class="w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" value={ex.current_weight ?? 0} oninput={(e) => { ex.current_weight = +(e.currentTarget as HTMLInputElement).value; }} />
+                        <input type="text" inputmode="decimal" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'baseKg', getValue: () => ex.current_weight ?? 0, setValue: (v) => { ex.current_weight = v; touchDraft(); } }} />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">+ kg</span>
-                        <input type="number" step="0.5" class="w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" value={ex.increment} oninput={(e) => { ex.increment = +(e.currentTarget as HTMLInputElement).value; }} />
+                        <input type="text" inputmode="decimal" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'incKg', getValue: () => ex.increment, setValue: (v) => { ex.increment = v; touchDraft(); } }} />
                       </div>
                     </div>
                   {:else}
                     <div class="grid grid-cols-2 gap-1 text-[9px]">
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Sets</span>
-                        <input type="number" class="w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" value={ex.target_sets} oninput={(e) => { ex.target_sets = +(e.currentTarget as HTMLInputElement).value; }} />
+                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'sets', getValue: () => ex.target_sets, setValue: (v) => { ex.target_sets = v; touchDraft(); } }} />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Min</span>
-                        <input type="number" class="w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" value={ex.target_minutes} oninput={(e) => { ex.target_minutes = +(e.currentTarget as HTMLInputElement).value; }} />
+                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'mins', getValue: () => ex.target_minutes, setValue: (v) => { ex.target_minutes = v; touchDraft(); } }} />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Sec</span>
-                        <input type="number" class="w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" value={ex.target_seconds} oninput={(e) => { ex.target_seconds = +(e.currentTarget as HTMLInputElement).value; }} />
+                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'secs', getValue: () => ex.target_seconds, setValue: (v) => { ex.target_seconds = v; touchDraft(); } }} />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">+ s</span>
-                        <input type="number" class="w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" value={ex.increment} oninput={(e) => { ex.increment = +(e.currentTarget as HTMLInputElement).value; draftExercises = [...draftExercises]; }} />
+                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'incSec', getValue: () => ex.increment, setValue: (v) => { ex.increment = v; touchDraft(); } }} />
                       </div>
                     </div>
                   {/if}
                   </div>
                 {/if}
               {:else}
-                <div class="flex-1 min-h-0 flex items-center justify-center text-center px-1 text-[9px] leading-snug text-zinc-500 border border-dashed border-[#1e1e1e] rounded-lg">Select an exercise to edit.</div>
+                <div class="flex-1 min-h-0 flex items-center justify-center text-center px-1 text-[9px] leading-snug text-zinc-500 border border-dashed border-[#1e1e1e] rounded">Select an exercise to edit.</div>
               {/if}
             </div>
           </div>
+        </div>
         </div>
       {/if}
     </div>
@@ -5395,21 +4881,33 @@
       </div>
 
       <div class="w-full max-w-[300px] rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden">
-        <div class="flex gap-1 p-1 border-b border-[#1e1e1e] bg-[#111]">
-          <button
-            type="button"
-            class="flex-1 h-9 rounded-lg text-[10px] font-black tracking-[0.12em] transition-all {authMode === 'signin' ? 'bg-white text-black' : 'text-zinc-500 hover:text-white'}"
-            disabled={signingIn}
-            onclick={() => setAuthMode('signin')}>
-            SIGN IN
-          </button>
-          <button
-            type="button"
-            class="flex-1 h-9 rounded-lg text-[10px] font-black tracking-[0.12em] transition-all {authMode === 'signup' ? 'bg-white text-black' : 'text-zinc-500 hover:text-white'}"
-            disabled={signingIn}
-            onclick={() => setAuthMode('signup')}>
-            SIGN UP
-          </button>
+        <div class="p-1 border-b border-[#1e1e1e] bg-[#111]">
+          <div
+            class="relative grid grid-cols-2 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
+            role="group"
+            aria-label="Authentication mode"
+          >
+            <div
+              class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+              style="transform: translateX({authMode === 'signup' ? 'calc(100% + 4px)' : '0'})"
+            ></div>
+            <button
+              type="button"
+              class="relative z-10 h-9 flex items-center justify-center text-[10px] font-black tracking-[0.12em] transition-colors {authMode === 'signin' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+              disabled={signingIn}
+              onclick={() => setAuthMode('signin')}
+            >
+              SIGN IN
+            </button>
+            <button
+              type="button"
+              class="relative z-10 h-9 flex items-center justify-center text-[10px] font-black tracking-[0.12em] transition-colors {authMode === 'signup' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+              disabled={signingIn}
+              onclick={() => setAuthMode('signup')}
+            >
+              SIGN UP
+            </button>
+          </div>
         </div>
 
         <div class="p-3 text-left">
@@ -5489,32 +4987,46 @@
                 />
               </div>
             {/if}
-            <div class="relative">
-              <Lock class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-zinc-500 pointer-events-none" />
-              <input
-                type="password"
-                autocomplete={authMode === 'signup' ? 'new-password' : 'current-password'}
-                bind:value={authPassword}
-                disabled={signingIn}
-                placeholder="••••••••"
-                class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white placeholder:text-zinc-600 outline-none focus:border-zinc-500 disabled:opacity-60"
-              />
-            </div>
-            {#if authMode === 'signup'}
-              <div
-                class="relative"
-                transition:slide={{ duration: 280, easing: cubicOut }}>
-                <LockKeyhole class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-zinc-500 pointer-events-none z-10" />
+            <div>
+              <div class="relative">
+                <Lock class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-zinc-500 pointer-events-none" />
                 <input
                   type="password"
-                  autocomplete="new-password"
-                  bind:value={authConfirmPassword}
+                  autocomplete={authMode === 'signup' ? 'new-password' : 'current-password'}
+                  bind:value={authPassword}
                   disabled={signingIn}
                   placeholder="••••••••"
                   class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white placeholder:text-zinc-600 outline-none focus:border-zinc-500 disabled:opacity-60"
                 />
               </div>
-            {/if}
+              <div
+                class="auth-confirm-reveal"
+                class:auth-confirm-reveal--open={authMode === 'signup'}
+                aria-hidden={authMode !== 'signup'}
+              >
+                <div class="auth-confirm-reveal__inner">
+                  <div class="relative">
+                    <LockKeyhole class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-zinc-500 pointer-events-none z-10" />
+                    <input
+                      type="password"
+                      autocomplete="new-password"
+                      bind:value={authConfirmPassword}
+                      disabled={signingIn || authMode !== 'signup'}
+                      placeholder=""
+                      tabindex={authMode === 'signup' ? 0 : -1}
+                      aria-label="Confirm password"
+                      class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white outline-none focus:border-zinc-500 disabled:opacity-60"
+                    />
+                    {#if authMode === 'signup' && !authConfirmPassword}
+                      <span
+                        class="absolute left-10 top-1/2 -translate-y-1/2 text-sm text-zinc-600 pointer-events-none select-none"
+                        aria-hidden="true"
+                      >••••••••</span>
+                    {/if}
+                  </div>
+                </div>
+              </div>
+            </div>
             <button
               type="submit"
               class="h-11 rounded-xl font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-emerald-600 text-white hover:brightness-110 disabled:opacity-60"

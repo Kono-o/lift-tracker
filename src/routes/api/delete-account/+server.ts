@@ -1,3 +1,4 @@
+/** Web deploy fallback only — Capacitor builds use the `delete_own_account` RPC. */
 import { createClient } from "@supabase/supabase-js";
 import { json, type RequestHandler } from "@sveltejs/kit";
 import {

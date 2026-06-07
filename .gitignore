@@ -6,6 +6,15 @@ node_modules
 .output
 build
 dist
+all
+
+# Capacitor native projects (generated via npm run cap:add:*)
+android
+ios
+
+# Android release signing (generate locally; never commit secrets)
+android-signing/keystore.properties
+android-signing/*.keystore
 
 # Deployment platform metadata (may contain project ids)
 .vercel

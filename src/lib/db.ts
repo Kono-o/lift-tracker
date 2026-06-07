@@ -18,6 +18,7 @@ import {
 	type DraftStatLike,
 } from "./statSanitize";
 import { createDbTrackingFetch, pulseDbActivity } from "./dbActivity";
+import { getNativeOAuthRedirectUrl, isNativeApp } from "./native";
 
 export const supabase = createClient(
 	PUBLIC_SUPABASE_URL,
@@ -37,6 +38,7 @@ export const supabase = createClient(
 
 function getOAuthRedirectUrl(): string {
 	if (typeof window === "undefined") return "";
+	if (isNativeApp()) return getNativeOAuthRedirectUrl();
 	return `${window.location.origin}/auth/callback`;
 }
 

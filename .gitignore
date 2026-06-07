@@ -60,3 +60,10 @@ vite.config.ts.timestamp-*
 *.pem
 *.key
 *.p12
+
+# Local helper / personal scripts (not part of the shared project)
+setup-db.fish
+*.local.fish
+local-*.fish
+reset-db.fish
+supabase-local.*

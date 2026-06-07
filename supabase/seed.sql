@@ -78,12 +78,12 @@ begin
     target_sets, target_reps, target_minutes, target_seconds,
     increment, current_weight
   ) values
-    (gen_random_uuid(), v_user_id, 'SEED: Bench Press',     'reps', 4, 8, 0, 0, 2.5, 82.5),
-    (gen_random_uuid(), v_user_id, 'SEED: Overhead Press',  'reps', 4, 6, 0, 0, 2.5, 55.0),
-    (gen_random_uuid(), v_user_id, 'SEED: Bent Over Row',   'reps', 4, 8, 0, 0, 2.5, 70.0),
-    (gen_random_uuid(), v_user_id, 'SEED: Back Squat',      'reps', 5, 5, 0, 0, 5.0, 100.0),
-    (gen_random_uuid(), v_user_id, 'SEED: Face Pulls',      'reps', 3, 15, 0, 0, 1.25, 12.5),
-    (gen_random_uuid(), v_user_id, 'SEED: Plank',           'time', 3, 0, 1, 0, 5, null)
+    (gen_random_uuid(), v_user_id, 'SEED: Bench Press',     'reps', 4, 8, null, null, 2.5, 82.5),
+    (gen_random_uuid(), v_user_id, 'SEED: Overhead Press',  'reps', 4, 6, null, null, 2.5, 55.0),
+    (gen_random_uuid(), v_user_id, 'SEED: Bent Over Row',   'reps', 4, 8, null, null, 2.5, 70.0),
+    (gen_random_uuid(), v_user_id, 'SEED: Back Squat',      'reps', 5, 5, null, null, 5.0, 100.0),
+    (gen_random_uuid(), v_user_id, 'SEED: Face Pulls',      'reps', 3, 15, null, null, 1.25, 12.5),
+    (gen_random_uuid(), v_user_id, 'SEED: Plank',           'time', 3, null, 1, 0, 5, null)
   returning id into v_ex_bench;   -- we only need one for later reference, but we'll fetch others
 
   -- Fetch the ids we just created so we can link them cleanly
@@ -137,11 +137,15 @@ begin
   -- 5. Some sample workout history (last few days)
   --    Uses realistic looking snapshots so the UI has something to display.
   -- ---------------------------------------------------------------------------
+  insert into public.exercise_personal_bests (exercise_id, user_id, best_weight, achieved_on)
+  values (v_ex_bench, v_user_id, 82.5, current_date - 1);
+
   insert into public.workout_history (
     user_id,
     workout_date,
     template_id,
     template_name_snapshot,
+    workout_status,
     is_skipped,
     duration_seconds,
     is_perfect_day,
@@ -154,24 +158,17 @@ begin
       current_date - 1,
       v_template_push,
       'SEED: Push',
+      0,
       false,
       42 * 60,
       true,
       jsonb_build_object(
         'total_volume_kg', 1240,
         'total_sets', 12,
-        'pr_count', 1,
-        'reps', jsonb_build_object(
-          v_ex_bench || '-0', 8, v_ex_bench || '-1', 8, v_ex_bench || '-2', 7, v_ex_bench || '-3', 8,
-          v_ex_ohp  || '-0', 6, v_ex_ohp  || '-1', 6, v_ex_ohp  || '-2', 5, v_ex_ohp  || '-3', 6,
-          v_ex_facepull || '-0', 15, v_ex_facepull || '-1', 15, v_ex_facepull || '-2', 15
-        )
+        'pr_count', 1
       ),
       jsonb_build_object(
         'seed', true,
-        'template_name', 'SEED: Push',
-        'duration_seconds', 42 * 60,
-        'is_perfect_day', true,
         'exercises', jsonb_build_array(
           jsonb_build_object(
             'exercise_id', v_ex_bench,
@@ -182,13 +179,12 @@ begin
             'weight_before', 80.0,
             'weight_after', 82.5,
             'sets', jsonb_build_array(
-              jsonb_build_object('set_number',1,'reps_completed',8,'weight',82.5,'is_pr',false),
-              jsonb_build_object('set_number',2,'reps_completed',8,'weight',82.5,'is_pr',false),
-              jsonb_build_object('set_number',3,'reps_completed',7,'weight',82.5,'is_pr',false),
-              jsonb_build_object('set_number',4,'reps_completed',8,'weight',82.5,'is_pr',false)
+              jsonb_build_object('set_number',1,'reps_completed',8,'weight',82.5),
+              jsonb_build_object('set_number',2,'reps_completed',8,'weight',82.5),
+              jsonb_build_object('set_number',3,'reps_completed',7,'weight',82.5),
+              jsonb_build_object('set_number',4,'reps_completed',8,'weight',82.5)
             )
           )
-          -- (abbreviated for seed — the UI will still render the rest reasonably)
         )
       )
     ),
@@ -199,24 +195,17 @@ begin
       current_date - 3,
       v_template_full,
       'SEED: Full Body',
+      0,
       false,
       38 * 60,
       false,
       jsonb_build_object(
         'total_volume_kg', 980,
         'total_sets', 9,
-        'pr_count', 0,
-        'reps', jsonb_build_object(
-          v_ex_bench || '-0', 8, v_ex_bench || '-1', 7,
-          v_ex_squat || '-0', 5, v_ex_squat || '-1', 5, v_ex_squat || '-2', 4,
-          v_ex_plank || '-0', null, v_ex_plank || '-1', null
-        )
+        'pr_count', 0
       ),
       jsonb_build_object(
         'seed', true,
-        'template_name', 'SEED: Full Body',
-        'duration_seconds', 38 * 60,
-        'is_perfect_day', false,
         'exercises', jsonb_build_array(
           jsonb_build_object(
             'exercise_id', v_ex_bench,
@@ -227,9 +216,9 @@ begin
             'weight_before', 82.5,
             'weight_after', 82.5,
             'sets', jsonb_build_array(
-              jsonb_build_object('set_number',1,'reps_completed',8,'weight',82.5,'is_pr',false),
-              jsonb_build_object('set_number',2,'reps_completed',7,'weight',82.5,'is_pr',false),
-              jsonb_build_object('set_number',3,'reps_completed',null,'weight',null,'is_pr',false)
+              jsonb_build_object('set_number',1,'reps_completed',8,'weight',82.5),
+              jsonb_build_object('set_number',2,'reps_completed',7,'weight',82.5),
+              jsonb_build_object('set_number',3)
             )
           )
         )

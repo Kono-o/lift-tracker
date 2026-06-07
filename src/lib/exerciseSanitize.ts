@@ -1,6 +1,7 @@
 /** Limits and sanitizers for template / exercise editor fields. */
 
 export const MAX_SETS = 12;
+export const MIN_REPS = 1;
 export const MAX_REPS = 999;
 export const MAX_BASE_KG = 500;
 export const MAX_INCREMENT_KG = 500;
@@ -13,6 +14,23 @@ export const MIN_INCREMENT_SEC = 1;
 /** Default +s for new / normalized time exercises. */
 export const DEFAULT_INCREMENT_SEC = 5;
 export const DEFAULT_TARGET_MINUTES = 0;
+export const DEFAULT_TARGET_REPS = 12;
+export const DEFAULT_BASE_KG = 15;
+export const DEFAULT_INCREMENT_KG = 2.5;
+export const DEFAULT_TARGET_SECONDS = 30;
+
+export type ExerciseTypeFieldStash = {
+	reps?: {
+		target_reps: number;
+		current_weight: number | null;
+		increment: number;
+	};
+	time?: {
+		target_minutes: number;
+		target_seconds: number;
+		increment: number;
+	};
+};
 
 export type DraftExerciseLike = {
 	name?: string;
@@ -122,7 +140,7 @@ export function clampSetsFieldInput(raw: string): ClampedFieldInput {
 }
 
 export function clampRepsFieldInput(raw: string): ClampedFieldInput {
-	return clampIntFieldInput(raw, 0, MAX_REPS);
+	return clampIntFieldInput(raw, MIN_REPS, MAX_REPS);
 }
 
 export function clampMinsFieldInput(raw: string): ClampedFieldInput {
@@ -168,7 +186,7 @@ export function sanitizeSets(n: number): number {
 }
 
 export function sanitizeReps(n: number): number {
-	return clampInt(n, 0, MAX_REPS);
+	return clampInt(n, MIN_REPS, MAX_REPS);
 }
 
 export function sanitizeBaseKg(n: number): number {
@@ -325,4 +343,76 @@ export function sanitizeExerciseRowForDb(
 	const copy = { ...ex };
 	normalizeDraftExercise(copy);
 	return copy;
+}
+
+/** Snapshot active type fields before toggling reps ↔ time. */
+export function captureExerciseTypeFields(
+	ex: DraftExerciseLike,
+): Partial<ExerciseTypeFieldStash> {
+	if (ex.exercise_type === "reps") {
+		const reps = sanitizeReps(ex.target_reps ?? 0);
+		return {
+			reps: {
+				target_reps: reps > 0 ? reps : DEFAULT_TARGET_REPS,
+				current_weight:
+					ex.current_weight != null
+						? sanitizeBaseKg(ex.current_weight)
+						: null,
+				increment: sanitizeIncrementKg(
+					ex.increment ?? DEFAULT_INCREMENT_KG,
+				),
+			},
+		};
+	}
+	return {
+		time: {
+			target_minutes: sanitizeMinutes(
+				ex.target_minutes ?? DEFAULT_TARGET_MINUTES,
+			),
+			target_seconds: sanitizeSeconds(ex.target_seconds ?? 0),
+			increment: sanitizeIncrementSec(
+				ex.increment ?? DEFAULT_INCREMENT_SEC,
+			),
+		},
+	};
+}
+
+export function mergeExerciseTypeStash(
+	existing: ExerciseTypeFieldStash | undefined,
+	captured: Partial<ExerciseTypeFieldStash>,
+): ExerciseTypeFieldStash {
+	return {
+		...existing,
+		...captured,
+		reps: captured.reps ?? existing?.reps,
+		time: captured.time ?? existing?.time,
+	};
+}
+
+/** Apply a type toggle, restoring stashed fields when switching back. */
+export function applyDraftExerciseType(
+	ex: DraftExerciseLike,
+	type: "reps" | "time",
+	stash?: ExerciseTypeFieldStash,
+): void {
+	ex.exercise_type = type;
+	if (type === "time") {
+		const saved = stash?.time;
+		ex.target_minutes = saved?.target_minutes ?? DEFAULT_TARGET_MINUTES;
+		const secs = saved?.target_seconds ?? ex.target_seconds ?? 0;
+		ex.target_seconds =
+			secs > 0 ? sanitizeSeconds(secs) : DEFAULT_TARGET_SECONDS;
+		ex.increment = saved?.increment ?? DEFAULT_INCREMENT_SEC;
+		return;
+	}
+
+	const saved = stash?.reps;
+	const reps = saved?.target_reps ?? ex.target_reps ?? 0;
+	ex.target_reps = reps > 0 ? sanitizeReps(reps) : DEFAULT_TARGET_REPS;
+	ex.current_weight =
+		saved?.current_weight ??
+		(ex.current_weight != null
+			? sanitizeBaseKg(ex.current_weight)
+			: DEFAULT_BASE_KG);
+	ex.increment = saved?.increment ?? DEFAULT_INCREMENT_KG;
 }

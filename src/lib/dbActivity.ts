@@ -17,6 +17,29 @@ let snapshot: DbActivitySnapshot = {
 	totalPulses: 0,
 };
 
+let flashBatchDepth = 0;
+let flashBatchPending = false;
+
+function notifyFlashListeners(): void {
+	for (const listener of listeners) {
+		listener();
+	}
+}
+
+/** Coalesce multiple DB pulses into one indicator flash (e.g. editor exit save). */
+export async function runDbActivityBatch<T>(fn: () => Promise<T>): Promise<T> {
+	flashBatchDepth++;
+	try {
+		return await fn();
+	} finally {
+		flashBatchDepth = Math.max(0, flashBatchDepth - 1);
+		if (flashBatchDepth === 0 && flashBatchPending) {
+			flashBatchPending = false;
+			notifyFlashListeners();
+		}
+	}
+}
+
 export function getDbActivitySnapshot(): DbActivitySnapshot {
 	return { ...snapshot };
 }
@@ -40,9 +63,11 @@ export function pulseDbActivity(requestLabel?: string): void {
 	for (const listener of snapshotListeners) {
 		listener();
 	}
-	for (const listener of listeners) {
-		listener();
+	if (flashBatchDepth > 0) {
+		flashBatchPending = true;
+		return;
 	}
+	notifyFlashListeners();
 }
 
 function isTrackedRequest(input: RequestInfo | URL): boolean {

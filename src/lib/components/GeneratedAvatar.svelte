@@ -20,12 +20,25 @@
 
   const hash = $derived(hashCode(userId));
 
-  // Derive nice colors from the hash (dark theme friendly)
-  const bgColor = $derived(`hsl(${hash % 360}, 22%, 14%)`);
-  const fgColor = $derived(`hsl(${hash % 360}, 68%, 62%)`);
-
   const GRID_SIZE = 5;
   const cellSize = 100 / GRID_SIZE;
+
+  // Per-user hue from hash; second cube color is its HSL complement (+180°)
+  const avatarColors = $derived.by(() => {
+    const hue = hash % 360;
+    const complement = (hue + 180) % 360;
+    return {
+      bg: `hsl(${hue}, 22%, 14%)`,
+      cubeA: `hsl(${hue}, 68%, 62%)`,
+      cubeB: `hsl(${complement}, 68%, 62%)`,
+    };
+  });
+
+  function cubeFill(x: number, y: number): string {
+    const symX = Math.min(x, GRID_SIZE - 1 - x);
+    const bit = (hash >> ((y * GRID_SIZE + symX) % 31)) & 1;
+    return bit ? avatarColors.cubeA : avatarColors.cubeB;
+  }
 
   // Generate left-right symmetric 5x5 grid
   const grid = $derived.by(() => {
@@ -57,7 +70,7 @@
   aria-hidden="true"
 >
   <!-- Background cube -->
-  <rect x="0" y="0" width="100" height="100" fill={bgColor} rx={rounded} />
+  <rect x="0" y="0" width="100" height="100" fill={avatarColors.bg} rx={rounded} />
 
   <!-- Unique pattern (symmetric permutation based on user ID) as nested inner cubes -->
   {#each grid as row, y}
@@ -68,7 +81,7 @@
           y={y * cellSize + 2}
           width={cellSize - 4}
           height={cellSize - 4}
-          fill={fgColor}
+          fill={cubeFill(x, y)}
           rx="2"
         />
       {/if}

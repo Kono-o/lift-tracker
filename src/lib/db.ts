@@ -452,35 +452,58 @@ function mapTemplateExercises(templateRow: {
 		.sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
 }
 
+function exerciseRowForDb(
+	uid: string,
+	safe: ReturnType<typeof sanitizeExerciseRowForDb>,
+	exerciseId?: string,
+): Record<string, unknown> {
+	const base =
+		safe.exercise_type === "reps"
+			? {
+					user_id: uid,
+					name: safe.name,
+					exercise_type: "reps" as const,
+					target_sets: safe.target_sets ?? 0,
+					target_reps: safe.target_reps ?? 0,
+					target_minutes: null,
+					target_seconds: null,
+					increment: safe.increment ?? 0,
+					current_weight: safe.current_weight ?? null,
+				}
+			: {
+					user_id: uid,
+					name: safe.name,
+					exercise_type: "time" as const,
+					target_sets: safe.target_sets ?? 0,
+					target_reps: null,
+					target_minutes: safe.target_minutes ?? 0,
+					target_seconds: safe.target_seconds ?? 0,
+					increment: safe.increment ?? 0,
+					current_weight: null,
+				};
+	if (exerciseId) return { ...base, id: exerciseId };
+	return base;
+}
+
 async function fetchExercisesForTemplate(templateId: string): Promise<Exercise[]> {
-	// Load the ordered links first (more reliable than embedded relation in all setups)
-	const { data: linkRows, error: linkErr } = await supabase
+	const { data, error } = await supabase
 		.from("template_exercises")
-		.select("exercise_id, display_order")
+		.select("display_order, exercises(*)")
 		.eq("template_id", templateId)
 		.order("display_order");
-	if (linkErr) throw linkErr;
+	if (error) throw error;
 
-	const orderedIds = (linkRows ?? []).map((r: any) => r.exercise_id as string);
-	if (orderedIds.length === 0) return [];
-
-	// Then fetch the exercise rows by id (avoids problematic deep embeds)
-	const { data: exRows, error: exErr } = await supabase
-		.from("exercises")
-		.select("*")
-		.in("id", orderedIds);
-	if (exErr) throw exErr;
-
-	const exById = new Map((exRows ?? []).map((e: any) => [e.id as string, e as Exercise]));
-
-	const result = (linkRows ?? [])
+	return (data ?? [])
 		.map((link: any) => {
-			const ex = exById.get(link.exercise_id);
-			if (!ex) return null;
-			return { ...ex, display_order: link.display_order } as Exercise;
+			const raw = link.exercises;
+			const exercise = Array.isArray(raw) ? raw[0] : raw;
+			if (!exercise) return null;
+			return {
+				...normalizeExerciseFromDb(exercise as Exercise),
+				display_order: link.display_order,
+			} as Exercise;
 		})
-		.filter((e): e is Exercise => !!e);
-	return result;
+		.filter((exercise): exercise is Exercise => exercise !== null);
 }
 
 export interface Template {
@@ -505,24 +528,27 @@ export interface ScheduleRow {
 	updated_at: string;
 }
 
+/** 0=completed  1=skipped  2=rest  3=in_progress */
+export type WorkoutStatus = 0 | 1 | 2 | 3;
+
+export const WORKOUT_STATUS = {
+	completed: 0,
+	skipped: 1,
+	rest: 2,
+	in_progress: 3,
+} as const;
+
 export interface WorkoutHistory {
-	id: string;
 	user_id: string;
-
 	workout_date: string;
-
 	template_id: string | null;
 	template_name_snapshot: string | null;
-
+	workout_status: WorkoutStatus;
 	is_skipped: boolean;
-
-	// Top-level scalar fields (mirrors values in performance_snapshot for fast queries)
 	duration_seconds: number | null;
 	is_perfect_day: boolean;
-
 	performance_snapshot: PerformanceSnapshot;
 	workout_snapshot: WorkoutSnapshot;
-
 	created_at: string;
 }
 
@@ -614,123 +640,89 @@ export function parseTimeResultToSeconds(result: string): number | null {
 }
 
 export function isWorkoutInProgress(
-	log: Pick<WorkoutHistory, "is_skipped" | "workout_snapshot"> | null,
+	log: Pick<
+		WorkoutHistory,
+		"is_skipped" | "workout_status" | "workout_snapshot"
+	> | null,
 ): boolean {
 	return (
 		!!log &&
 		!log.is_skipped &&
 		!log.workout_snapshot?.is_rest &&
-		!!log.workout_snapshot?.in_progress
+		(log.workout_status === WORKOUT_STATUS.in_progress ||
+			!!log.workout_snapshot?.in_progress)
 	);
 }
 
-function buildExerciseSnapshotsFromPerformance(
-	template: Template,
-	performanceSnapshot: PerformanceSnapshot,
-): WorkoutSnapshotExercise[] {
-	return template.exercises.map((ex) => {
-		if (ex.exercise_type === "reps") {
-			const sets: WorkoutSnapshotExerciseSet[] = Array.from(
-				{ length: ex.target_sets },
-				(_, s) => {
-					const raw = performanceSnapshot.reps?.[`${ex.id}-${s}`];
-					const repsCompleted =
-						raw != null && raw > 0 ? raw : null;
-					return {
-						set_number: s + 1,
-						reps_completed: repsCompleted,
-						seconds_completed: null,
-						weight: ex.current_weight ?? null,
-						is_pr: false,
-					};
-				},
-			);
-			return {
-				exercise_id: ex.id,
-				name: ex.name,
-				exercise_type: "reps",
-				exercise_is_pr: false,
-				target_sets: ex.target_sets,
-				target_reps: ex.target_reps,
-				increment: ex.increment,
-				weight_before: ex.current_weight,
-				weight_after: ex.current_weight,
-				sets,
-			};
-		}
-
-		const sets: WorkoutSnapshotExerciseSet[] = Array.from(
-			{ length: ex.target_sets },
-			(_, s) => {
-				const entry = performanceSnapshot.times?.[`${ex.id}-${s}`];
-				return {
-					set_number: s + 1,
-					reps_completed: null,
-					seconds_completed: entry
-						? parseTimeResultToSeconds(entry.result)
-						: null,
-					weight: null,
-					is_pr: false,
-				};
-			},
-		);
-
+function normalizeExerciseFromDb(row: Exercise): Exercise {
+	if (row.exercise_type === "reps") {
 		return {
-			exercise_id: ex.id,
-			name: ex.name,
-			exercise_type: "time",
-			exercise_is_pr: false,
-			target_sets: ex.target_sets,
-			target_minutes: ex.target_minutes,
-			target_seconds: ex.target_seconds,
-			sets,
+			...row,
+			target_reps: row.target_reps ?? 0,
+			target_minutes: 0,
+			target_seconds: 0,
 		};
-	});
+	}
+	return {
+		...row,
+		target_reps: 0,
+		target_minutes: row.target_minutes ?? 0,
+		target_seconds: row.target_seconds ?? 0,
+		current_weight: null,
+	};
 }
 
-async function replaceTodayWorkoutRow(row: Record<string, unknown>) {
-	const uid = await requireUserId();
-	const date = todayDateString();
-	const { error: deleteError } = await supabase
-		.from("workout_history")
-		.delete()
-		.eq("user_id", uid)
-		.eq("workout_date", date);
-	if (deleteError) throw deleteError;
+function stripNullishJson<T extends Record<string, unknown>>(obj: T): T {
+	return JSON.parse(JSON.stringify(obj)) as T;
+}
 
-	const { error: insertError } = await supabase
-		.from("workout_history")
-		.insert({ user_id: uid, workout_date: date, ...row });
-	if (insertError) throw insertError;
+export interface CompleteWorkoutResult {
+	workout: WorkoutHistory;
+	updatedExercises: Array<{ id: string; current_weight: number | null }>;
+}
+
+function performanceTimesToSeconds(
+	times: PerformanceSnapshot["times"],
+): Record<string, number> {
+	const out: Record<string, number> = {};
+	if (!times) return out;
+	for (const [key, entry] of Object.entries(times)) {
+		const raw =
+			typeof entry === "number"
+				? entry
+				: typeof entry === "object" && entry && "result" in entry
+					? parseTimeResultToSeconds(String(entry.result))
+					: null;
+		if (raw != null) out[key] = raw;
+	}
+	return out;
 }
 
 /**
  * Fetch the all-time best weight for a given exercise across all history.
  * Used to determine if a set is a new personal record.
  */
-async function getExerciseAllTimeBest(exerciseId: string): Promise<number> {
+async function getExerciseAllTimeBests(
+	exerciseIds: string[],
+): Promise<Map<string, number>> {
+	const map = new Map<string, number>();
+	if (exerciseIds.length === 0) return map;
+
 	const { data, error } = await supabase
-		.from("workout_history")
-		.select("workout_snapshot")
-		.not("workout_snapshot", "is", null);
+		.from("exercise_personal_bests")
+		.select("exercise_id, best_weight")
+		.in("exercise_id", exerciseIds);
 
-	if (error || !data) return 0;
-
-	let best = 0;
-
-	for (const row of data) {
-		const snapshot = row.workout_snapshot as WorkoutSnapshot;
-		if (snapshot.in_progress || snapshot.skipped || snapshot.is_rest) continue;
-		const match = snapshot.exercises?.find((e) => e.exercise_id === exerciseId);
-		if (!match) continue;
-		for (const set of match.sets ?? []) {
-			if (set.weight != null && set.weight > best) {
-				best = set.weight;
-			}
-		}
+	if (error) throw error;
+	for (const row of data ?? []) {
+		map.set(row.exercise_id, Number(row.best_weight) || 0);
 	}
+	return map;
+}
 
-	return best;
+async function getExerciseAllTimeBest(exerciseId: string): Promise<number> {
+	const bests = await getExerciseAllTimeBests([exerciseId]);
+	return bests.get(exerciseId) ?? 0;
 }
 
 // ============================================================
@@ -1040,8 +1032,10 @@ export const db = {
 
 		const uid = user.id;
 		const results = await Promise.all([
+			supabase.from("exercise_personal_bests").delete().eq("user_id", uid),
 			supabase.from("exercises").delete().eq("user_id", uid),
 			supabase.from("workout_history").delete().eq("user_id", uid),
+			supabase.from("bodyweight_logs").delete().eq("user_id", uid),
 			supabase.from("templates").delete().eq("user_id", uid),
 			supabase.from("schedule").delete().eq("user_id", uid),
 		]);
@@ -1118,44 +1112,41 @@ export const db = {
 		 ================================================== */
 
 	async getAppData() {
-		const [scheduleRes, templatesRes, libraryRes, todayRes] = await Promise.all([
-			supabase.from("schedule").select("*").order("day_of_week"),
-
-			// Load templates without embedded join. We hydrate exercises below using
-			// the junction (preferred) or legacy template_id on exercises (for accounts
-			// that predate the shared_exercise_library migration).
-			supabase.from("templates").select(`id, user_id, name, color, display_order`).order("display_order").order("created_at"),
-
-			supabase.from("exercises").select("*").order("created_at"),
-
-			supabase
-				.from("workout_history")
-				.select("*")
-				.eq("workout_date", todayDateString())
-				.maybeSingle(),
-		]);
+		const [scheduleRes, templatesRes, libraryRes, linksRes, todayRes] =
+			await Promise.all([
+				supabase.from("schedule").select("*").order("day_of_week"),
+				supabase
+					.from("templates")
+					.select("id, user_id, name, color, display_order")
+					.order("display_order")
+					.order("created_at"),
+				supabase.from("exercises").select("*").order("created_at"),
+				supabase
+					.from("template_exercises")
+					.select("template_id, exercise_id, display_order")
+					.order("display_order"),
+				supabase
+					.from("workout_history")
+					.select("*")
+					.eq("workout_date", todayDateString())
+					.maybeSingle(),
+			]);
 
 		if (scheduleRes.error) throw scheduleRes.error;
 		if (templatesRes.error) throw templatesRes.error;
 		if (libraryRes.error) throw libraryRes.error;
+		if (linksRes.error) throw linksRes.error;
 		if (todayRes.error) throw todayRes.error;
 
-		const exerciseLibrary = (libraryRes.data ?? []) as Exercise[];
+		const exerciseLibrary = ((libraryRes.data ?? []) as Exercise[]).map(
+			normalizeExerciseFromDb,
+		);
 
-		// Load junction links safely. If the table/relation does not exist yet
-		// (migration not run), we fall back to legacy attachment below.
-		let links: Array<{ template_id: string; exercise_id: string; display_order: number }> = [];
-		try {
-			const linksRes = await supabase
-				.from("template_exercises")
-				.select("template_id, exercise_id, display_order")
-				.order("display_order");
-			if (!linksRes.error && linksRes.data) {
-				links = linksRes.data as any;
-			}
-		} catch {
-			// ignore — old DB without the junction table
-		}
+		const links = (linksRes.data ?? []) as Array<{
+			template_id: string;
+			exercise_id: string;
+			display_order: number;
+		}>;
 
 		// Build lookup for current exercises
 		const exById = new Map(exerciseLibrary.map((e) => [e.id, e] as const));
@@ -1276,30 +1267,20 @@ export const db = {
 		 ================================================== */
 
 	async assignTemplateToDay(dayOfWeek: number, templateId: string | null) {
-		const uid = await requireUserId();
+		await this.assignTemplatesToDays([{ dayOfWeek, templateId }]);
+	},
 
-		if (templateId) {
-			const { count, error: countErr } = await supabase
-				.from("template_exercises")
-				.select("*", { count: "exact", head: true })
-				.eq("template_id", templateId)
-				.eq("user_id", uid);
-			if (countErr) throw countErr;
-			if (!count) {
-				throw new Error("Add exercises before assigning this template.");
-			}
-		}
+	async assignTemplatesToDays(
+		assignments: Array<{ dayOfWeek: number; templateId: string | null }>,
+	) {
+		if (assignments.length === 0) return;
 
-		const { error } = await supabase.from("schedule").upsert(
-			{
-				user_id: uid,
+		const { error } = await supabase.rpc("assign_schedule_days", {
+			p_assignments: assignments.map(({ dayOfWeek, templateId }) => ({
 				day_of_week: dayOfWeek,
 				template_id: templateId,
-				updated_at: new Date().toISOString(),
-			},
-			{ onConflict: "user_id,day_of_week" },
-		);
-
+			})),
+		});
 		if (error) throw error;
 	},
 
@@ -1308,26 +1289,16 @@ export const db = {
 		 ================================================== */
 
 	async createTemplate(name: string): Promise<Template | null> {
-		const uid = await requireUserId();
 		const safeName = sanitizeTemplateName(name.trim()) || "NEW TEMPLATE";
 
-		// Append to the end of the user's template list
-		const { count } = await supabase
-			.from("templates")
-			.select("id", { count: "exact", head: true })
-			.eq("user_id", uid);
-		const nextOrder = (count ?? 0);
-
-		const { data, error } = await supabase
-			.from("templates")
-			.insert([{ name: safeName, user_id: uid, color: 0, display_order: nextOrder }])
-			.select()
-			.single();
-
+		const { data, error } = await supabase.rpc("create_template", {
+			p_name: safeName,
+		});
 		if (error) throw error;
-		if (!data) return null;
+		if (!data || typeof data !== "object") return null;
 
-		return { ...data, exercises: [] };
+		const row = data as Template;
+		return { ...row, exercises: [] };
 	},
 
 	async deleteTemplate(templateId: string) {
@@ -1357,14 +1328,33 @@ export const db = {
 		if (error) throw error;
 	},
 
-	async updateTemplateDisplayOrders(orders: Array<{ id: string; display_order: number }>) {
-		for (const { id, display_order } of orders) {
-			const { error } = await supabase
-				.from("templates")
-				.update({ display_order })
-				.eq("id", id);
-			if (error) throw error;
+	async updateTemplateFields(
+		templateId: string,
+		fields: { name?: string; color?: number },
+	) {
+		const patch: Record<string, string | number> = {};
+		if (fields.name != null) {
+			patch.name = sanitizeTemplateName(fields.name.trim());
 		}
+		if (fields.color != null) {
+			patch.color = Math.max(0, Math.min(4, Math.floor(fields.color || 0)));
+		}
+		if (Object.keys(patch).length === 0) return;
+
+		const { error } = await supabase
+			.from("templates")
+			.update(patch)
+			.eq("id", templateId);
+		if (error) throw error;
+	},
+
+	async updateTemplateDisplayOrders(orders: Array<{ id: string; display_order: number }>) {
+		if (orders.length === 0) return;
+
+		const { error } = await supabase.rpc("update_template_display_orders", {
+			p_orders: orders,
+		});
+		if (error) throw error;
 	},
 
 	/**
@@ -1393,81 +1383,41 @@ export const db = {
 			current_weight?: number | null;
 		}>,
 	): Promise<Exercise[]> {
-		const uid = await requireUserId();
-
 		const validationError = validateDraftExercises(
 			exercises as DraftExerciseLike[],
 		);
 		if (validationError) throw new Error(validationError);
 
-		if (exercises.length === 0) {
-			const { error: clearErr } = await supabase
-				.from("template_exercises")
-				.delete()
-				.eq("template_id", templateId);
-			if (clearErr) throw clearErr;
-			return [];
-		}
-
-		const savedIds: string[] = [];
-
-		for (let i = 0; i < exercises.length; i++) {
-			const d = exercises[i];
+		const payload = exercises.map((d) => {
 			const safe = sanitizeExerciseRowForDb(d as DraftExerciseLike);
-			const row = {
-				user_id: uid,
+			const exerciseId = typeof d.id === "string" ? d.id : "";
+			const row: Record<string, unknown> = {
 				name: safe.name,
 				exercise_type: safe.exercise_type,
 				target_sets: safe.target_sets ?? 0,
-				target_reps: safe.exercise_type === "reps" ? (safe.target_reps ?? 0) : 0,
-				target_minutes:
-					safe.exercise_type === "time" ? (safe.target_minutes ?? 0) : 0,
-				target_seconds:
-					safe.exercise_type === "time" ? (safe.target_seconds ?? 0) : 0,
 				increment: safe.increment ?? 0,
-				current_weight:
-					safe.exercise_type === "reps" ? (safe.current_weight ?? null) : null,
 			};
-
-			let exerciseId = typeof d.id === "string" ? d.id : "";
-			if (isPersistedExerciseId(exerciseId)) {
-				const { error: updateErr } = await supabase
-					.from("exercises")
-					.update(row)
-					.eq("id", exerciseId);
-				if (updateErr) throw updateErr;
+			if (isPersistedExerciseId(exerciseId)) row.id = exerciseId;
+			if (safe.exercise_type === "reps") {
+				row.target_reps = safe.target_reps ?? 0;
+				row.current_weight = safe.current_weight ?? null;
 			} else {
-				const { data, error: insertErr } = await supabase
-					.from("exercises")
-					.insert([row])
-					.select()
-					.single();
-				if (insertErr) throw insertErr;
-				exerciseId = data.id;
+				row.target_minutes = safe.target_minutes ?? 0;
+				row.target_seconds = safe.target_seconds ?? 0;
 			}
+			return row;
+		});
 
-			savedIds.push(exerciseId);
+		const { data, error } = await supabase.rpc("save_template_exercises", {
+			p_template_id: templateId,
+			p_exercises: payload,
+		});
+		if (error) throw error;
 
-			const { error: linkErr } = await supabase.from("template_exercises").upsert(
-				{
-					template_id: templateId,
-					exercise_id: exerciseId,
-					user_id: uid,
-					display_order: i,
-				},
-				{ onConflict: "template_id,exercise_id" },
-			);
-			if (linkErr) throw linkErr;
-		}
-
-		const { error: pruneErr } = await supabase
-			.from("template_exercises")
-			.delete()
-			.eq("template_id", templateId)
-			.not("exercise_id", "in", `(${savedIds.join(",")})`);
-		if (pruneErr) throw pruneErr;
-
-		return fetchExercisesForTemplate(templateId);
+		return ((data as Exercise[] | null) ?? []).map((row, display_order) => ({
+			...normalizeExerciseFromDb(row),
+			display_order: row.display_order ?? display_order,
+		}));
 	},
 
 	/* ==================================================
@@ -1494,214 +1444,76 @@ export const db = {
 	},
 
 	async updateExerciseOrder(templateId: string, exercises: Exercise[]) {
-		await Promise.all(
-			exercises.map((exercise, index) =>
-				supabase
-					.from("template_exercises")
-					.update({ display_order: index })
-					.eq("template_id", templateId)
-					.eq("exercise_id", exercise.id),
-			),
+		if (exercises.length === 0) return;
+
+		const uid = await requireUserId();
+		const { error } = await supabase.from("template_exercises").upsert(
+			exercises.map((exercise, display_order) => ({
+				template_id: templateId,
+				exercise_id: exercise.id,
+				user_id: uid,
+				display_order,
+			})),
+			{ onConflict: "template_id,exercise_id" },
 		);
+		if (error) throw error;
 	},
 
 	/* ==================================================
 		 HISTORY
 		 ================================================== */
 
-	async skipWorkout(templateId: string | null, templateName?: string | null) {
-		const uid = await requireUserId();
-		const date = todayDateString();
-		const { error: deleteError } = await supabase
-			.from("workout_history")
-			.delete()
-			.eq("user_id", uid)
-			.eq("workout_date", date);
-		if (deleteError) throw deleteError;
-
-		const { error } = await supabase.from("workout_history").insert({
-			user_id: uid,
-			workout_date: date,
-			template_id: templateId,
-			template_name_snapshot: templateName,
-			is_skipped: true,
-			duration_seconds: null,
-			is_perfect_day: false,
-			performance_snapshot: {},
-			workout_snapshot: {
-				skipped: true,
-				template_name: templateName ?? undefined,
-			} satisfies WorkoutSnapshot,
+	async skipWorkout(
+		templateId: string | null,
+		templateName?: string | null,
+	): Promise<WorkoutHistory> {
+		const { data, error } = await supabase.rpc("skip_workout_log", {
+			p_workout_date: todayDateString(),
+			p_template_id: templateId,
+			p_template_name: templateName,
 		});
-
 		if (error) throw error;
+		return data as WorkoutHistory;
 	},
 
 	async submitWorkoutSession(
 		template: Template,
 		performanceSnapshot: PerformanceSnapshot,
 		durationSeconds: number,
-	) {
+	): Promise<CompleteWorkoutResult> {
 		const duration = normalizeCompletedWorkoutDuration(durationSeconds);
+		const times = performanceSnapshot.times ?? {};
 
-		// ── 1. Fetch all-time bests for PR detection ──
-		const bests = await Promise.all(
-			template.exercises.map((ex) =>
-				ex.exercise_type === "reps"
-					? getExerciseAllTimeBest(ex.id)
-					: Promise.resolve(0),
-			),
-		);
-
-		// ── 2. Build typed exercise snapshots ──
-		let totalVolumeKg = 0;
-		let totalSets = 0;
-		let prCount = 0;
-
-		const exerciseSnapshots: WorkoutSnapshotExercise[] = template.exercises.map(
-			(ex, idx) => {
-				if (ex.exercise_type === "reps") {
-					const allTimeBest = bests[idx];
-					const currentWeight = ex.current_weight ?? 0;
-
-					const sets: WorkoutSnapshotExerciseSet[] = Array.from(
-						{ length: ex.target_sets },
-						(_, s) => {
-							const raw = performanceSnapshot.reps?.[`${ex.id}-${s}`];
-							const repsCompleted =
-								raw != null && raw > 0 ? raw : null;
-							const weight = currentWeight;
-							const hitTarget =
-								repsCompleted !== null && repsCompleted >= ex.target_reps;
-							const isPr = hitTarget && weight > allTimeBest;
-
-							if (repsCompleted !== null) {
-								totalVolumeKg += repsCompleted * weight;
-								totalSets += 1;
-							}
-
-							return {
-								set_number: s + 1,
-								reps_completed: repsCompleted,
-								seconds_completed: null,
-								weight,
-								is_pr: isPr,
-							};
-						},
-					);
-
-					const success = sets.every(
-						(s) =>
-							s.reps_completed !== null && s.reps_completed >= ex.target_reps,
-					);
-
-					const exerciseIsPr = success && sets.some((s) => s.is_pr);
-					if (exerciseIsPr) prCount += 1;
-
-					return {
-						exercise_id: ex.id,
-						name: ex.name,
-						exercise_type: "reps",
-						exercise_is_pr: exerciseIsPr,
-						target_sets: ex.target_sets,
-						target_reps: ex.target_reps,
-						increment: ex.increment,
-						weight_before: ex.current_weight,
-						weight_after: success
-							? sanitizeBaseKg(
-									Number(ex.current_weight ?? 0) + Number(ex.increment),
-								)
-							: ex.current_weight,
-						sets,
-					};
-				}
-
-				// exercise_type === "time"
-				const sets: WorkoutSnapshotExerciseSet[] = Array.from(
-					{ length: ex.target_sets },
-					(_, s) => {
-						const entry = performanceSnapshot.times?.[`${ex.id}-${s}`];
-						totalSets += 1;
-						return {
-							set_number: s + 1,
-							reps_completed: null,
-							seconds_completed: entry
-								? parseTimeResultToSeconds(entry.result)
-								: null,
-							weight: null,
-							is_pr: false,
-						};
-					},
-				);
-
-				return {
-					exercise_id: ex.id,
-					name: ex.name,
-					exercise_type: "time",
-					exercise_is_pr: false,
-					target_sets: ex.target_sets,
-					target_minutes: ex.target_minutes,
-					target_seconds: ex.target_seconds,
-					sets,
-				};
-			},
-		);
-
-		const isPerfectDay =
-			prCount > 0 &&
-			prCount ===
-			template.exercises.filter((ex) => ex.exercise_type === "reps").length;
-
-		// ── 3. Assemble full snapshots ──
-		const workoutSnapshot: WorkoutSnapshot = {
-			template_name: template.name,
-			duration_seconds: duration,
-			is_perfect_day: isPerfectDay,
-			exercises: exerciseSnapshots,
-		};
-
-		const enrichedPerformanceSnapshot: PerformanceSnapshot = {
-			...performanceSnapshot,
-			total_volume_kg: Math.round(totalVolumeKg),
-			total_sets: totalSets,
-			pr_count: prCount,
-			is_perfect_day: isPerfectDay,
-			duration_seconds: duration,
-		};
-
-		// ── 4. Replace today's log (one row per user per day) ──
-		await replaceTodayWorkoutRow({
-			template_id: template.id,
-			template_name_snapshot: template.name,
-			is_skipped: false,
-			duration_seconds: duration,
-			is_perfect_day: isPerfectDay,
-			performance_snapshot: enrichedPerformanceSnapshot,
-			workout_snapshot: workoutSnapshot,
+		const { data, error } = await supabase.rpc("complete_workout_session", {
+			p_workout_date: todayDateString(),
+			p_template_id: template.id,
+			p_template_name: template.name,
+			p_duration_seconds: duration,
+			p_reps: performanceSnapshot.reps ?? {},
+			p_times: performanceTimesToSeconds(times),
+			p_exercises: template.exercises.map((ex) => ({
+				id: ex.id,
+				name: ex.name,
+				exercise_type: ex.exercise_type,
+				target_sets: ex.target_sets,
+				target_reps: ex.exercise_type === "reps" ? ex.target_reps : null,
+				target_minutes: ex.exercise_type === "time" ? ex.target_minutes : null,
+				target_seconds: ex.exercise_type === "time" ? ex.target_seconds : null,
+				increment: ex.increment,
+				current_weight: ex.current_weight,
+			})),
 		});
+		if (error) throw error;
 
-		// ── 5. Update current_weight on exercises ──
-		const weightUpdates = template.exercises
-			.filter((ex) => ex.exercise_type === "reps")
-			.map((ex) => {
-				const success = Array.from({ length: ex.target_sets }, (_, s) => {
-					const actual = performanceSnapshot.reps?.[`${ex.id}-${s}`];
-					return actual !== undefined && actual >= ex.target_reps;
-				}).every(Boolean);
+		const row = data as {
+			workout: WorkoutHistory;
+			updated_exercises: Array<{ id: string; current_weight: number | null }>;
+		};
 
-				const nextWeight = success
-					? sanitizeBaseKg(
-							Number(ex.current_weight ?? 0) + Number(ex.increment),
-						)
-					: ex.current_weight;
-
-				return supabase
-					.from("exercises")
-					.update({ current_weight: nextWeight })
-					.eq("id", ex.id);
-			});
-
-		await Promise.all(weightUpdates);
+		return {
+			workout: row.workout,
+			updatedExercises: row.updated_exercises ?? [],
+		};
 	},
 
 	/** Autosave reps/times while a workout is in progress (one row per day). */
@@ -1710,41 +1522,29 @@ export const db = {
 		performanceSnapshot: PerformanceSnapshot,
 		elapsedSeconds: number,
 		startedAtMs: number,
-	) {
+	): Promise<WorkoutHistory> {
 		const elapsed = Math.max(0, Math.round(elapsedSeconds));
-		const perfMaps: PerformanceSnapshot = {
+		const perfMaps: PerformanceSnapshot = stripNullishJson({
 			reps: performanceSnapshot.reps ?? {},
 			times: performanceSnapshot.times ?? {},
 			started_at: startedAtMs,
 			duration_seconds: elapsed,
-		};
-
-		const workoutSnapshot: WorkoutSnapshot = {
-			in_progress: true,
-			template_name: template.name,
-			duration_seconds: elapsed,
-			exercises: buildExerciseSnapshotsFromPerformance(template, perfMaps),
-		};
-
-		await replaceTodayWorkoutRow({
-			template_id: template.id,
-			template_name_snapshot: template.name,
-			is_skipped: false,
-			duration_seconds: null,
-			is_perfect_day: false,
-			performance_snapshot: perfMaps,
-			workout_snapshot: workoutSnapshot,
 		});
+
+		const { data, error } = await supabase.rpc("save_workout_progress", {
+			p_workout_date: todayDateString(),
+			p_template_id: template.id,
+			p_template_name: template.name,
+			p_performance_snapshot: perfMaps,
+		});
+		if (error) throw error;
+		return data as WorkoutHistory;
 	},
 
 	async deleteWorkoutLog(dateStr?: string) {
-		const uid = await requireUserId();
-		const { error } = await supabase
-			.from("workout_history")
-			.delete()
-			.eq("user_id", uid)
-			.eq("workout_date", dateStr ?? todayDateString());
-
+		const { error } = await supabase.rpc("delete_workout_log", {
+			p_workout_date: dateStr ?? todayDateString(),
+		});
 		if (error) throw error;
 	},
 
@@ -1755,34 +1555,51 @@ export const db = {
 			workout_date: dateStr,
 			template_id: null,
 			template_name_snapshot: null,
+			workout_status: WORKOUT_STATUS.rest,
 			is_skipped: false,
 			duration_seconds: null,
 			is_perfect_day: false,
 			performance_snapshot: {},
-			workout_snapshot: { is_rest: true } satisfies WorkoutSnapshot,
+			workout_snapshot: { is_rest: true },
 		});
 
 		if (error) throw error;
 	},
 
 	async deleteLogForDate(dateStr: string) {
-		const { error } = await supabase
-			.from("workout_history")
-			.delete()
-			.eq("workout_date", dateStr);
-
+		const { error } = await supabase.rpc("delete_workout_log", {
+			p_workout_date: dateStr,
+		});
 		if (error) throw error;
 	},
 
 	async getLogForDate(dateStr: string): Promise<WorkoutHistory | null> {
+		const logs = await this.getLogsForDates([dateStr]);
+		return logs[dateStr] ?? null;
+	},
+
+	/** Fetch multiple day logs in a single query. */
+	async getLogsForDates(
+		dateStrs: string[],
+	): Promise<Record<string, WorkoutHistory | null>> {
+		const out: Record<string, WorkoutHistory | null> = {};
+		if (dateStrs.length === 0) return out;
+
+		const uniqueDates = [...new Set(dateStrs)];
 		const { data, error } = await supabase
 			.from("workout_history")
 			.select("*")
-			.eq("workout_date", dateStr)
-			.maybeSingle();
+			.in("workout_date", uniqueDates);
 
 		if (error) throw error;
-		return (data as WorkoutHistory) ?? null;
+
+		for (const date of uniqueDates) {
+			out[date] = null;
+		}
+		for (const row of (data ?? []) as WorkoutHistory[]) {
+			out[row.workout_date] = row;
+		}
+		return out;
 	},
 
 	/* ==================================================

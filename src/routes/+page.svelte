@@ -3,7 +3,8 @@
   import { PUBLIC_SUPABASE_URL } from '$env/static/public';
   import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type WorkoutHistory } from '$lib/db';
   import GeneratedAvatar from '$lib/components/GeneratedAvatar.svelte';
-  import { getDbActivitySnapshot, subscribeDbActivity, subscribeDbActivitySnapshot } from '$lib/dbActivity';
+  import { horizontalSwipe } from '$lib/horizontalSwipe';
+  import { getDbActivitySnapshot, runDbActivityBatch, subscribeDbActivity, subscribeDbActivitySnapshot } from '$lib/dbActivity';
   import {
     formatBytes,
     formatSessionExpiry,
@@ -22,8 +23,15 @@
     sanitizeTemplateName,
     validateDraftExercises,
     normalizeDraftExercise,
-    DEFAULT_INCREMENT_SEC,
+    captureExerciseTypeFields,
+    mergeExerciseTypeStash,
+    applyDraftExerciseType,
     DEFAULT_TARGET_MINUTES,
+    DEFAULT_TARGET_REPS,
+    DEFAULT_BASE_KG,
+    DEFAULT_INCREMENT_KG,
+    DEFAULT_TARGET_SECONDS,
+    type ExerciseTypeFieldStash,
     syncClampedInput,
   } from '$lib/exerciseSanitize';
   import {
@@ -187,6 +195,21 @@
     const d = new Date(selectedDate);
     d.setDate(d.getDate() + 7);
     selectDate(d);
+  }
+
+  function shiftSelectedDate(days: number) {
+    if (weekCalendarLocked) return;
+    const d = new Date(selectedDate);
+    d.setDate(d.getDate() + days);
+    selectDate(d);
+  }
+
+  function goPrevDay() {
+    shiftSelectedDate(-1);
+  }
+
+  function goNextDay() {
+    shiftSelectedDate(1);
   }
 
   function goToToday() {
@@ -693,7 +716,7 @@
   let completedTimers = $state<Record<string, { result: string; met: boolean }>>({});
   let editingSetKey = $state<string | null>(null);
   let repSetHoldTimer: ReturnType<typeof setInterval> | null = null;
-  let repSetHoldKey: string | null = null;
+  let repSetHoldKey = $state<string | null>(null);
   let repSetHoldFired = false;
   let repSetHoldProgress = $state(0);
 
@@ -718,14 +741,30 @@
   let deleteAccountHoldTimer: ReturnType<typeof setInterval> | null = null;
   let deleteAccountProgress = $state(0);
   let deleteAccountTapPulseActive = $state(false);
+
+  let holdCautionDisplayKind = $state<'signout' | 'delete' | null>(null);
+  let holdCautionMorphFade = $state(true);
+
+  let holdCautionKind = $derived.by((): 'signout' | 'delete' | null => {
+    if (deleteAccountProgress > 0) return 'delete';
+    if (signOutProgress > 0) return 'signout';
+    return null;
+  });
+  let holdCautionMessage = $derived(
+    holdCautionDisplayKind === 'delete'
+      ? 'Permanently deletes your account and all workout data.'
+      : holdCautionDisplayKind === 'signout'
+        ? 'Ends your session on this device.'
+        : '',
+  );
   const HOLD_CONFIRM_MS = 1000;
 
   const REP_SET_HOLD_MS = 250;
   const ACTIVE_SESSION_STORAGE_KEY = 'lift-tracker:active-session';
-  const WORKOUT_PROGRESS_SAVE_MS = 450;
+
   const HEADER_TIMER_FADE_MS = 450;
-  let workoutProgressSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let workoutProgressSaveInFlight = false;
+  let workoutProgressSavePending = false;
   /** Bumped on finish/cancel/start so late autosaves cannot overwrite the completed log. */
   let workoutProgressSaveGen = 0;
   /** Keep showing in-memory sets until submitWorkoutSession + loadData finish. */
@@ -771,6 +810,8 @@
 
   // Draft state for template editing (local until commit on finish)
   let draftExercises = $state<any[]>([]);
+  /** Preserves reps/time fields across type toggles (DB nulls inactive type columns). */
+  let exerciseTypeFieldStash = $state<Record<string, ExerciseTypeFieldStash>>({});
   let draftTemplateName = $state('');
   let draftTemplateColor = $state(0); // 0-4 (5 colors)
   let selectedExerciseId = $state<string | null>(null);
@@ -781,10 +822,32 @@
   let selectedLibraryExerciseId = $state<string | null>(null);
   let deletedLibraryExerciseIds = $state(new Set<string>());
 
-  let libraryExercisesAvailable = $derived.by(() => {
-    const inDraft = new Set(draftExercises.map((e) => e.id));
-    return exerciseLibrary.filter((ex) => !inDraft.has(ex.id));
+  function isLibraryExerciseId(id: string | null | undefined): boolean {
+    return !!id && !id.startsWith('temp-');
+  }
+
+  /** All persisted exercises the user owns (library row + any linked on templates). */
+  let librarySourcePool = $derived.by(() => {
+    const byId = new Map<string, Exercise>();
+    for (const ex of exerciseLibrary) {
+      if (isLibraryExerciseId(ex.id)) byId.set(ex.id, ex);
+    }
+    for (const tpl of templates) {
+      for (const ex of tpl.exercises) {
+        if (isLibraryExerciseId(ex.id) && !byId.has(ex.id)) byId.set(ex.id, ex);
+      }
+    }
+    return byId;
   });
+
+  let libraryExercisesAvailable = $derived.by(() => {
+    const inDraft = new Set(
+      draftExercises.map((e) => e.id).filter((id) => isLibraryExerciseId(id)),
+    );
+    return [...librarySourcePool.values()].filter((ex) => !inDraft.has(ex.id));
+  });
+
+  let showLibraryButton = $derived(libraryExercisesAvailable.length > 0);
 
   // Filtered version for the library panel that excludes ones we just optimistically deleted (for instant UI)
   let availableLibraryForPicker = $derived.by(() => {
@@ -802,9 +865,9 @@
     }, LIBRARY_PICKER_MS);
   }
 
-  // Keep the library picker closed whenever there are no exercises left to pick from the library.
+  // Close the library picker when nothing is available to pick or the button hides.
   $effect(() => {
-    if (availableLibraryForPicker.length === 0 && showExerciseLibraryPicker) {
+    if (showExerciseLibraryPicker && (!showLibraryButton || availableLibraryForPicker.length === 0)) {
       closeLibraryPicker();
     }
   });
@@ -824,45 +887,45 @@
     normalizeDraftExercise(copy);
     copy.display_order = draftExercises.length;
     draftExercises = [...draftExercises, copy];
-    selectExercise(exercise.id); // select it in the main template list
+    selectExercise(exercise.id);
     selectedLibraryExerciseId = null;
-    // it will automatically disappear from libraryExercisesAvailable
+    void persistTemplateExercisesNow();
   }
 
   function deleteLibraryExercise(exercise: Exercise) {
     if (!editingTemplateId) return;
     const id = exercise.id;
 
-    // Optimistic: remove immediately from UI for instant feel (no network wait)
     deletedLibraryExerciseIds = new Set([...deletedLibraryExerciseIds, id]);
     selectedLibraryExerciseId = null;
 
-    // Also remove from current draft if it was in use here
     draftExercises = draftExercises.filter((e: any) => e.id !== id);
     if (selectedExerciseId === id) {
       selectedExerciseId = draftExercises.length > 0 ? draftExercises[draftExercises.length - 1].id : null;
     }
 
-    // Fire and forget the actual delete
-    db.deleteExercise(id)
-      .then(() => {
-        // On success, keep it in the deleted set so it stays hidden in this session.
-        // Full refresh on next loadData will reflect the server state.
-      })
-      .catch((err) => {
-        console.error('Failed to delete exercise from library', err);
-        // Revert optimistic delete on error
-        const reverted = new Set(deletedLibraryExerciseIds);
-        reverted.delete(id);
-        deletedLibraryExerciseIds = reverted;
-        // Optionally reload to be safe
-        loadData({ preserveSession: true }).catch(() => {});
-      });
+    templates = templates.map((t) => ({
+      ...t,
+      exercises: t.exercises.filter((ex) => ex.id !== id),
+    }));
+    exerciseLibrary = exerciseLibrary.filter((ex) => ex.id !== id);
+
+    void db.deleteExercise(id).catch((err) => {
+      console.error('Failed to delete exercise from library', err);
+      const reverted = new Set(deletedLibraryExerciseIds);
+      reverted.delete(id);
+      deletedLibraryExerciseIds = reverted;
+      void loadData({ preserveSession: true }).catch(() => {});
+    });
   }
 
   let editingTemplateId = $state('');
   let templateSaveError = $state<string | null>(null);
-  let templateSaveInFlight = $state(false);
+  let templateDraftSaveInFlight = false;
+  let templateDraftSavePending = false;
+  let templateNamePersistTimer: ReturnType<typeof setTimeout> | null = null;
+  let templateNamePersistId: string | null = null;
+  let editorExitSaving = $state(false);
   let editingTemplate = $derived(
     editingTemplateId ? templates.find((t) => t.id === editingTemplateId) ?? null : null,
   );
@@ -1069,6 +1132,17 @@
     return 'neutral';
   });
 
+  $effect(() => {
+    const kind = holdCautionKind;
+    if (kind) {
+      holdCautionMorphFade = false;
+      holdCautionDisplayKind = kind;
+    } else if (holdCautionDisplayKind) {
+      holdCautionMorphFade = true;
+      holdCautionDisplayKind = null;
+    }
+  });
+
   // Load viewedLog whenever selected date changes (for past/future history)
   $effect(() => {
     if (!currentUser) return;
@@ -1124,30 +1198,22 @@
       const stillMissing = missing.filter((k) => stillVisibleNow.has(k) && !(k in weekLogs));
       if (stillMissing.length === 0) return;
 
-      Promise.allSettled(
-        stillMissing.map(async (k) => {
-          try {
-            const log = await db.getLogForDate(k);
-            return { k, log };
-          } catch {
-            return { k, log: null };
-          }
-        })
-      ).then((results) => {
-        const stillVisible = new Set(currentWeekDates.map((d) => d.key));
-        const updates: Record<string, any | null> = {};
-        for (const r of results) {
-          if (r.status === 'fulfilled') {
-            const { k, log } = r.value;
+      db.getLogsForDates(stillMissing)
+        .then((logsByDate) => {
+          const stillVisible = new Set(currentWeekDates.map((d) => d.key));
+          const updates: Record<string, any | null> = {};
+          for (const [k, log] of Object.entries(logsByDate)) {
             if (stillVisible.has(k)) {
               updates[k] = log;
             }
           }
-        }
-        if (Object.keys(updates).length > 0) {
-          weekLogs = { ...weekLogs, ...updates };
-        }
-      });
+          if (Object.keys(updates).length > 0) {
+            weekLogs = { ...weekLogs, ...updates };
+          }
+        })
+        .catch((err) => {
+          console.error('week log batch fetch failed', err);
+        });
     }, delay);
   });
 
@@ -1866,26 +1932,64 @@
     return true;
   }
 
+  function applyWorkoutLogLocally(log: WorkoutHistory | null, dateKey: string) {
+    weekLogs = { ...weekLogs, [dateKey]: log };
+    if (dateKey === selectedDateStr) viewedLog = log;
+    if (dateKey === REAL_TODAY_STR) todayLog = log;
+  }
+
+  function patchExerciseWeights(
+    updates: Array<{ id: string; current_weight: number | null }>,
+  ) {
+    if (!updates.length) return;
+    const byId = new Map(updates.map((row) => [row.id, row.current_weight]));
+    exerciseLibrary = exerciseLibrary.map((ex) =>
+      byId.has(ex.id) ? { ...ex, current_weight: byId.get(ex.id) ?? ex.current_weight } : ex,
+    );
+    templates = templates.map((tpl) => ({
+      ...tpl,
+      exercises: tpl.exercises.map((ex) =>
+        byId.has(ex.id) ? { ...ex, current_weight: byId.get(ex.id) ?? ex.current_weight } : ex,
+      ),
+    }));
+    if (activeTemplate) {
+      activeTemplate = {
+        ...activeTemplate,
+        exercises: activeTemplate.exercises.map((ex) =>
+          byId.has(ex.id) ? { ...ex, current_weight: byId.get(ex.id) ?? ex.current_weight } : ex,
+        ),
+      };
+    }
+    if (activeWorkoutTemplate) {
+      activeWorkoutTemplate = {
+        ...activeWorkoutTemplate,
+        exercises: activeWorkoutTemplate.exercises.map((ex) =>
+          byId.has(ex.id) ? { ...ex, current_weight: byId.get(ex.id) ?? ex.current_weight } : ex,
+        ),
+      };
+    }
+  }
+
   function scheduleWorkoutProgressSave() {
     if (workoutState !== 'active' || !isViewingToday) return;
     writeActiveSessionBackup();
-    if (workoutProgressSaveTimer) clearTimeout(workoutProgressSaveTimer);
-    workoutProgressSaveTimer = setTimeout(() => {
-      workoutProgressSaveTimer = null;
-      void persistWorkoutProgressNow();
-    }, WORKOUT_PROGRESS_SAVE_MS);
+    void persistWorkoutProgressNow();
   }
 
   async function persistWorkoutProgressNow() {
-    const saveGen = workoutProgressSaveGen;
     if (
       workoutState !== 'active' ||
       !isViewingToday ||
-      workoutProgressSaveInFlight ||
       finishSyncPending
     ) {
       return;
     }
+    if (workoutProgressSaveInFlight) {
+      workoutProgressSavePending = true;
+      return;
+    }
+
+    const saveGen = workoutProgressSaveGen;
     const template = activeWorkoutTemplate ?? activeTemplate;
     if (!template) return;
 
@@ -1899,11 +2003,7 @@
 
     workoutProgressSaveInFlight = true;
     try {
-      await db.saveWorkoutProgress(template, perf, workoutDuration, startedAt);
-      if (saveGen !== workoutProgressSaveGen || workoutState !== 'active' || finishSyncPending) {
-        return;
-      }
-      const refreshed = await db.getLogForDate(REAL_TODAY_STR);
+      const refreshed = await db.saveWorkoutProgress(template, perf, workoutDuration, startedAt);
       if (
         saveGen !== workoutProgressSaveGen ||
         workoutState !== 'active' ||
@@ -1912,21 +2012,19 @@
       ) {
         return;
       }
-      todayLog = refreshed;
-      weekLogs = { ...weekLogs, [REAL_TODAY_STR]: refreshed };
-      viewedLog = refreshed;
+      applyWorkoutLogLocally(refreshed, REAL_TODAY_STR);
     } catch (err) {
       console.error('workout progress save failed', err);
     } finally {
       workoutProgressSaveInFlight = false;
+      if (workoutProgressSavePending) {
+        workoutProgressSavePending = false;
+        void persistWorkoutProgressNow();
+      }
     }
   }
 
   function flushWorkoutProgressSave() {
-    if (workoutProgressSaveTimer) {
-      clearTimeout(workoutProgressSaveTimer);
-      workoutProgressSaveTimer = null;
-    }
     void persistWorkoutProgressNow();
   }
 
@@ -2740,8 +2838,13 @@
   });
   onDestroy(() => {
     finishAuthFeedbackExit();
+    void flushTemplateNamePersist();
+    if (templateNamePersistTimer) {
+      clearTimeout(templateNamePersistTimer);
+      templateNamePersistTimer = null;
+    }
+    void persistTemplateExercisesNow();
     flushWorkoutProgressSave();
-    if (workoutProgressSaveTimer) clearTimeout(workoutProgressSaveTimer);
     if (dbIoFlashTimer) clearTimeout(dbIoFlashTimer);
     clearInterval(workoutTimer);
     clearInterval(countdownTimer);
@@ -2823,7 +2926,6 @@
     beginHeaderTimerFadeIn();
     writeActiveSessionBackup();
     void persistWorkoutProgressNow();
-    scheduleWorkoutProgressSave();
   }
 
   /** DB rejects duration_seconds = 0 on completed workouts. */
@@ -2836,10 +2938,7 @@
   }
 
   function applyCancelWorkoutState() {
-    if (workoutProgressSaveTimer) {
-      clearTimeout(workoutProgressSaveTimer);
-      workoutProgressSaveTimer = null;
-    }
+    workoutProgressSavePending = false;
     workoutProgressSaveGen++;
     finishSyncPending = false;
     clearActiveSessionBackup();
@@ -2903,10 +3002,7 @@
     const justFinished = computeWorkoutFinishStatus(template, snapshot);
 
     justFinishedStatus = justFinished;
-    if (workoutProgressSaveTimer) {
-      clearTimeout(workoutProgressSaveTimer);
-      workoutProgressSaveTimer = null;
-    }
+    workoutProgressSavePending = false;
     workoutProgressSaveGen++;
     finishSyncPending = true;
     clearActiveSessionBackup();
@@ -2923,18 +3019,18 @@
   ) {
     const opGen = workoutProgressSaveGen;
     try {
-      await db.submitWorkoutSession(template, snapshot, duration);
+      const result = await db.submitWorkoutSession(template, snapshot, duration);
       if (opGen !== workoutProgressSaveGen) {
         await db.deleteWorkoutLog().catch((err) => console.error('finish undo after erase failed', err));
         return;
       }
-      await loadData({ preserveSession: true });
+      applyWorkoutLogLocally(result.workout, REAL_TODAY_STR);
+      patchExerciseWeights(result.updatedExercises);
       if (opGen !== workoutProgressSaveGen) return;
     } catch (err) {
       if (opGen !== workoutProgressSaveGen) return;
       console.error('finish workout failed', err);
       workoutActionError = formatDbError(err);
-      await loadData({ preserveSession: true });
     } finally {
       if (opGen !== workoutProgressSaveGen) {
         finishSyncPending = false;
@@ -3133,12 +3229,12 @@
     const opGen = workoutProgressSaveGen;
     try {
       workoutActionError = null;
-      await db.skipWorkout(activeTemplate?.id || null, activeTemplate?.name || null);
+      const log = await db.skipWorkout(activeTemplate?.id || null, activeTemplate?.name || null);
       if (opGen !== workoutProgressSaveGen) {
         await db.deleteWorkoutLog().catch((err) => console.error('skip undo after erase failed', err));
         return;
       }
-      await loadData({ preserveSession: true });
+      applyWorkoutLogLocally(log, REAL_TODAY_STR);
       if (opGen !== workoutProgressSaveGen) return;
       if (logIsSkipped(todayLog)) {
         workoutState = 'skipped';
@@ -3148,7 +3244,6 @@
       console.error('skip workout failed', err);
       workoutActionError = formatDbError(err);
       workoutState = 'idle';
-      await loadData();
     }
   }
 
@@ -3182,10 +3277,7 @@
   }
 
   function applyEraseLocalReset() {
-    if (workoutProgressSaveTimer) {
-      clearTimeout(workoutProgressSaveTimer);
-      workoutProgressSaveTimer = null;
-    }
+    workoutProgressSavePending = false;
     workoutProgressSaveGen++;
     finishSyncPending = false;
     justFinishedStatus = null;
@@ -3314,17 +3406,26 @@
       deleteTemplateProgress = Math.min(((Date.now() - startTime) / 1000) * 100, 100);
       if (deleteTemplateProgress >= 100) {
         clearInterval(deleteTemplateHoldTimer);
+        deleteTemplateHoldTimer = null;
         deleteTemplateProgress = 0;
-        db.deleteTemplate(templateId).then(() => {
-          editingTemplateId = '';
-          draftExercises = [];
-          draftTemplateName = '';
-          loadData();
-          // Return to previous view (e.g. routine editor) for nesting support
-          const returnView = templateEditorReturnView;
-          templateEditorReturnView = 'track';
-          currentView = returnView;
-        });
+        const returnView = templateEditorReturnView;
+        templateEditorReturnView = 'track';
+        void flushTemplateNamePersist();
+        void (async () => {
+          try {
+            if (!templateId.startsWith('temp-')) {
+              await db.deleteTemplate(templateId);
+            }
+            editingTemplateId = '';
+            draftExercises = [];
+            draftTemplateName = '';
+            currentView = returnView;
+            await loadData({ preserveSession: true });
+          } catch (err) {
+            console.error('Delete template failed', err);
+            templateSaveError = formatDbError(err);
+          }
+        })();
       }
     }, 20);
   }
@@ -3431,34 +3532,27 @@
       workoutActionError = null;
       await db.deleteWorkoutLog(isViewingToday ? undefined : dateKey);
       if (opGen !== workoutProgressSaveGen) return;
-      weekLogs = { ...weekLogs, [dateKey]: null };
-      if (selectedDateStr === dateKey) {
-        viewedLog = null;
-        if (isViewingToday) todayLog = null;
-      }
-      await loadData({ preserveSession: true });
-      if (opGen !== workoutProgressSaveGen) return;
+      applyWorkoutLogLocally(null, dateKey);
       if (isViewingToday) {
-        todayLog = null;
-        viewedLog = null;
-        weekLogs = { ...weekLogs, [REAL_TODAY_STR]: null };
-      } else {
-        weekLogs = { ...weekLogs, [dateKey]: null };
-        if (selectedDateStr === dateKey) viewedLog = null;
+        workoutState = 'idle';
+        activeWorkoutTemplate = null;
+        trackedReps = {};
+        completedTimers = {};
+        clearActiveSessionBackup();
+        resetHeaderWorkoutTimer();
       }
     } catch (err) {
       if (opGen !== workoutProgressSaveGen) return;
       console.error('erase workout failed', err);
       workoutActionError = 'Could not erase workout log.';
-      await loadData({ preserveSession: true });
     }
   }
 
   async function clearTemplateFromAllDays(templateId: string) {
     const affected = schedule.filter((s) => s.template_id === templateId);
     if (!affected.length) return;
-    await Promise.all(
-      affected.map((s) => db.assignTemplateToDay(s.day_of_week, null)),
+    await db.assignTemplatesToDays(
+      affected.map((s) => ({ dayOfWeek: s.day_of_week, templateId: null })),
     );
     for (const row of affected) {
       applyLocalScheduleAssignment(row.day_of_week, null);
@@ -3493,22 +3587,28 @@
     }
   }
 
-  function applyLocalScheduleFromBuilder(assignments: Record<number, string | null>) {
-    for (let wd = 0; wd < 7; wd++) {
-      applyLocalScheduleAssignment(wd, assignments[wd] ?? null);
-    }
-  }
-
-  function exitRoutineEditor() {
+  async function saveRoutineEditorDraft() {
     if (editingRoutineTemplateNameId) {
       const pending = templates.find((t) => t.id === editingRoutineTemplateNameId);
-      if (pending) commitRoutineTemplateNameEdit(pending);
+      if (pending) {
+        const trimmed = sanitizeTemplateName((pending.name ?? '').trim()) || 'NEW TEMPLATE';
+        pending.name = trimmed;
+        await persistTemplateNameById(pending.id, trimmed);
+      }
+      editingRoutineTemplateNameId = null;
+      routineTemplateNameEditOriginal = null;
     }
-    const snapshot = { ...builderAssignments };
-    const priorAssignments = new Map(
-      schedule.map((s) => [s.day_of_week, s.template_id ?? null] as const),
-    );
-    applyLocalScheduleFromBuilder(snapshot);
+    await flushTemplateNamePersist();
+  }
+
+  async function exitRoutineEditor() {
+    if (editorExitSaving) return;
+    editorExitSaving = true;
+    try {
+      await runDbActivityBatch(saveRoutineEditorDraft);
+    } finally {
+      editorExitSaving = false;
+    }
     currentView = 'track';
     builderAssignments = {};
     builderEditingDay = 0;
@@ -3520,50 +3620,36 @@
     }
     templateErrorFading = false;
     templateError = null;
-    void syncRoutineEditorAssignments(snapshot, priorAssignments);
   }
 
-  async function syncRoutineEditorAssignments(
-    snapshot: Record<number, string | null>,
-    priorAssignments: Map<number, string | null>,
-  ) {
-    const {
-      data: { user },
-      error: userErr,
-    } = await supabase.auth.getUser();
-    if (userErr || !user) {
-      currentUser = null;
-      templateError = formatDbError(userErr ?? new Error('Not signed in'));
-      templateErrorFading = false;
-      return;
+  async function persistBuilderDayAssignment(templateId: string | null) {
+    const dayOfWeek = builderEditingDay;
+    let resolvedId = templateId;
+    if (templateId?.startsWith('temp-')) {
+      const pending = routineEditorPendingCreates.get(dayOfWeek);
+      if (pending) {
+        try {
+          resolvedId = await pending;
+        } catch {
+          return;
+        }
+      } else {
+        return;
+      }
     }
-    currentUser = user;
+    const effectiveId = effectiveAssignmentTemplateId(resolvedId);
+    const priorRow = schedule.find((s) => s.day_of_week === dayOfWeek);
+    const priorEffective = effectiveAssignmentTemplateId(priorRow?.template_id ?? null);
+    if (effectiveId === priorEffective) return;
 
-    const promises: Promise<void>[] = [];
-    for (let wd = 0; wd < 7; wd++) {
-      let newTid = snapshot[wd] ?? null;
-      if (newTid?.startsWith('temp-')) {
-        const pending = routineEditorPendingCreates.get(wd);
-        newTid = pending ? await pending : null;
-      }
-      if (newTid) {
-        const tpl = templates.find((t) => t.id === newTid);
-        if (!isTemplateAssignable(tpl)) newTid = null;
-      }
-      const oldTid = priorAssignments.get(wd) ?? null;
-      if (newTid !== oldTid) {
-        promises.push(db.assignTemplateToDay(wd, newTid));
-      }
-    }
-    if (!promises.length) return;
+    applyLocalScheduleAssignment(dayOfWeek, effectiveId);
     try {
-      await Promise.all(promises);
-      await loadData({ preserveSession: true });
+      await db.assignTemplatesToDays([{ dayOfWeek, templateId: effectiveId }]);
     } catch (e) {
-      console.error('Routine editor sync failed', e);
+      console.error('Day assignment save failed', e);
       templateError = formatDbError(e);
       templateErrorFading = false;
-      await loadData({ preserveSession: true });
+      applyLocalScheduleAssignment(dayOfWeek, priorEffective);
     }
   }
 
@@ -3624,6 +3710,9 @@
 
           if (openAfterCreate && editingTemplateId === tempId) {
             editingTemplateId = template.id;
+            if (draftExercises.length > 0) {
+              void persistTemplateExercisesNow();
+            }
           }
           return template.id;
         } catch (e) {
@@ -3966,6 +4055,8 @@
     showSettingsPanel = false;
     stopSignOutHold();
     stopDeleteAccountHold();
+    holdCautionDisplayKind = null;
+    holdCautionMorphFade = true;
     resetChangePasswordForm();
     accountError = null;
   }
@@ -4066,6 +4157,9 @@
   }
 
   function assignTemplateToBuilderDay(templateId: string | null) {
+    const priorEffective = effectiveAssignmentTemplateId(
+      builderAssignments[builderEditingDay] ?? null,
+    );
     const targetIsEmpty = templateId !== null && !isTemplateAssignable(templates.find((t) => t.id === templateId));
     if (targetIsEmpty) {
       const msg = 'Add exercises to template before assigning.';
@@ -4097,6 +4191,16 @@
       templateError = null;
     }
     builderAssignments = { ...builderAssignments, [builderEditingDay]: templateId };
+
+    const shouldPersist =
+      templateId === null ||
+      isTemplateAssignable(templates.find((t) => t.id === templateId));
+    if (!shouldPersist) return;
+
+    const newEffective = effectiveAssignmentTemplateId(templateId);
+    if (newEffective !== priorEffective) {
+      void persistBuilderDayAssignment(newEffective);
+    }
   }
 
   function beginRoutineTemplateNameEdit(templateId: string) {
@@ -4110,22 +4214,68 @@
       : null;
   }
 
+  async function persistTemplateNameById(templateId: string, rawName: string) {
+    if (templateId.startsWith('temp-')) return;
+
+    const tpl = templates.find((t) => t.id === templateId);
+    if (!tpl) return;
+
+    const savedName = sanitizeTemplateName(rawName.trim()) || 'NEW TEMPLATE';
+    if (savedName === tpl.name) return;
+
+    tpl.name = savedName;
+    if (editingTemplateId === templateId) draftTemplateName = savedName;
+    patchTemplateInCache(templateId, savedName, tpl.exercises, tpl.color);
+
+    try {
+      await db.updateTemplateName(templateId, savedName);
+      templateSaveError = null;
+      templateError = null;
+    } catch (e) {
+      console.error('Template name save failed', e);
+      const msg = 'Could not save template name.';
+      if (currentView === 'edit_template') {
+        templateSaveError = msg;
+      } else {
+        templateError = msg;
+        templateErrorFading = false;
+      }
+      void loadData({ preserveSession: true });
+    }
+  }
+
+  function scheduleTemplateNamePersist(templateId: string, rawName: string) {
+    if (templateId.startsWith('temp-')) return;
+    templateNamePersistId = templateId;
+    if (templateNamePersistTimer) clearTimeout(templateNamePersistTimer);
+    templateNamePersistTimer = setTimeout(() => {
+      templateNamePersistTimer = null;
+      const id = templateNamePersistId;
+      templateNamePersistId = null;
+      if (!id) return;
+      void persistTemplateNameById(id, rawName);
+    }, 200);
+  }
+
+  async function flushTemplateNamePersist() {
+    if (templateNamePersistTimer) {
+      clearTimeout(templateNamePersistTimer);
+      templateNamePersistTimer = null;
+    }
+    const id = templateNamePersistId;
+    templateNamePersistId = null;
+    if (!id) return;
+    const tpl = templates.find((t) => t.id === id);
+    const rawName = id === editingTemplateId ? draftTemplateName : (tpl?.name ?? '');
+    await persistTemplateNameById(id, rawName);
+  }
+
   function commitRoutineTemplateNameEdit(template: Template) {
-    const originalName = routineTemplateNameEditOriginal;
+    const trimmed = sanitizeTemplateName((template.name ?? '').trim());
+    template.name = trimmed || 'NEW TEMPLATE';
+    void flushTemplateNamePersist();
     editingRoutineTemplateNameId = null;
     routineTemplateNameEditOriginal = null;
-    const trimmed = sanitizeTemplateName((template.name ?? '').trim());
-    const savedName = trimmed || 'NEW TEMPLATE';
-    template.name = savedName;
-    if (template.id.startsWith('temp-')) return;
-    if (originalName === savedName) return;
-    patchTemplateInCache(template.id, savedName, template.exercises, template.color);
-    void db.updateTemplateName(template.id, savedName).catch((e) => {
-      console.error('Template name save failed', e);
-      templateError = 'Could not save template name.';
-      templateErrorFading = false;
-      void loadData({ preserveSession: true });
-    });
   }
 
   function templateIdAfterDeletedTemplate(deletedId: string): string | null {
@@ -4172,12 +4322,22 @@
       return;
     }
 
-    void db.deleteTemplate(deletedId).catch(async (e) => {
+    const schedulePatches = affectedDays.map((day) => ({
+      dayOfWeek: day,
+      templateId: schedule.find((s) => s.day_of_week === day)?.template_id ?? null,
+    }));
+
+    try {
+      if (schedulePatches.length > 0) {
+        await db.assignTemplatesToDays(schedulePatches);
+      }
+      await db.deleteTemplate(deletedId);
+    } catch (e) {
       console.error(e);
       templateError = formatDbError(e);
       templateErrorFading = false;
       await loadData({ preserveSession: true });
-    });
+    }
   }
 
   function resetNewExerciseForm() {
@@ -4192,6 +4352,7 @@
     const tpl = templates.find((t) => t.id === id);
     if (!tpl) return;
     editingTemplateId = id;
+    exerciseTypeFieldStash = {};
     draftExercises = tpl.exercises.map((e) => {
       const copy = { ...e };
       normalizeDraftExercise(copy);
@@ -4246,84 +4407,155 @@
     });
   }
 
-  async function commitDraftExercises(
-    templateId: string,
-    exercises: any[],
-    name: string,
-    previousName: string,
-    color?: number,
-    previousColor?: number,
-  ) {
-    const trimmedName = name.trim();
-    if (trimmedName && trimmedName !== previousName) {
-      await db.updateTemplateName(templateId, trimmedName);
-    }
-    if (typeof color === 'number') {
-      const prev = typeof previousColor === 'number' ? previousColor : (templates.find((t) => t.id === templateId)?.color ?? 0);
-      if (color !== prev) {
-        await db.updateTemplateColor(templateId, color);
-      }
-    }
-    const saved = await db.saveTemplateExercises(templateId, exercises);
-    patchTemplateInCache(templateId, trimmedName || previousName, saved, color);
-    if (!isTemplateAssignable({ exercises: saved })) {
-      await clearTemplateFromAllDays(templateId);
-    }
-    await loadData({ preserveSession: true });
-  }
-
-  function exitEditTemplate() {
-    const templateId = editingTemplateId || activeTemplate?.id;
-    if (!templateId || templateSaveInFlight) return;
-
-    const snapExercises = draftExercises.map((e) => {
+  function draftExercisesForSave(): any[] {
+    return draftExercises.map((e) => {
       const copy = { ...e };
       normalizeDraftExercise(copy);
       return copy;
     });
-    const snapName = sanitizeTemplateName(draftTemplateName.trim());
+  }
+
+  function mergeSavedExercisesIntoLibrary(saved: Exercise[]) {
+    const byId = new Map(exerciseLibrary.map((ex) => [ex.id, ex]));
+    for (const ex of saved) {
+      byId.set(ex.id, ex);
+    }
+    exerciseLibrary = [...byId.values()];
+  }
+
+  function applySavedTemplateExercises(templateId: string, saved: Exercise[]) {
+    const tpl = templates.find((t) => t.id === templateId);
+    const prevSelected = selectedExerciseId;
+    const selectedIndex = draftExercises.findIndex((e) => e.id === prevSelected);
+    const prevDraft = draftExercises;
+
+    patchTemplateInCache(templateId, tpl?.name ?? draftTemplateName, saved, draftTemplateColor);
+    mergeSavedExercisesIntoLibrary(saved);
+    draftExercises = saved.map((ex) => ({ ...ex }));
+
+    const nextStash = { ...exerciseTypeFieldStash };
+    saved.forEach((savedEx, i) => {
+      const prevId = prevDraft[i]?.id;
+      if (prevId && prevId !== savedEx.id && nextStash[prevId]) {
+        nextStash[savedEx.id] = mergeExerciseTypeStash(
+          nextStash[savedEx.id],
+          nextStash[prevId],
+        );
+        delete nextStash[prevId];
+      }
+    });
+    exerciseTypeFieldStash = nextStash;
+
+    if (selectedIndex >= 0 && saved[selectedIndex]) {
+      selectedExerciseId = saved[selectedIndex].id;
+    } else if (prevSelected && saved.some((ex) => ex.id === prevSelected)) {
+      selectedExerciseId = prevSelected;
+    }
+  }
+
+  async function persistTemplateExercisesNow() {
+    const templateId = editingTemplateId;
+    if (!templateId || templateId.startsWith('temp-')) return;
+
+    if (templateDraftSaveInFlight) {
+      templateDraftSavePending = true;
+      return;
+    }
+
+    const snapExercises = draftExercisesForSave();
     const validationErr = validateDraftExercises(snapExercises);
     if (validationErr) {
       templateSaveError = validationErr;
       return;
     }
-    const previousName =
-      templates.find((t) => t.id === templateId)?.name ?? snapName;
-    const previousColor = templates.find((t) => t.id === templateId)?.color ?? 0;
-    const displayName = snapName || previousName;
 
-    templateSaveError = null;
-    const colorToSave = draftTemplateColor;
-    patchTemplateInCache(templateId, displayName, draftToExercises(templateId, snapExercises), colorToSave);
+    templateDraftSaveInFlight = true;
+    try {
+      const saved = await db.saveTemplateExercises(templateId, snapExercises);
+      applySavedTemplateExercises(templateId, saved);
+      templateSaveError = null;
 
-    // Return to where we came from (supports nesting: routine editor → template editor → back to routine editor)
+      if (!isTemplateAssignable({ exercises: saved })) {
+        await clearTemplateFromAllDays(templateId);
+      }
+    } catch (err) {
+      console.error('template exercise save failed', err);
+      templateSaveError =
+        err && typeof err === 'object' && 'message' in err && typeof err.message === 'string'
+          ? err.message
+          : 'Could not save template changes. Try again.';
+    } finally {
+      templateDraftSaveInFlight = false;
+      if (templateDraftSavePending) {
+        templateDraftSavePending = false;
+        void persistTemplateExercisesNow();
+      }
+    }
+  }
+
+  function persistTemplateNameNow() {
+    const templateId = editingTemplateId;
+    if (!templateId) return;
+    scheduleTemplateNamePersist(templateId, draftTemplateName);
+    void flushTemplateNamePersist();
+  }
+
+  async function persistTemplateColorNow() {
+    const templateId = editingTemplateId;
+    if (!templateId || templateId.startsWith('temp-')) return;
+
+    const tpl = templates.find((t) => t.id === templateId);
+    const prevColor = tpl?.color ?? 0;
+    if (draftTemplateColor === prevColor) return;
+
+    patchTemplateInCache(
+      templateId,
+      tpl?.name ?? draftTemplateName,
+      tpl?.exercises ?? [],
+      draftTemplateColor,
+    );
+
+    try {
+      await db.updateTemplateColor(templateId, draftTemplateColor);
+      templateSaveError = null;
+    } catch (err) {
+      console.error('template color save failed', err);
+      templateSaveError = 'Could not save template color.';
+      void loadData({ preserveSession: true }).catch(() => {});
+    }
+  }
+
+  async function saveTemplateEditorDraft() {
+    const templateId = editingTemplateId;
+    editingExerciseNameId = null;
+    await flushTemplateNamePersist();
+    if (templateId && !templateId.startsWith('temp-')) {
+      await persistTemplateNameById(templateId, draftTemplateName);
+      await persistTemplateColorNow();
+      await persistTemplateExercisesNow();
+    }
+  }
+
+  async function exitEditTemplate() {
+    if (editorExitSaving) return;
+    editorExitSaving = true;
     const returnView = templateEditorReturnView;
+    try {
+      await runDbActivityBatch(saveTemplateEditorDraft);
+    } finally {
+      editorExitSaving = false;
+    }
     templateEditorReturnView = 'track';
     currentView = returnView;
     draftExercises = [];
+    exerciseTypeFieldStash = {};
     draftTemplateName = '';
     draftTemplateColor = 0;
     selectedExerciseId = null;
     editingExerciseNameId = null;
     editingTemplateId = '';
     deletedLibraryExerciseIds = new Set();
-
-    templateSaveInFlight = true;
-    void commitDraftExercises(templateId, snapExercises, snapName, previousName, colorToSave, previousColor)
-      .then(() => {
-        templateSaveError = null;
-      })
-      .catch((err) => {
-        console.error('template save failed', err);
-        templateSaveError =
-          err && typeof err === 'object' && 'message' in err && typeof err.message === 'string'
-            ? err.message
-            : 'Could not save template changes. Try again.';
-        void loadData({ preserveSession: true }).catch(() => {});
-      })
-      .finally(() => {
-        templateSaveInFlight = false;
-      });
+    templateSaveError = null;
   }
 
   function activateOrSwitchTimeSet(exId: string, s: number) {
@@ -4340,19 +4572,30 @@
 
   function handleDeleteExercise(id: string) {
     if (currentView === 'edit_template' && draftExercises.length > 0) {
+      const { [id]: _removed, ...restStash } = exerciseTypeFieldStash;
+      exerciseTypeFieldStash = restStash;
       draftExercises = draftExercises.filter((e: any) => e.id !== id);
+      if (editingTemplateId) {
+        const tpl = templates.find((t) => t.id === editingTemplateId);
+        if (tpl) {
+          patchTemplateInCache(
+            editingTemplateId,
+            tpl.name,
+            tpl.exercises.filter((ex) => ex.id !== id),
+            tpl.color,
+          );
+        }
+      }
       if (selectedExerciseId === id) {
         selectedExerciseId = draftExercises.length > 0 ? draftExercises[draftExercises.length - 1].id : null;
-        if (selectedExerciseId) {
-          // just set; form reads directly from object (no new* buffer population)
-          // (selectExercise would also just set the id)
-        } else {
+        if (!selectedExerciseId) {
           resetNewExerciseForm();
         }
       }
+      void persistTemplateExercisesNow();
       return;
     }
-    db.deleteExercise(id).then(() => loadData());
+    void db.deleteExercise(id).then(() => loadData({ preserveSession: true }));
   }
 
   function selectExercise(id: string | null) {
@@ -4374,6 +4617,7 @@
 
   function endExerciseNameEdit() {
     editingExerciseNameId = null;
+    void persistTemplateExercisesNow();
   }
 
   function focusExerciseNameInput(node: HTMLInputElement) {
@@ -4381,30 +4625,37 @@
     node.select();
   }
 
-  function touchDraft() {
+  function markDraftTouched() {
     draftExercises = [...draftExercises];
   }
 
   function switchDraftExerciseType(
     ex: {
+      id?: string;
       exercise_type: 'reps' | 'time';
-      increment: number;
+      target_reps?: number;
+      current_weight?: number | null;
+      increment?: number;
       target_minutes?: number;
       target_seconds?: number;
     },
     type: 'reps' | 'time',
   ) {
-    ex.exercise_type = type;
-    if (type === 'time') {
-      ex.target_minutes = DEFAULT_TARGET_MINUTES;
-      if ((ex.target_seconds ?? 0) === 0) {
-        ex.target_seconds = 30;
-      }
-      ex.increment = DEFAULT_INCREMENT_SEC;
-    } else {
-      ex.increment = 2.5;
+    const exId = ex.id;
+    if (exId) {
+      const captured = captureExerciseTypeFields(ex);
+      exerciseTypeFieldStash = {
+        ...exerciseTypeFieldStash,
+        [exId]: mergeExerciseTypeStash(exerciseTypeFieldStash[exId], captured),
+      };
     }
-    touchDraft();
+    applyDraftExerciseType(
+      ex,
+      type,
+      exId ? exerciseTypeFieldStash[exId] : undefined,
+    );
+    draftExercises = [...draftExercises];
+    void persistTemplateExercisesNow();
   }
 
   function addNewExercise() {
@@ -4417,16 +4668,17 @@
       name: 'NEW EXERCISE',
       exercise_type: 'reps',
       target_sets: 3,
-      target_reps: 12,
-      target_minutes: 0,
-      target_seconds: 30,
-      increment: 2.5,
-      current_weight: 15,
+      target_reps: DEFAULT_TARGET_REPS,
+      target_minutes: DEFAULT_TARGET_MINUTES,
+      target_seconds: DEFAULT_TARGET_SECONDS,
+      increment: DEFAULT_INCREMENT_KG,
+      current_weight: DEFAULT_BASE_KG,
       display_order: draftExercises.length,
       user_id: currentUser?.id ?? '',
     };
     draftExercises = [...draftExercises, newEx];
     selectExercise(tempId);
+    void persistTemplateExercisesNow();
   }
 
   function toggleExerciseLibraryPicker() {
@@ -4442,12 +4694,24 @@
     if (!selectedExerciseId) return;
     const id = selectedExerciseId;
     draftExercises = draftExercises.filter((e: any) => e.id !== id);
+    if (editingTemplateId) {
+      const tpl = templates.find((t) => t.id === editingTemplateId);
+      if (tpl) {
+        patchTemplateInCache(
+          editingTemplateId,
+          tpl.name,
+          tpl.exercises.filter((ex) => ex.id !== id),
+          tpl.color,
+        );
+      }
+    }
     if (draftExercises.length > 0) {
       selectExercise(draftExercises[draftExercises.length - 1].id);
     } else {
       selectedExerciseId = null;
       resetNewExerciseForm();
     }
+    void persistTemplateExercisesNow();
   }
 
   // Drag and drop reorder (replaces arrows)
@@ -4478,8 +4742,8 @@
     const [moved] = arr.splice(draggedIndex, 1);
     arr.splice(targetIndex, 0, moved);
     draftExercises = arr;
-    // selectedExerciseId remains valid (same object moved)
     draggedIndex = null;
+    void persistTemplateExercisesNow();
   }
 
   let exerciseRowDragged = false;
@@ -4529,7 +4793,13 @@
     });
     templates = arr;
     // Persist
-    const orders = arr.map((t, i) => ({ id: t.id, display_order: i }));
+    const orders = arr
+      .map((t, i) => ({ id: t.id, display_order: i }))
+      .filter((o) => !o.id.startsWith('temp-'));
+    if (orders.length === 0) {
+      templateDraggedIndex = null;
+      return;
+    }
     void db.updateTemplateDisplayOrders(orders).catch((err) => {
       console.error('Failed to persist template reorder', err);
       // refresh to restore server order
@@ -4680,23 +4950,44 @@
             {#if accountCanChangePassword}
               <div class="settings-panel-password"
                 class:settings-panel-password--open={showChangePasswordForm}>
-                <button
-                  type="button"
-                  class="settings-panel-action-btn settings-panel-action-btn--full
-                    {showChangePasswordForm ? 'settings-panel-action-btn--password-cancel' : 'settings-panel-action-btn--change-password'}"
-                  disabled={accountBusy}
-                  onclick={toggleChangePasswordForm}
-                >
-                  <span class="settings-panel-action-btn__label">
-                    {#if showChangePasswordForm}
+                {#if showChangePasswordForm}
+                  <button
+                    type="button"
+                    class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--password-cancel"
+                    disabled={accountBusy}
+                    onclick={toggleChangePasswordForm}
+                  >
+                    <span class="settings-panel-action-btn__label">
                       <X class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
                       CANCEL
+                    </span>
+                  </button>
+                {:else}
+                  <button
+                    type="button"
+                    class="settings-panel-action-btn settings-panel-action-btn--full
+                      {holdCautionDisplayKind === 'delete'
+                        ? 'settings-panel-action-btn--hold-caution-delete'
+                        : holdCautionDisplayKind === 'signout'
+                          ? 'settings-panel-action-btn--hold-caution-signout'
+                          : 'settings-panel-action-btn--change-password'}
+                      {holdCautionMorphFade && !holdCautionDisplayKind
+                        ? 'settings-panel-action-btn--morph'
+                        : ''}"
+                    disabled={accountBusy || holdCautionKind !== null}
+                    aria-live={holdCautionDisplayKind ? 'polite' : undefined}
+                    onclick={toggleChangePasswordForm}
+                  >
+                    {#if holdCautionDisplayKind}
+                      <span class="settings-panel-action-btn__caution-msg">{holdCautionMessage}</span>
                     {:else}
-                      <LockKeyhole class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
-                      CHANGE PASSWORD
+                      <span class="settings-panel-action-btn__label">
+                        <LockKeyhole class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                        CHANGE PASSWORD
+                      </span>
                     {/if}
-                  </span>
-                </button>
+                  </button>
+                {/if}
 
                 <div
                   class="auth-confirm-reveal"
@@ -4907,7 +5198,14 @@
   >
   {#if currentUser}
   <!-- Week box: collapsible header + compact day strip -->
-  <div class="rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden">
+  <div
+    class="week-calendar-swipe rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden"
+    use:horizontalSwipe={{
+      onSwipeLeft: goNextDay,
+      onSwipeRight: goPrevDay,
+      disabled: () => weekCalendarLocked,
+    }}
+  >
     <div class="flex items-center gap-2 min-h-8 px-2 py-1.5 border-b border-[#1e1e1e] bg-[#111] text-[10px] tracking-[1px]">
       <button
         type="button"
@@ -5104,8 +5402,8 @@
     </div>
   {/if}
 
-  {#snippet ctaBar(disabled = false)}
-    <div class={(disabled && isViewingToday) ? 'opacity-40 pointer-events-none' : ''}>
+  {#snippet ctaBar(editorDisabled = false)}
+    <div class={editorDisabled ? 'opacity-40 pointer-events-none' : ''}>
       {#if workoutActionError}
         <p class="text-[10px] text-red-300 leading-snug mb-2">{workoutActionError}</p>
       {/if}
@@ -5120,30 +5418,63 @@
             <span class={workoutSideLabelClass} style={ctaChStyle('STATS', SIDE_CTA_MAX_CH)}>STATS</span>
           </button>
 
-          {#if workoutState === 'idle'}
-              <!-- Center: START WORKOUT (wider) or GO TO TODAY when on non-today -->
-              {#if isViewingToday}
-                <button
-                  type="button"
-                  class="{workoutCenterBtnClass} border-transparent bg-white text-black"
-                  onclick={handleStartWorkoutTap}
-                >
-                  <span
-                    class={workoutCenterLabelClass}
-                    style={ctaChStyle(START_CTA_SOURCE, CENTER_CTA_MAX_CH)}
-                  >
-                    {START_CTA_SOURCE}
-                  </span>
-                </button>
-              {:else}
-                <button class="col-span-3 h-[52px] border-none rounded-xl font-sans font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-white text-black transition-all duration-150 hover:brightness-110  group !opacity-100" onclick={goToToday}>
-                  <span class="transition-all group-hover:tracking-[0.2em]">GO TO TODAY</span>
-                </button>
-              {/if}
-              <!-- Right: SKIP (hold, narrow) -- grayed when not today -->
+          {#if !isViewingToday}
               <button
                 type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {skipTapPulseActive ? 'hold-skip-tap-pulse' : skipProgress > 0 ? 'border-amber-500 text-[#fbbf24]' : 'border-[#1e1e1e] text-zinc-500'} {!isViewingToday ? 'opacity-40 pointer-events-none' : ''}"
+                class="{workoutCenterBtnClass} go-to-today-btn border-transparent bg-white text-black"
+                onclick={goToToday}
+              >
+                <span class="{workoutCenterLabelClass}">GO TO TODAY</span>
+              </button>
+              {#if workoutState === 'idle'}
+                <button
+                  type="button"
+                  class="{workoutSideBtnClass} group border bg-[#0d0d0d] border-[#1e1e1e] text-zinc-500 opacity-40 pointer-events-none"
+                  tabindex={-1}
+                  aria-hidden="true"
+                  disabled
+                >
+                  <span class={workoutSideLabelClass} style={ctaChStyle(SKIP_CTA_SOURCE, SIDE_CTA_MAX_CH)}>
+                    {SKIP_CTA_SOURCE}
+                  </span>
+                </button>
+              {:else if workoutState === 'active'}
+                <button
+                  type="button"
+                  class="{workoutSideBtnClass} group border bg-[#0d0d0d] border-[#1e1e1e] text-zinc-500 opacity-40 pointer-events-none"
+                  tabindex={-1}
+                  aria-hidden="true"
+                  disabled
+                >
+                  <span class={workoutSideLabelClass} style={ctaChStyle(SKIP_CTA_TARGET, SIDE_CTA_MAX_CH)}>CANCEL</span>
+                </button>
+              {:else}
+                <button
+                  type="button"
+                  class="{workoutSideBtnClass} group border bg-[#0d0d0d] border-[#1e1e1e] text-zinc-500 opacity-40 pointer-events-none"
+                  tabindex={-1}
+                  aria-hidden="true"
+                  disabled
+                >
+                  <span class={workoutSideLabelClass} style={ctaChStyle(ERASE_CTA_SOURCE, SIDE_CTA_MAX_CH)}>ERASE</span>
+                </button>
+              {/if}
+          {:else if workoutState === 'idle'}
+              <button
+                type="button"
+                class="{workoutCenterBtnClass} border-transparent bg-white text-black"
+                onclick={handleStartWorkoutTap}
+              >
+                <span
+                  class={workoutCenterLabelClass}
+                  style={ctaChStyle(START_CTA_SOURCE, CENTER_CTA_MAX_CH)}
+                >
+                  {START_CTA_SOURCE}
+                </span>
+              </button>
+              <button
+                type="button"
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {skipTapPulseActive ? 'hold-skip-tap-pulse' : skipProgress > 0 ? 'border-amber-500 text-[#fbbf24]' : 'border-[#1e1e1e] text-zinc-500'}"
                 onmousedown={startSkipHold}
                 onmouseup={stopSkipHold}
                 onmouseleave={stopSkipHold}
@@ -5160,10 +5491,9 @@
                 </span>
               </button>
           {:else if workoutState === 'active'}
-              <!-- Center: FINISH (wider) -->
               <button
                 type="button"
-                class="{workoutCenterBtnClass} {isPerfectDay ? 'w-cta-complete-green' : 'w-cta-finish'} {!isViewingToday ? 'opacity-40 pointer-events-none' : ''}"
+                class="{workoutCenterBtnClass} {isPerfectDay ? 'w-cta-complete-green' : 'w-cta-finish'}"
                 onclick={handleFinishWorkoutTap}
               >
                 <span
@@ -5171,9 +5501,8 @@
                   style={ctaChStyle(START_CTA_TARGET, CENTER_CTA_MAX_CH)}
                 >{START_CTA_TARGET}</span>
               </button>
-              <!-- Right: CANCEL (hold, narrow) -->
               <button
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {cancelTapPulseActive ? 'hold-cancel-tap-pulse' : cancelProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'} {!isViewingToday ? 'opacity-40 pointer-events-none' : ''}"
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {cancelTapPulseActive ? 'hold-cancel-tap-pulse' : cancelProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'}"
                 onmousedown={startCancelHold}
                 onmouseup={stopCancelHold}
                 onmouseleave={stopCancelHold}
@@ -5189,7 +5518,7 @@
             {@const isUntouchedComplete = effectiveStatus === 'untouched'}
             {@const isYellowComplete = !isUntouchedComplete && (effectiveStatus === 'yellow' || effectiveStatus === 'neutral')}
               <button
-                class="{workoutCenterBtnClass} cursor-default {!isViewingToday ? 'opacity-40 pointer-events-none' : ''} {isUntouchedComplete ? 'w-cta-skipped' : isYellowComplete ? 'w-cta-complete-yellow' : 'w-cta-complete-green'}"
+                class="{workoutCenterBtnClass} cursor-default {isUntouchedComplete ? 'w-cta-skipped' : isYellowComplete ? 'w-cta-complete-yellow' : 'w-cta-complete-green'}"
               >
                 <span
                   class={workoutCenterLabelClass}
@@ -5198,7 +5527,7 @@
               </button>
               <button
                 type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'} {!isViewingToday ? 'opacity-40 pointer-events-none' : ''}"
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'}"
                 onmousedown={startEraseHold}
                 onmouseup={stopEraseHold}
                 onmouseleave={stopEraseHold}
@@ -5211,7 +5540,7 @@
               </button>
           {:else if workoutState === 'skipped'}
               <button
-                class="{workoutCenterBtnClass} w-cta-skipped cursor-default {!isViewingToday ? 'opacity-40 pointer-events-none' : ''}"
+                class="{workoutCenterBtnClass} w-cta-skipped cursor-default"
               >
                 <span
                   class={workoutCenterLabelClass}
@@ -5220,7 +5549,7 @@
               </button>
               <button
                 type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'} {!isViewingToday ? 'opacity-40 pointer-events-none' : ''}"
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'}"
                 onmousedown={startEraseHold}
                 onmouseup={stopEraseHold}
                 onmouseleave={stopEraseHold}
@@ -5238,7 +5567,7 @@
   {/snippet}
 
     {#if (currentView === 'track' ? activeTemplate : true) && (currentView === 'track' || currentView === 'swap_template' || currentView === 'edit_template') && (isViewingToday || viewedLog || selectedDateStr > REAL_TODAY_STR || currentView !== 'track')}
-      {@render ctaBar(currentView !== 'track' || !isViewingToday)}
+      {@render ctaBar(currentView !== 'track')}
     {/if}
 
   {#if currentView === 'track'}
@@ -5259,10 +5588,6 @@
         <div class="text-center">
           <div class="text-3xl font-semibold tracking-[-0.02em] text-white">START YOUR ROUTINE</div>
           <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">CREATE YOUR FIRST TEMPLATE</div>
-        </div>
-
-        <div class="max-w-[240px] text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200">
-          The only workout you regret is the one you never started.
         </div>
 
         {#if templateError}
@@ -5303,36 +5628,40 @@
         </div>
 
         {#if !isViewingToday}
-          <button 
-            class="h-[52px] border-none rounded-xl font-sans font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-white text-black transition-all duration-150 hover:brightness-110  w-full max-w-xs !opacity-100"
-            onclick={goToToday}>
+          <button
+            type="button"
+            class="go-to-today-btn h-[52px] border-none rounded-xl font-sans font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-white text-black transition-all duration-150 hover:brightness-110 w-full max-w-xs"
+            onclick={goToToday}
+          >
             GO TO TODAY
           </button>
         {/if}
       </div>
     {:else if isRestLog || (!isPast && currentScheduleIsRest)}
       <!-- REST DAY: current/future per schedule, or past explicitly logged rest (historical truth) -->
-      <div class="flex flex-col items-center justify-center py-10 px-2 gap-6 {isFuture && !isRestLog ? 'opacity-80' : ''}">
+      <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
         <!-- Hero icon -->
-        <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
+        <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a] {isFuture && !isRestLog ? 'opacity-80' : ''}">
           <Bed class="size-10 text-zinc-500" />
         </div>
 
-        <div class="text-center">
+        <div class="text-center {isFuture && !isRestLog ? 'opacity-80' : ''}">
           <div class="text-3xl font-semibold tracking-[-0.02em] text-white">REST DAY</div>
           <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">
             {isRestLog ? `LOGGED FOR ${selectedDateDisplay.nice}` : 'NO TEMPLATE ASSIGNED'}
           </div>
         </div>
 
-        <div class="max-w-[240px] text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200">
+        <div class="max-w-[240px] text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200 {isFuture && !isRestLog ? 'opacity-80' : ''}">
           Recovery is where the gains happen. 
         </div>
 
         {#if !isViewingToday && !isRestLog}
-          <button 
-            class="h-[52px] border-none rounded-xl font-sans font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-white text-black transition-all duration-150 hover:brightness-110  w-full max-w-xs !opacity-100"
-            onclick={goToToday}>
+          <button
+            type="button"
+            class="go-to-today-btn h-[52px] border-none rounded-xl font-sans font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-white text-black transition-all duration-150 hover:brightness-110 w-full max-w-xs"
+            onclick={goToToday}
+          >
             GO TO TODAY
           </button>
         {/if}
@@ -5783,8 +6112,9 @@
         <button
           type="button"
           class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
-          title="Save and go back"
-          onclick={exitRoutineEditor}
+          title="Go back"
+          onclick={() => void exitRoutineEditor()}
+          disabled={editorExitSaving}
         >
           <ArrowLeft class="size-4" />
         </button>
@@ -5897,6 +6227,7 @@
                         setValue: (v) => { template.name = v; },
                       }}
                       onclick={(e) => e.stopPropagation()}
+                      oninput={() => scheduleTemplateNamePersist(template.id, template.name)}
                       onblur={() => commitRoutineTemplateNameEdit(template)}
                       onkeydown={(e) => {
                         e.stopPropagation();
@@ -5973,8 +6304,9 @@
         <button
           type="button"
           class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
-          onclick={exitEditTemplate}
-          title="Save and go back"
+          onclick={() => void exitEditTemplate()}
+          disabled={editorExitSaving}
+          title="Go back"
         >
           <ArrowLeft class="size-4" />
         </button>
@@ -5990,13 +6322,18 @@
               getValue: () => draftTemplateName,
               setValue: (v) => { draftTemplateName = v; },
             }}
+            oninput={() => scheduleTemplateNamePersist(editingTemplateId, draftTemplateName)}
+            onblur={() => persistTemplateNameNow()}
           />
         </div>
         <button
           type="button"
           class="w-8 h-8 rounded bg-black border flex items-center justify-center transition-all group"
           style="border-color: {templateEditorColor}"
-          onclick={() => { draftTemplateColor = (draftTemplateColor + 1) % 5 }}
+          onclick={() => {
+            draftTemplateColor = (draftTemplateColor + 1) % 5;
+            void persistTemplateColorNow();
+          }}
           title="Click to cycle template color"
         >
           <div class="w-5 h-5 rounded transition-all group-active:scale-95" style="background-color: {templateEditorColor}"></div>
@@ -6075,7 +6412,7 @@
                           use:focusExerciseNameInput
                           use:clampedExerciseNameProp={{
                             getValue: () => exercise.name,
-                            setValue: (v) => { exercise.name = v; touchDraft(); },
+                            setValue: (v) => { exercise.name = v; markDraftTouched(); },
                           }}
                           onclick={(e) => e.stopPropagation()}
                           onblur={endExerciseNameEdit}
@@ -6113,10 +6450,13 @@
               {/each}
             </div>
 
-            <div class="flex items-stretch gap-1 h-7 shrink-0 mt-1.5">
+            <div
+              class="library-actions mt-1.5"
+              class:library-actions--with-library={showLibraryButton}
+            >
               <button
                 type="button"
-                class="flex-1 rounded border border-[#1e1e1e] bg-white flex items-center justify-center gap-1 text-black hover:bg-zinc-100 hover:border-[#2a2a2a] transition text-[10px] font-bold tracking-[0.5px]"
+                class="library-action-btn library-action-btn--new"
                 onclick={addNewExercise}
                 title="Create a brand new exercise definition"
                 aria-label="Create new exercise"
@@ -6124,28 +6464,29 @@
                 <Plus class="size-3.5" strokeWidth={3} />
                 <span>NEW</span>
               </button>
-              {#if availableLibraryForPicker.length > 0}
+              <div class="library-action-slot min-w-0 overflow-hidden">
                 <button
                   type="button"
-                  class="flex-1 rounded border border-[#1e1e1e] bg-[#1e1e1e] flex items-center justify-center gap-1 text-zinc-300 hover:bg-[#141414] hover:border-[#2a2a2a] hover:text-white transition text-[10px] font-bold tracking-[0.5px] {showExerciseLibraryPicker ? 'border-zinc-500 text-white' : ''}"
+                  class="library-action-btn library-action-btn--library {showExerciseLibraryPicker ? 'library-action-btn--library-active' : ''}"
+                  class:library-action-btn--library-visible={showLibraryButton}
                   onclick={toggleExerciseLibraryPicker}
                   title="Pick from exercises you have already created (reuses the same exercise row for progressive overload across templates)"
                   aria-label="Add from your exercises"
                   aria-expanded={showExerciseLibraryPicker}
+                  aria-hidden={!showLibraryButton}
+                  tabindex={showLibraryButton ? 0 : -1}
                 >
                   <List class="size-3.5" strokeWidth={2.5} />
                   <span>LIBRARY</span>
                 </button>
-              {/if}
+              </div>
             </div>
 
             <div
-              class="library-picker-panel grid"
+              class="library-picker-panel"
               class:library-picker-panel--open={showExerciseLibraryPicker && !libraryPickerClosing}
-              class:library-picker-panel--closing={libraryPickerClosing}
-              style="grid-template-rows: {(showExerciseLibraryPicker && !libraryPickerClosing) ? '1fr' : '0fr'}"
             >
-              <div class="overflow-hidden min-h-0 {(showExerciseLibraryPicker && !libraryPickerClosing) ? '' : 'pointer-events-none'}">
+              <div class="library-picker-panel__inner {(showExerciseLibraryPicker && !libraryPickerClosing) ? '' : 'pointer-events-none'}">
                 <div class="mt-1.5 rounded border border-[#1e1e1e] bg-[#0d0d0d] p-1.5 space-y-1 max-h-48 overflow-y-auto no-scrollbar">
                   {#if availableLibraryForPicker.length === 0}
                     <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
@@ -6233,38 +6574,38 @@
                     <div class="grid grid-cols-2 gap-1 text-[9px]">
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Sets</span>
-                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'sets', getValue: () => ex.target_sets, setValue: (v) => { ex.target_sets = v; touchDraft(); } }} />
+                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'sets', getValue: () => ex.target_sets, setValue: (v) => { ex.target_sets = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Reps</span>
-                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'reps', getValue: () => ex.target_reps, setValue: (v) => { ex.target_reps = v; touchDraft(); } }} />
+                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'reps', getValue: () => ex.target_reps, setValue: (v) => { ex.target_reps = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Base kg</span>
-                        <input type="text" inputmode="decimal" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'baseKg', getValue: () => ex.current_weight ?? 0, setValue: (v) => { ex.current_weight = v; touchDraft(); } }} />
+                        <input type="text" inputmode="decimal" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'baseKg', getValue: () => ex.current_weight ?? 0, setValue: (v) => { ex.current_weight = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">+ kg</span>
-                        <input type="text" inputmode="decimal" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'incKg', getValue: () => ex.increment, setValue: (v) => { ex.increment = v; touchDraft(); } }} />
+                        <input type="text" inputmode="decimal" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'incKg', getValue: () => ex.increment, setValue: (v) => { ex.increment = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
                       </div>
                     </div>
                   {:else}
                     <div class="grid grid-cols-2 gap-1 text-[9px]">
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Sets</span>
-                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'sets', getValue: () => ex.target_sets, setValue: (v) => { ex.target_sets = v; touchDraft(); } }} />
+                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'sets', getValue: () => ex.target_sets, setValue: (v) => { ex.target_sets = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Min</span>
-                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'mins', getValue: () => ex.target_minutes, setValue: (v) => { ex.target_minutes = v; touchDraft(); } }} />
+                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'mins', getValue: () => ex.target_minutes, setValue: (v) => { ex.target_minutes = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Sec</span>
-                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'secs', getValue: () => ex.target_seconds, setValue: (v) => { ex.target_seconds = v; touchDraft(); } }} />
+                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'secs', getValue: () => ex.target_seconds, setValue: (v) => { ex.target_seconds = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">+ s</span>
-                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'incSec', getValue: () => ex.increment, setValue: (v) => { ex.increment = v; touchDraft(); } }} />
+                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'incSec', getValue: () => ex.increment, setValue: (v) => { ex.increment = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
                       </div>
                     </div>
                   {/if}

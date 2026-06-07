@@ -802,9 +802,9 @@
   const REST_CTA_SOURCE = 'REST DAY';
   const ERASE_CTA_SOURCE = 'ERASE';
   const workoutCenterBtnClass =
-    'workout-cta-center font-sans col-span-3 h-[52px] rounded-xl flex items-center justify-center text-center border-2 hover:brightness-110 group relative';
+    'workout-cta-center font-sans col-span-3 rounded-xl flex items-center justify-center text-center border-2 hover:brightness-110 group relative';
   const workoutSideBtnClass =
-    'workout-cta-side font-sans col-span-1 h-[52px] rounded-xl flex items-center justify-center text-center relative overflow-hidden hover:brightness-110 group';
+    'workout-cta-side font-sans col-span-1 rounded-xl flex items-center justify-center text-center relative overflow-hidden hover:brightness-110 group';
   const workoutCtaEmptyClass =
     'workout-cta-empty bg-[#0d0d0d] pointer-events-none';
   const workoutCenterLabelClass =
@@ -5281,7 +5281,7 @@
   }
 </script>
 
-<div class="app max-w-md mx-auto h-dvh max-h-dvh overflow-hidden select-none text-white bg-[#0a0a0a] px-4 pt-4 pb-1 flex flex-col gap-3 font-sans">
+<div class="app w-full h-dvh max-h-dvh overflow-hidden select-none text-white bg-[#0a0a0a] flex flex-col font-sans">
 
   {#snippet ctaEmptySlot()}
     <div class="{workoutSideBtnClass} {workoutCtaEmptyClass}" aria-hidden="true">
@@ -5295,7 +5295,7 @@
         <p class="text-[10px] text-red-300 leading-snug mb-2">{workoutActionError}</p>
       {/if}
       {#if workoutState === 'idle' || workoutState === 'active' || workoutState === 'done' || workoutState === 'skipped'}
-        <div class="grid grid-cols-5 gap-3">
+        <div class="app-cta-grid">
           {#if useNoWorkoutCtaLayout}
             {#if statsCtaEnabled}
               <button
@@ -5854,7 +5854,7 @@
         <div class="text-[10px] tracking-[2px] text-emerald-400/70 mt-1">v0.0.1</div>
       </div>
 
-      <div class="boot-status-card w-full max-w-[300px] h-[360px] flex flex-col rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden text-left">
+      <div class="boot-status-card flex flex-col rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden text-left">
         <div class="flex shrink-0 items-center gap-2 px-3 py-2.5 border-b border-[#1e1e1e] bg-[#111]">
           <RefreshCw class="size-3.5 shrink-0 text-emerald-400 animate-spin" aria-hidden="true" />
           <span class="text-[10px] font-black tracking-[0.12em] text-zinc-200 truncate">{bootMessage}</span>
@@ -5887,11 +5887,11 @@
   <div class="app-stage flex-1 flex flex-col min-h-0 w-full relative overflow-hidden">
   <div class="app-stage-scroll flex-1 min-h-0 flex flex-col overflow-hidden">
   <div
-    class="app-stage-reveal flex flex-col flex-1 min-h-0 w-full overflow-hidden gap-3"
+    class="app-stage-reveal app-stack-gap flex flex-col flex-1 min-h-0 w-full overflow-hidden"
     class:app-stage-reveal--active={stageRevealActive}
   >
   {#if currentUser}
-  <div class="app-stage-sticky shrink-0 flex flex-col gap-3">
+  <div class="app-stage-sticky app-stack-gap shrink-0 flex flex-col">
   <!-- Week box: collapsible header + compact day strip -->
   <div
     class="week-calendar-swipe rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden"
@@ -6037,14 +6037,14 @@
           <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">{unloggedHeroLine}</div>
         </div>
 
-        <div class="max-w-[240px] text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200">
+        <div class="app-hero-copy text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200">
           Progress unlogged is progress lost.
         </div>
 
         <!-- Week overview — tap to open routine editor -->
         <button
           type="button"
-          class="w-full max-w-xs rounded-xl border border-transparent p-1 -m-1 transition-all duration-150 hover:border-[#2a2a2a] hover:bg-[#141414]/50 cursor-pointer"
+          class="app-hero-panel rounded-xl border border-transparent p-1 -m-1 transition-all duration-150 hover:border-[#2a2a2a] hover:bg-[#141414]/50 cursor-pointer"
           onclick={() => enterRoutineBuilder({ fromWeeklyPlan: true })}
           title="Open routine editor"
         >
@@ -6089,7 +6089,7 @@
         {/if}
         <button 
           type="button"
-          class="w-full max-w-xs h-[52px] rounded-xl font-sans font-black text-[11px] tracking-[0.15em] bg-white text-black border-2 border-transparent transition-all duration-150 hover:brightness-110 disabled:opacity-50 flex items-center justify-center"
+          class="app-hero-panel app-primary-cta rounded-xl font-sans font-black text-[11px] tracking-[0.15em] bg-white text-black border-2 border-transparent transition-all duration-150 hover:brightness-110 disabled:opacity-50 flex items-center justify-center"
           disabled={!currentUser}
           onclick={() => {
             if (workoutState === 'active') return;
@@ -6119,14 +6119,14 @@
           </div>
         </div>
 
-        <div class="max-w-[240px] text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200 {isFuture && !isRestLog ? 'opacity-80' : ''}">
+        <div class="app-hero-copy text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200 {isFuture && !isRestLog ? 'opacity-80' : ''}">
           Recovery is where the gains happen. 
         </div>
 
         <!-- Week overview — tap to open routine editor (shown on rest days too for schedule context) -->
         <button
           type="button"
-          class="w-full max-w-xs rounded-xl border border-transparent p-1 -m-1 transition-all duration-150 hover:border-[#2a2a2a] hover:bg-[#141414]/50 cursor-pointer"
+          class="app-hero-panel rounded-xl border border-transparent p-1 -m-1 transition-all duration-150 hover:border-[#2a2a2a] hover:bg-[#141414]/50 cursor-pointer"
           onclick={() => enterRoutineBuilder({ fromWeeklyPlan: true })}
           title="Open routine editor"
         >
@@ -6184,8 +6184,8 @@
           : headerSurfaceStatus === 'yellow'
             ? 'tpl-workout-timer--yellow'
             : 'tpl-workout-timer--neutral'}
-      <div class="track-workout-shell flex flex-col flex-1 min-h-0 overflow-hidden gap-3">
-      <div class="track-workout-header shrink-0 flex flex-col gap-3">
+      <div class="track-workout-shell app-stack-gap flex flex-col flex-1 min-h-0 overflow-hidden">
+      <div class="track-workout-header app-stack-gap shrink-0 flex flex-col">
       {#if templateSaveError}
         <p class="text-[10px] text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{templateSaveError}</p>
       {/if}
@@ -6803,7 +6803,7 @@
           </button>
         </div>
       {:else}
-        <div class="grid grid-cols-[minmax(0,1fr)_9.25rem] gap-x-2 gap-y-1.5 items-stretch">
+        <div class="builder-editor-grid">
           <div class="col-start-1 row-start-1 h-5 flex items-center">
             <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">YOUR STATS</span>
           </div>
@@ -6917,7 +6917,7 @@
         <p class="text-[10px] text-red-300 leading-snug">{statSaveError}</p>
       {/if}
 
-      <div class="grid grid-cols-[minmax(0,1fr)_9.25rem] gap-x-2 gap-y-1.5 items-stretch">
+      <div class="builder-editor-grid">
         <div class="col-start-1 row-start-1 h-5 flex items-center">
           <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">STATS</span>
         </div>
@@ -7106,7 +7106,7 @@
       {:else}
         <div class="space-y-1.5">
         <!-- Exercises + properties: shared grid keeps headers, divider, and footers aligned -->
-        <div class="grid grid-cols-[minmax(0,1fr)_9.25rem] gap-x-2 gap-y-1.5 items-stretch">
+        <div class="builder-editor-grid">
           <div class="col-start-1 row-start-1 h-5 flex items-center">
             <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">EXERCISES</span>
           </div>
@@ -7389,7 +7389,7 @@
         <div class="text-[10px] tracking-[2px] text-emerald-400/70 mt-1">v0.0.1</div>
       </div>
 
-      <div class="w-full max-w-[300px] rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden">
+      <div class="app-panel-card rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden">
         <div class="p-1 border-b border-[#1e1e1e] bg-[#111]">
           <div
             class="relative grid grid-cols-2 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"

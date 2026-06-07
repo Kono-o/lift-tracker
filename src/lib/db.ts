@@ -14,6 +14,7 @@ import {
 } from "./exerciseSanitize";
 import {
 	sanitizeStatRowForDb,
+	toTrackedStat,
 	validateDraftStats,
 	type DraftStatLike,
 } from "./statSanitize";
@@ -705,7 +706,18 @@ export interface TrackedStat {
 	name: string;
 	unit: string;
 	display_order: number;
+	start_value: number;
+	has_target: boolean;
+	target_value: number | null;
 }
+
+export type StatLogSnapshotRow = {
+	stat_id: string;
+	log_date: string;
+	value: number;
+	name: string;
+	unit: string;
+};
 
 export interface CompleteWorkoutResult {
 	workout: WorkoutHistory;
@@ -1274,24 +1286,28 @@ export const db = {
 		 ================================================== */
 
 	async getTrackedStats(): Promise<TrackedStat[]> {
-		const { data, error } = await supabase
+		const full = await supabase
+			.from("tracked_stats")
+			.select("id, user_id, name, unit, display_order, start_value, has_target, target_value")
+			.order("display_order")
+			.order("created_at");
+
+		if (!full.error) {
+			return (full.data ?? []).map((row, i) => toTrackedStat(row, i));
+		}
+
+		const legacy = await supabase
 			.from("tracked_stats")
 			.select("id, user_id, name, unit, display_order")
 			.order("display_order")
 			.order("created_at");
 
-		if (error) {
-			console.warn("[db] tracked_stats fetch warning:", error.message);
+		if (legacy.error) {
+			console.warn("[db] tracked_stats fetch warning:", legacy.error.message);
 			return [];
 		}
 
-		return (data ?? []).map((row, i) => ({
-			id: row.id,
-			user_id: row.user_id,
-			name: row.name,
-			unit: row.unit ?? "",
-			display_order: row.display_order ?? i,
-		}));
+		return (legacy.data ?? []).map((row, i) => toTrackedStat(row, i));
 	},
 
 	async getStatLogs(
@@ -1323,22 +1339,46 @@ export const db = {
 		return map;
 	},
 
-	async saveStatLog(statId: string, logDate: string, value: number) {
-		const {
-			data: { user },
-		} = await supabase.auth.getUser();
-		if (!user) throw new Error("Not authenticated");
+	/** All stat log rows including snapshots for deleted stat definitions. */
+	async getStatLogSnapshots(days = 90): Promise<StatLogSnapshotRow[]> {
+		const since = new Date();
+		since.setDate(since.getDate() - days);
+		const sinceStr = since.toISOString().slice(0, 10);
 
-		const { error } = await supabase.from("stat_logs").upsert(
-			{
-				user_id: user.id,
-				stat_id: statId,
-				log_date: logDate,
-				value,
-				updated_at: new Date().toISOString(),
-			},
-			{ onConflict: "user_id,stat_id,log_date" },
-		);
+		const { data, error } = await supabase
+			.from("stat_logs")
+			.select("stat_id, log_date, value, stat_name_snapshot, stat_unit_snapshot")
+			.gte("log_date", sinceStr)
+			.order("log_date", { ascending: false });
+
+		if (error) {
+			console.warn("[db] stat_log snapshots fetch warning:", error.message);
+			return [];
+		}
+
+		return (data ?? [])
+			.filter(
+				(row) =>
+					row.stat_id &&
+					row.log_date &&
+					typeof row.value === "number" &&
+					row.stat_name_snapshot,
+			)
+			.map((row) => ({
+				stat_id: row.stat_id as string,
+				log_date: row.log_date as string,
+				value: row.value as number,
+				name: row.stat_name_snapshot as string,
+				unit: (row.stat_unit_snapshot as string | null) ?? "",
+			}));
+	},
+
+	async saveStatLog(statId: string, logDate: string, value: number) {
+		const { error } = await supabase.rpc("save_stat_log", {
+			p_stat_id: statId,
+			p_log_date: logDate,
+			p_value: value,
+		});
 
 		if (error) throw error;
 	},
@@ -1359,6 +1399,9 @@ export const db = {
 			name: string;
 			unit?: string;
 			display_order?: number;
+			start_value?: number;
+			has_target?: boolean;
+			target_value?: number | null;
 		}>,
 	): Promise<TrackedStat[]> {
 		const validationError = validateDraftStats(stats as DraftStatLike[]);
@@ -1370,6 +1413,9 @@ export const db = {
 				name: safe.name,
 				unit: safe.unit ?? "",
 				display_order: safe.display_order ?? i,
+				start_value: safe.start_value ?? 0,
+				has_target: !!safe.has_target,
+				target_value: safe.has_target ? (safe.target_value ?? 0) : null,
 			};
 			const statId = typeof d.id === "string" ? d.id : "";
 			if (
@@ -1384,16 +1430,58 @@ export const db = {
 			return row;
 		});
 
-		const { data, error } = await supabase.rpc("save_tracked_stats", {
+		let { data, error } = await supabase.rpc("save_tracked_stats", {
 			p_stats: payload,
 		});
+
+		if (error) {
+			const legacyPayload = payload.map((row) => {
+				const legacy: Record<string, unknown> = {
+					name: row.name,
+					unit: row.unit,
+					display_order: row.display_order,
+				};
+				if (row.id) legacy.id = row.id;
+				return legacy;
+			});
+			const retry = await supabase.rpc("save_tracked_stats", {
+				p_stats: legacyPayload,
+			});
+			data = retry.data;
+			error = retry.error;
+		}
+
 		if (error) throw error;
 
-		return ((data as TrackedStat[] | null) ?? []).map((row, display_order) => ({
-			...row,
-			unit: row.unit ?? "",
-			display_order: row.display_order ?? display_order,
-		}));
+		const savedById = new Map(
+			payload
+				.filter((row) => typeof row.id === "string")
+				.map((row) => [row.id as string, row]),
+		);
+
+		return ((data as TrackedStat[] | null) ?? []).map((row, display_order) => {
+			const merged = toTrackedStat(row, display_order);
+			const draft =
+				savedById.get(merged.id) ??
+				payload[display_order] ??
+				payload.find(
+					(entry, index) =>
+						index === display_order ||
+						(typeof entry.display_order === "number" &&
+							entry.display_order === display_order),
+				);
+			if (!draft) return merged;
+			return toTrackedStat(
+				{
+					...merged,
+					start_value: (draft.start_value as number | undefined) ?? merged.start_value,
+					has_target: (draft.has_target as boolean | undefined) ?? merged.has_target,
+					target_value:
+						(draft.target_value as number | null | undefined) ?? merged.target_value,
+				},
+				display_order,
+			);
+		});
 	},
 
 	/* ==================================================

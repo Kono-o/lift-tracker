@@ -19,6 +19,8 @@ import {
 import {
 	clampStatNameFieldInput,
 	clampStatUnitFieldInput,
+	clampStatValueFieldInput,
+	clampStatLogFieldInput,
 	MAX_STAT_NAME_LEN,
 	MAX_STAT_UNIT_LEN,
 } from "./statSanitize";
@@ -31,7 +33,9 @@ export type NumericPropKind =
 	| "baseKg"
 	| "incKg"
 	| "incSec"
-	| "trackedReps";
+	| "trackedReps"
+	| "statValue"
+	| "statLog";
 
 const NUMERIC_CLAMPERS: Record<
 	NumericPropKind,
@@ -45,10 +49,18 @@ const NUMERIC_CLAMPERS: Record<
 	incKg: clampIncrementKgFieldInput,
 	incSec: clampIncrementSecFieldInput,
 	trackedReps: clampTrackedRepsFieldInput,
+	statValue: clampStatValueFieldInput,
+	statLog: clampStatLogFieldInput,
 };
 
 function emptyIfZeroKind(kind: NumericPropKind): boolean {
-	return kind === "sets" || kind === "reps" || kind === "secs";
+	return (
+		kind === "sets" ||
+		kind === "reps" ||
+		kind === "secs" ||
+		kind === "statValue" ||
+		kind === "statLog"
+	);
 }
 
 function formatNumericDisplay(kind: NumericPropKind, value: number): string {
@@ -193,7 +205,7 @@ export const clampedStatNameProp = createClampedTextProp(
 	MAX_STAT_NAME_LEN,
 );
 
-/** Live clamp: stat units ≤8 chars, always uppercase. */
+/** Live clamp: stat units ≤6 chars, always uppercase. */
 export const clampedStatUnitProp = createClampedTextProp(
 	clampStatUnitFieldInput,
 	MAX_STAT_UNIT_LEN,

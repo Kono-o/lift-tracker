@@ -1,4 +1,4 @@
-import adapterAuto from '@sveltejs/adapter-auto';
+import adapterVercel from '@sveltejs/adapter-vercel';
 import adapterStatic from '@sveltejs/adapter-static';
 
 const capacitor = process.env.CAPACITOR === '1';
@@ -15,7 +15,7 @@ const config = {
 					fallback: 'index.html',
 					strict: false,
 				})
-			: adapterAuto()
+			: adapterVercel({ runtime: 'nodejs22.x' })
 	}
 };
 

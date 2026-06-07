@@ -29,6 +29,7 @@ drop trigger if exists on_auth_user_username on auth.users;
 drop function if exists public.create_template(text) cascade;
 drop function if exists public.save_template_exercises(uuid, jsonb) cascade;
 drop function if exists public.save_tracked_stats(jsonb) cascade;
+drop function if exists public.save_stat_log(uuid, date, real) cascade;
 drop function if exists public.assign_schedule_days(jsonb) cascade;
 drop function if exists public.update_template_display_orders(jsonb) cascade;
 drop function if exists public.complete_workout_session(date, uuid, text, integer, jsonb, jsonb, jsonb) cascade;
@@ -157,20 +158,31 @@ create table public.tracked_stats (
   name text not null,
   unit text not null default '',
   display_order integer not null default 0,
+  start_value real not null default 0,
+  has_target boolean not null default false,
+  target_value real,
   created_at timestamptz not null default now(),
   constraint tracked_stats_name_not_empty check (char_length(trim(name)) > 0),
-  constraint tracked_stats_display_order_nonneg check (display_order >= 0)
+  constraint tracked_stats_display_order_nonneg check (display_order >= 0),
+  constraint tracked_stats_start_value_nonneg check (start_value >= 0),
+  constraint tracked_stats_target_valid check (
+    (has_target = false and target_value is null)
+    or (has_target = true and target_value is not null and target_value > 0)
+  )
 );
 
 create table public.stat_logs (
   user_id uuid not null references auth.users (id) on delete cascade,
-  stat_id uuid not null references public.tracked_stats (id) on delete cascade,
+  stat_id uuid not null,
   log_date date not null,
   value real not null,
+  stat_name_snapshot text not null,
+  stat_unit_snapshot text not null default '',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   primary key (user_id, stat_id, log_date),
-  constraint stat_logs_value_positive check (value > 0)
+  constraint stat_logs_value_positive check (value > 0),
+  constraint stat_logs_name_not_empty check (char_length(trim(stat_name_snapshot)) > 0)
 );
 
 create table public.usernames (
@@ -1338,6 +1350,9 @@ declare
   v_stat_id uuid;
   v_name text;
   v_unit text;
+  v_start_value real;
+  v_has_target boolean;
+  v_target_value real;
   saved_ids uuid[] := '{}';
   ord integer := 0;
   result jsonb := '[]'::jsonb;
@@ -1367,8 +1382,19 @@ begin
     end if;
 
     v_unit := upper(trim(coalesce(st->>'unit', '')));
-    if char_length(v_unit) > 8 then
-      v_unit := left(v_unit, 8);
+    if char_length(v_unit) > 6 then
+      v_unit := left(v_unit, 6);
+    end if;
+
+    v_start_value := greatest(0, coalesce((st->>'start_value')::real, 0));
+    v_has_target := coalesce((st->>'has_target')::boolean, false);
+    if v_has_target then
+      v_target_value := (st->>'target_value')::real;
+      if v_target_value is null or v_target_value <= 0 then
+        raise exception 'Target value must be greater than 0 when target is enabled';
+      end if;
+    else
+      v_target_value := null;
     end if;
 
     v_stat_id := null;
@@ -1388,12 +1414,15 @@ begin
       update public.tracked_stats set
         name = v_name,
         unit = v_unit,
-        display_order = ord
+        display_order = ord,
+        start_value = v_start_value,
+        has_target = v_has_target,
+        target_value = v_target_value
       where id = v_stat_id and user_id = uid
       returning * into row;
     else
-      insert into public.tracked_stats (user_id, name, unit, display_order)
-      values (uid, v_name, v_unit, ord)
+      insert into public.tracked_stats (user_id, name, unit, display_order, start_value, has_target, target_value)
+      values (uid, v_name, v_unit, ord, v_start_value, v_has_target, v_target_value)
       returning * into row;
       v_stat_id := row.id;
     end if;
@@ -1415,6 +1444,73 @@ $$;
 
 revoke all on function public.save_tracked_stats(jsonb) from public;
 grant execute on function public.save_tracked_stats(jsonb) to authenticated;
+
+create or replace function public.save_stat_log(
+  p_stat_id uuid,
+  p_log_date date,
+  p_value real
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  uid uuid := auth.uid();
+  v_name text;
+  v_unit text;
+begin
+  if uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  if p_value is null or p_value <= 0 then
+    raise exception 'Value must be greater than 0';
+  end if;
+
+  select upper(trim(name)), upper(trim(coalesce(unit, '')))
+    into v_name, v_unit
+  from public.tracked_stats
+  where id = p_stat_id and user_id = uid;
+
+  if not found then
+    select stat_name_snapshot, stat_unit_snapshot
+      into v_name, v_unit
+    from public.stat_logs
+    where user_id = uid and stat_id = p_stat_id and log_date = p_log_date;
+
+    if not found then
+      raise exception 'Stat not found';
+    end if;
+  else
+    if char_length(v_name) > 24 then
+      v_name := left(v_name, 24);
+    end if;
+    if char_length(v_unit) > 6 then
+      v_unit := left(v_unit, 6);
+    end if;
+  end if;
+
+  insert into public.stat_logs (
+    user_id,
+    stat_id,
+    log_date,
+    value,
+    stat_name_snapshot,
+    stat_unit_snapshot,
+    updated_at
+  )
+  values (uid, p_stat_id, p_log_date, p_value, v_name, v_unit, now())
+  on conflict (user_id, stat_id, log_date) do update set
+    value = excluded.value,
+    stat_name_snapshot = excluded.stat_name_snapshot,
+    stat_unit_snapshot = excluded.stat_unit_snapshot,
+    updated_at = excluded.updated_at;
+end;
+$$;
+
+revoke all on function public.save_stat_log(uuid, date, real) from public;
+grant execute on function public.save_stat_log(uuid, date, real) to authenticated;
 
 -- -----------------------------------------------------------------------------
 -- 11. Delete all accounts (setup-db.fish --users-only)

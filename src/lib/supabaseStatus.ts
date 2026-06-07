@@ -123,11 +123,15 @@ function estimateBytesFromCounts(counts: Omit<UserDataUsage, 'estimated_bytes' |
 		counts.templates * 250 +
 		counts.exercises * 400 +
 		counts.schedule * 120 +
-		counts.workout_history * 3500
+		counts.workout_history * 3500 +
+		(counts.tracked_stats ?? 0) * 200 +
+		(counts.stat_logs ?? 0) * 80
 	);
 }
 
-async function countTable(table: 'templates' | 'exercises' | 'schedule' | 'workout_history'): Promise<number> {
+async function countTable(
+	table: 'templates' | 'exercises' | 'schedule' | 'workout_history' | 'tracked_stats' | 'stat_logs',
+): Promise<number> {
 	const { count, error } = await supabase
 		.from(table)
 		.select('*', { count: 'exact', head: true });
@@ -155,13 +159,15 @@ export async function fetchUserDataUsage(): Promise<UserDataUsage | null> {
 	}
 
 	try {
-		const [templates, exercises, schedule, workout_history] = await Promise.all([
+		const [templates, exercises, schedule, workout_history, tracked_stats, stat_logs] = await Promise.all([
 			countTable('templates'),
 			countTable('exercises'),
 			countTable('schedule'),
 			countTable('workout_history'),
+			countTable('tracked_stats'),
+			countTable('stat_logs'),
 		]);
-		const counts = { templates, exercises, schedule, workout_history };
+		const counts = { templates, exercises, schedule, workout_history, tracked_stats, stat_logs };
 		return {
 			...counts,
 			estimated_bytes: estimateBytesFromCounts(counts),

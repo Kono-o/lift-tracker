@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { PUBLIC_SUPABASE_URL } from '$env/static/public';
-  import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type TrackedStat, type WorkoutHistory } from '$lib/db';
+  import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type TrackedStat, type StatLogSnapshotRow, type WorkoutHistory } from '$lib/db';
   import GeneratedAvatar from '$lib/components/GeneratedAvatar.svelte';
   import HeaderClock from '$lib/components/HeaderClock.svelte';
   import { horizontalSwipe } from '$lib/horizontalSwipe';
@@ -39,6 +39,7 @@
   import {
     MAX_STATS,
     normalizeDraftStat,
+    toTrackedStat,
     sanitizeStatLogValue,
     validateDraftStats,
   } from '$lib/statSanitize';
@@ -148,9 +149,7 @@
   let weekLogs = $state<Record<string, any | null>>({});
   let trackedStats = $state<TrackedStat[]>([]);
   let statLogs = $state<Record<string, Record<string, number>>>({});
-  let selectedStatId = $state<string | null>(null);
-
-  let statInputValue = $state<number | ''>('');
+  let statLogSnapshots = $state<StatLogSnapshotRow[]>([]);
   let draftStats = $state<TrackedStat[]>([]);
   let selectedDraftStatId = $state<string | null>(null);
   let editingStatNameId = $state<string | null>(null);
@@ -2333,18 +2332,90 @@
     resetSettingsPanelUi();
   }
 
-  let selectedStat = $derived(
-    selectedStatId ? trackedStats.find((s) => s.id === selectedStatId) ?? null : null,
-  );
-  let selectedStatLogs = $derived(
-    selectedStatId ? (statLogs[selectedStatId] ?? {}) : {},
-  );
+  function statLogsFromSnapshots(rows: StatLogSnapshotRow[]): Record<string, Record<string, number>> {
+    const map: Record<string, Record<string, number>> = {};
+    for (const row of rows) {
+      if (!map[row.stat_id]) map[row.stat_id] = {};
+      map[row.stat_id][row.log_date] = row.value;
+    }
+    return map;
+  }
+
+  function statSnapshotMeta(statId: string): { name: string; unit: string } {
+    const active = trackedStats.find((s) => s.id === statId);
+    if (active) return { name: active.name, unit: active.unit };
+    const snap = statLogSnapshots.find((r) => r.stat_id === statId);
+    return { name: snap?.name ?? 'STAT', unit: snap?.unit ?? '' };
+  }
+
+  function upsertLocalStatLogSnapshot(
+    statId: string,
+    logDate: string,
+    value: number,
+    name: string,
+    unit: string,
+  ) {
+    const idx = statLogSnapshots.findIndex(
+      (r) => r.stat_id === statId && r.log_date === logDate,
+    );
+    if (idx >= 0) {
+      statLogSnapshots = statLogSnapshots.map((r, i) =>
+        i === idx ? { ...r, value, name, unit } : r,
+      );
+    } else {
+      statLogSnapshots = [
+        ...statLogSnapshots,
+        { stat_id: statId, log_date: logDate, value, name, unit },
+      ];
+    }
+  }
+
+  function removeLocalStatLogSnapshot(statId: string, logDate: string) {
+    statLogSnapshots = statLogSnapshots.filter(
+      (r) => !(r.stat_id === statId && r.log_date === logDate),
+    );
+  }
+
+  let statHistoryGroups = $derived.by(() => {
+    const activeById = new Map(trackedStats.map((s) => [s.id, s]));
+    const groups = new Map<
+      string,
+      {
+        statId: string;
+        name: string;
+        unit: string;
+        isActive: boolean;
+        entries: Array<{ date: string; value: number }>;
+      }
+    >();
+
+    for (const row of statLogSnapshots) {
+      if (row.log_date === REAL_TODAY_STR) continue;
+      let group = groups.get(row.stat_id);
+      if (!group) {
+        const active = activeById.get(row.stat_id);
+        group = {
+          statId: row.stat_id,
+          name: active?.name ?? row.name,
+          unit: active?.unit ?? row.unit,
+          isActive: !!active,
+          entries: [],
+        };
+        groups.set(row.stat_id, group);
+      }
+      group.entries.push({ date: row.log_date, value: row.value });
+    }
+
+    return [...groups.values()]
+      .map((g) => ({
+        ...g,
+        entries: g.entries.sort((a, b) => b.date.localeCompare(a.date)),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  });
 
   function enterStatsView() {
     if (!isViewingToday) return;
-    if (!selectedStatId && trackedStats.length > 0) {
-      selectedStatId = trackedStats[0].id;
-    }
     currentView = 'stats';
   }
 
@@ -2352,8 +2423,12 @@
     currentView = 'track';
   }
 
+  function draftStatById(id: string) {
+    return draftStats.find((s) => s.id === id) ?? null;
+  }
+
   function openStatsEditor() {
-    draftStats = trackedStats.map((s) => ({ ...s }));
+    draftStats = trackedStats.map((s, i) => ({ ...toTrackedStat(s, i) }));
     selectedDraftStatId = draftStats.length > 0 ? draftStats[0].id : null;
     editingStatNameId = null;
     statSaveError = null;
@@ -2364,9 +2439,6 @@
     if (editorExitSaving) return;
     editorExitSaving = true;
     trackedStats = draftStats.map((s) => ({ ...s }));
-    if (selectedStatId && !trackedStats.some((s) => s.id === selectedStatId)) {
-      selectedStatId = trackedStats[0]?.id ?? null;
-    }
     currentView = 'stats';
     statSaveError = null;
     void runDbActivityBatch(persistTrackedStatsNow).finally(() => {
@@ -2389,8 +2461,8 @@
     void persistTrackedStatsNow();
   }
 
-  function markDraftStatsTouched() {
-    draftStats = [...draftStats];
+  function patchDraftStat(id: string, patch: Partial<TrackedStat>) {
+    draftStats = draftStats.map((s) => (s.id === id ? { ...s, ...patch } : s));
   }
 
   function addNewStat() {
@@ -2407,6 +2479,9 @@
         name: 'NEW STAT',
         unit: '',
         display_order: draftStats.length,
+        start_value: 0,
+        has_target: false,
+        target_value: null,
       },
     ];
     selectDraftStat(tempId);
@@ -2451,9 +2526,6 @@
         selectedDraftStatId = prevSelected;
       } else {
         selectedDraftStatId = saved[0]?.id ?? null;
-      }
-      if (selectedStatId && !trackedStats.some((s) => s.id === selectedStatId)) {
-        selectedStatId = trackedStats[0]?.id ?? null;
       }
       statSaveError = null;
     } catch (err) {
@@ -2505,61 +2577,90 @@
     }
   }
 
-  function logSelectedStat() {
-    if (!selectedStatId) return;
-    const value = sanitizeStatLogValue(Number(statInputValue));
-    if (value == null) return;
-    const statId = selectedStatId;
+  function getStatTodayInputValue(statId: string): number {
+    return statLogs[statId]?.[REAL_TODAY_STR] ?? 0;
+  }
+
+  function setStatTodayInputDraft(statId: string, value: number) {
     const logDate = REAL_TODAY_STR;
     const prev = statLogs[statId] ?? {};
-    const prevValue = prev[logDate];
+    if (value <= 0) {
+      if (prev[logDate] === undefined) return;
+      const next = { ...prev };
+      delete next[logDate];
+      statLogs = { ...statLogs, [statId]: next };
+      return;
+    }
     statLogs = {
       ...statLogs,
       [statId]: { ...prev, [logDate]: value },
     };
-    statInputValue = '';
+  }
+
+  function persistStatLogEntry(statId: string, logDate: string, raw: number) {
+    const value = sanitizeStatLogValue(raw);
+    const prev = statLogs[statId] ?? {};
+    const prevValue = prev[logDate];
+    const prevSnap = statLogSnapshots.find(
+      (r) => r.stat_id === statId && r.log_date === logDate,
+    );
+    const meta = statSnapshotMeta(statId);
+
+    if (value == null) {
+      if (prevValue === undefined) return;
+      const next = { ...prev };
+      delete next[logDate];
+      statLogs = { ...statLogs, [statId]: next };
+      removeLocalStatLogSnapshot(statId, logDate);
+      void db.deleteStatLog(statId, logDate).catch((e) => {
+        console.error(e);
+        const rollback = { ...(statLogs[statId] ?? {}) };
+        if (prevValue !== undefined) rollback[logDate] = prevValue;
+        statLogs = { ...statLogs, [statId]: rollback };
+        if (prevSnap) {
+          upsertLocalStatLogSnapshot(
+            statId,
+            logDate,
+            prevSnap.value,
+            prevSnap.name,
+            prevSnap.unit,
+          );
+        }
+      });
+      return;
+    }
+
+    statLogs = {
+      ...statLogs,
+      [statId]: { ...prev, [logDate]: value },
+    };
+    upsertLocalStatLogSnapshot(statId, logDate, value, meta.name, meta.unit);
     void db.saveStatLog(statId, logDate, value).catch((e) => {
       console.error(e);
       const rollback = { ...(statLogs[statId] ?? {}) };
       if (prevValue === undefined) delete rollback[logDate];
       else rollback[logDate] = prevValue;
       statLogs = { ...statLogs, [statId]: rollback };
+      if (prevSnap) {
+        upsertLocalStatLogSnapshot(
+          statId,
+          logDate,
+          prevSnap.value,
+          prevSnap.name,
+          prevSnap.unit,
+        );
+      } else {
+        removeLocalStatLogSnapshot(statId, logDate);
+      }
     });
   }
 
-  function updateStatLog(date: string, val: string) {
-    if (!selectedStatId) return;
-    const value = sanitizeStatLogValue(Number(val));
-    if (!date || value == null) return;
-    const statId = selectedStatId;
-    const prev = statLogs[statId] ?? {};
-    const prevValue = prev[date];
-    statLogs = {
-      ...statLogs,
-      [statId]: { ...prev, [date]: value },
-    };
-    void db.saveStatLog(statId, date, value).catch((e) => {
-      console.error(e);
-      const rollback = { ...(statLogs[statId] ?? {}) };
-      if (prevValue === undefined) delete rollback[date];
-      else rollback[date] = prevValue;
-      statLogs = { ...statLogs, [statId]: rollback };
-    });
+  function persistStatTodayLog(statId: string) {
+    persistStatLogEntry(statId, REAL_TODAY_STR, getStatTodayInputValue(statId));
   }
 
-  function deleteStatLogEntry(date: string) {
-    if (!selectedStatId) return;
-    const statId = selectedStatId;
-    const prev = { ...(statLogs[statId] ?? {}) };
-    const prevValue = prev[date];
-    delete prev[date];
-    statLogs = { ...statLogs, [statId]: prev };
-    void db.deleteStatLog(statId, date).catch((e) => {
-      console.error(e);
-      const rollback = { ...(statLogs[statId] ?? {}) };
-      if (prevValue !== undefined) rollback[date] = prevValue;
-      statLogs = { ...statLogs, [statId]: rollback };
-    });
+  function deleteStatLogEntry(statId: string, logDate: string) {
+    persistStatLogEntry(statId, logDate, 0);
   }
 
   function applySupabaseHealthError(e: unknown) {
@@ -2996,14 +3097,14 @@
 			if (isInitial && currentUser) {
 				bootSections = buildAuthBootSections(currentUser, 'syncing');
 			}
-			const [data, recentLogs, stats, logs] = await Promise.all([
+			const [data, recentLogs, stats, snapshots] = await Promise.all([
 				db.getAppData(),
 				db.getRecentHistory(21).catch((e) => {
 					console.error('Recent history fetch failed', e);
 					return [] as WorkoutHistory[];
 				}),
 				db.getTrackedStats().catch(() => [] as TrackedStat[]),
-				db.getStatLogs(90).catch(() => ({} as Record<string, Record<string, number>>)),
+				db.getStatLogSnapshots(90).catch(() => [] as StatLogSnapshotRow[]),
 			]);
 			schedule = data.schedule;
 			templates = data.templates;
@@ -3011,10 +3112,8 @@
 			deletedLibraryExerciseIds = new Set(); // server state is now authoritative
 			todayLog = data.todayLog || null;
 			trackedStats = stats;
-			statLogs = logs;
-			if (selectedStatId && !trackedStats.some((s) => s.id === selectedStatId)) {
-				selectedStatId = trackedStats[0]?.id ?? null;
-			}
+			statLogSnapshots = snapshots;
+			statLogs = statLogsFromSnapshots(snapshots);
 			if (isInitial) {
 				bootSections = buildBootSections(currentUser, schedule, templates, todayLog, recentLogs);
 				bootMessage = 'Almost ready…';
@@ -3345,6 +3444,15 @@
     };
     const duration = elapsed;
     const justFinished = computeWorkoutFinishStatus(template, snapshot);
+    const rollbackBackup: ActiveSessionBackup = {
+      date: REAL_TODAY_STR,
+      templateId: template.id,
+      templateName: template.name,
+      trackedReps: snapshot.reps,
+      completedTimers: snapshot.times,
+      workoutStartedAt: workoutStartedAt ?? Date.now() - elapsed * 1000,
+      ongoingTimer: ongoingTimerBackupFromState(),
+    };
 
     justFinishedStatus = justFinished;
     workoutProgressSavePending = false;
@@ -3354,15 +3462,17 @@
     activeWorkoutTemplate = null;
     workoutState = 'done';
 
-    void syncWorkoutFinish(template, snapshot, duration);
+    void syncWorkoutFinish(template, snapshot, duration, rollbackBackup);
   }
 
   async function syncWorkoutFinish(
     template: Template,
     snapshot: { reps: Record<string, number>; times: Record<string, { result: string; met: boolean }> },
     duration: number,
+    rollbackBackup: ActiveSessionBackup,
   ) {
     const opGen = workoutProgressSaveGen;
+    let succeeded = false;
     try {
       const result = await db.submitWorkoutSession(template, snapshot, duration);
       if (opGen !== workoutProgressSaveGen) {
@@ -3372,10 +3482,31 @@
       applyWorkoutLogLocally(result.workout, REAL_TODAY_STR);
       patchExerciseWeights(result.updatedExercises);
       if (opGen !== workoutProgressSaveGen) return;
+      succeeded = true;
     } catch (err) {
       if (opGen !== workoutProgressSaveGen) return;
       console.error('finish workout failed', err);
       workoutActionError = formatDbError(err);
+      if (applyActiveSessionBackup(rollbackBackup)) {
+        writeActiveSessionBackup();
+      } else {
+        workoutState = 'active';
+        activeWorkoutTemplate = template;
+        trackedReps = { ...snapshot.reps };
+        completedTimers = { ...snapshot.times };
+        restoreWorkoutTimerFromLog({
+          performance_snapshot: {
+            started_at: rollbackBackup.workoutStartedAt,
+            duration_seconds: 0,
+          },
+        });
+        headerTimerInDom = true;
+        headerTimerOpaque = true;
+        if (rollbackBackup.ongoingTimer) {
+          restoreOngoingExerciseTimer(rollbackBackup.ongoingTimer, template);
+        }
+        writeActiveSessionBackup();
+      }
     } finally {
       if (opGen !== workoutProgressSaveGen) {
         finishSyncPending = false;
@@ -3384,10 +3515,12 @@
       }
       finishSyncPending = false;
       justFinishedStatus = null;
-      const fromLog = durationSecondsFromLog(todayLog);
-      if (fromLog > 0) workoutDuration = fromLog;
-      finishedHeaderDuration = 0;
-      clearActiveSessionBackup();
+      if (succeeded) {
+        const fromLog = durationSecondsFromLog(todayLog);
+        if (fromLog > 0) workoutDuration = fromLog;
+        finishedHeaderDuration = 0;
+        clearActiveSessionBackup();
+      }
     }
   }
 
@@ -5606,6 +5739,14 @@
                     <span class="leading-none">{panel.usage.workout_history} logs</span>
                   </span>
                   <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
+                    <BarChart3 class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="leading-none">{panel.usage.tracked_stats ?? 0} stats</span>
+                  </span>
+                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
+                    <Pencil class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="leading-none">{panel.usage.stat_logs ?? 0} stat logs</span>
+                  </span>
+                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
                     <HardDrive class="size-3 shrink-0" aria-hidden="true" />
                     <span class="leading-none">{panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}</span>
                   </span>
@@ -5911,6 +6052,14 @@
                 <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
                   <History class="size-3 shrink-0" aria-hidden="true" />
                   <span class="leading-none">{panel.usage.workout_history} logs</span>
+                </span>
+                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
+                  <BarChart3 class="size-3 shrink-0" aria-hidden="true" />
+                  <span class="leading-none">{panel.usage.tracked_stats ?? 0} stats</span>
+                </span>
+                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
+                  <Pencil class="size-3 shrink-0" aria-hidden="true" />
+                  <span class="leading-none">{panel.usage.stat_logs ?? 0} stat logs</span>
                 </span>
                 <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
                   <HardDrive class="size-3 shrink-0" aria-hidden="true" />
@@ -6919,12 +7068,7 @@
         >
           <ArrowLeft class="size-4" />
         </button>
-        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">STATS</span>
-        <div class="flex-1 min-w-0 flex items-center">
-          <span
-            class="w-full h-8 flex items-center justify-center px-2 rounded border border-[#2a2a2a] bg-black text-xs font-medium truncate leading-none text-center text-white"
-          >{selectedStat?.name ?? (trackedStats.length ? 'SELECT STAT' : 'NO STATS YET')}</span>
-        </div>
+        <span class="flex-1 text-xs font-bold tracking-wider text-zinc-400 leading-none">STATS</span>
         <button
           type="button"
           class="w-8 h-8 rounded-lg shrink-0 flex items-center justify-center border border-[#1e1e1e] bg-transparent text-zinc-400 hover:bg-[#1a1a1a] hover:text-white"
@@ -6935,7 +7079,7 @@
         </button>
       </div>
 
-      {#if trackedStats.length === 0}
+      {#if trackedStats.length === 0 && statHistoryGroups.length === 0}
         <div class="text-center py-6 space-y-3">
           <div class="text-xs text-zinc-500">No stats defined yet.</div>
           <button
@@ -6947,94 +7091,97 @@
           </button>
         </div>
       {:else}
-        <div class="builder-editor-grid">
-          <div class="col-start-1 row-start-1 h-5 flex items-center">
-            <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">YOUR STATS</span>
-          </div>
-          <div class="col-start-2 row-start-1 h-5 flex items-center border-l border-[#1e1e1e] pl-2">
-            <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">LOG</span>
-          </div>
-
-          <div class="col-start-1 row-start-2 flex flex-col gap-1 min-w-0">
-            {#each trackedStats as stat, index (stat.id)}
-              {@const isSelected = selectedStatId === stat.id}
-              <div class="flex items-stretch gap-1 h-8">
-                <div
-                  class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none {isSelected ? 'bg-white/15 border-white text-white' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400'}"
-                >{index + 1}</div>
-                <button
-                  type="button"
-                  class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center transition-colors {isSelected ? 'bg-white/10 border-white text-white' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a] text-zinc-300'}"
-                  onclick={() => { selectedStatId = stat.id; }}
-                >
-                  <BarChart3 class="size-3 shrink-0 mr-1 {isSelected ? 'text-white' : 'text-zinc-500'}" />
-                  <span class="font-medium truncate leading-none text-left flex-1">{stat.name}</span>
-                  {#if stat.unit}
-                    <span class="text-[9px] text-zinc-500 ml-1 shrink-0">{stat.unit}</span>
-                  {/if}
-                </button>
+        {#if trackedStats.length > 0}
+          <div class="flex flex-col gap-1 min-w-0">
+            {#each trackedStats as stat (stat.id)}
+              <div class="flex items-stretch gap-1 h-8 min-w-0">
+                <div class="flex-1 min-w-0 h-8 px-1.5 border border-[#1e1e1e] rounded bg-[#0d0d0d] text-xs flex items-center">
+                  <span class="font-medium truncate leading-none text-zinc-300">{stat.name}</span>
+                </div>
+                <input
+                  type="text"
+                  inputmode="decimal"
+                  autocomplete="off"
+                  placeholder={String(stat.start_value || 0)}
+                  class="prop-num-input w-[4.5rem] shrink-0 h-8 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
+                  use:clampedNumericProp={{
+                    kind: 'statLog',
+                    getValue: () => getStatTodayInputValue(stat.id),
+                    setValue: (v) => { setStatTodayInputDraft(stat.id, v); },
+                  }}
+                  onblur={() => persistStatTodayLog(stat.id)}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+                  }}
+                />
+                {#if stat.unit}
+                  <span class="shrink-0 h-8 flex items-center text-[10px] font-medium uppercase text-zinc-400">{stat.unit}</span>
+                {/if}
               </div>
             {/each}
           </div>
+        {/if}
 
-          <div class="col-start-2 row-start-2 border-l border-[#1e1e1e] pl-2 min-w-0 self-stretch">
-            {#if selectedStat}
-              <div class="space-y-2 h-full flex flex-col">
-                <div>
-                  <span class="text-zinc-500 block mb-0.5 leading-none text-[9px]">
-                    Value{selectedStat.unit ? ` (${selectedStat.unit})` : ''}
-                  </span>
-                  <input
-                    type="number"
-                    step="any"
-                    min="0"
-                    placeholder="0"
-                    class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
-                    bind:value={statInputValue}
-                    onkeydown={(e) => { if (e.key === 'Enter') logSelectedStat(); }}
-                  />
-                </div>
-                <button
-                  type="button"
-                  class="h-7 w-full rounded bg-white text-black text-[9px] font-black tracking-[0.12em] hover:brightness-110"
-                  onclick={logSelectedStat}
-                >
-                  LOG
-                </button>
-                <div class="flex-1 min-h-0 overflow-auto">
-                  <div class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none text-center mb-1">HISTORY</div>
-                  {#if Object.keys(selectedStatLogs).length === 0}
-                    <div class="text-zinc-500 text-[10px] py-2 text-center">No entries yet.</div>
-                  {:else}
-                    <div class="border border-[#1e1e1e] rounded overflow-hidden text-xs">
-                      {#each Object.entries(selectedStatLogs).sort((a, b) => b[0].localeCompare(a[0])) as [date, value]}
-                        <div class="flex items-center border-b border-[#1e1e1e] last:border-b-0 bg-[#0d0d0d] hover:bg-[#141414]">
-                          <div class="w-24 px-2 py-1 font-mono text-zinc-400 border-r border-[#1e1e1e] text-[10px]">{date}</div>
-                          <input
-                            type="number"
-                            step="any"
-                            value={value}
-                            class="prop-num-input flex-1 bg-transparent px-2 py-1 text-right text-white outline-none text-xs"
-                            onblur={(e) => updateStatLog(date, e.currentTarget.value)}
-                            onkeydown={(e) => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
-                          />
-                          <button
-                            type="button"
-                            class="px-2 py-1 text-red-400 hover:text-red-300 text-[10px] font-bold"
-                            onclick={() => deleteStatLogEntry(date)}
-                            title="Delete entry"
-                          >×</button>
-                        </div>
-                      {/each}
-                    </div>
+        {#if statHistoryGroups.length > 0}
+          <div class="space-y-2 {trackedStats.length > 0 ? 'pt-2 border-t border-[#1e1e1e]' : ''}">
+            <div class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none text-center">History</div>
+            {#each statHistoryGroups as group (group.statId)}
+              <div class="space-y-1">
+                <div class="flex items-center gap-1 min-w-0 px-0.5">
+                  <span class="text-[10px] font-medium uppercase truncate text-zinc-400">{group.name}</span>
+                  {#if group.unit}
+                    <span class="text-[9px] uppercase text-zinc-600 shrink-0">{group.unit}</span>
+                  {/if}
+                  {#if !group.isActive}
+                    <span class="text-[8px] uppercase tracking-[0.08em] text-zinc-600 shrink-0">archived</span>
                   {/if}
                 </div>
+                <div class="border border-[#1e1e1e] rounded overflow-hidden text-xs">
+                  {#each group.entries as entry (entry.date)}
+                    <div class="flex items-center border-b border-[#1e1e1e] last:border-b-0 bg-[#0d0d0d] hover:bg-[#141414]">
+                      <div class="w-24 px-2 py-1 font-mono text-zinc-400 border-r border-[#1e1e1e] text-[10px]">{entry.date}</div>
+                      <input
+                        type="text"
+                        inputmode="decimal"
+                        autocomplete="off"
+                        class="prop-num-input flex-1 bg-transparent px-2 py-1 text-right text-white outline-none text-xs"
+                        use:clampedNumericProp={{
+                          kind: 'statLog',
+                          getValue: () => statLogs[group.statId]?.[entry.date] ?? 0,
+                          setValue: (v) => {
+                            const prev = statLogs[group.statId] ?? {};
+                            statLogs = {
+                              ...statLogs,
+                              [group.statId]: { ...prev, [entry.date]: v },
+                            };
+                          },
+                        }}
+                        onblur={() =>
+                          persistStatLogEntry(
+                            group.statId,
+                            entry.date,
+                            statLogs[group.statId]?.[entry.date] ?? 0,
+                          )}
+                        onkeydown={(e) => {
+                          if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+                        }}
+                      />
+                      {#if group.unit}
+                        <span class="px-2 text-[9px] uppercase text-zinc-500 shrink-0">{group.unit}</span>
+                      {/if}
+                      <button
+                        type="button"
+                        class="px-2 py-1 text-red-400 hover:text-red-300 text-[10px] font-bold"
+                        onclick={() => deleteStatLogEntry(group.statId, entry.date)}
+                        title="Delete entry"
+                      >×</button>
+                    </div>
+                  {/each}
+                </div>
               </div>
-            {:else}
-              <div class="text-zinc-500 text-[10px] py-6 text-center">Select a stat to log.</div>
-            {/if}
+            {/each}
           </div>
-        </div>
+        {/if}
       {/if}
     </div>
 
@@ -7050,149 +7197,222 @@
         >
           <ArrowLeft class="size-4" />
         </button>
-        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">STATS EDITOR</span>
-        <div class="flex-1 min-w-0 flex items-center">
-          <span
-            class="w-full h-8 flex items-center justify-center px-2 rounded border border-[#2a2a2a] bg-black text-xs font-medium truncate leading-none text-center text-white"
-          >{draftStats.length} {draftStats.length === 1 ? 'STAT' : 'STATS'}</span>
-        </div>
       </div>
       {#if statSaveError}
         <p class="text-[10px] text-red-300 leading-snug">{statSaveError}</p>
       {/if}
 
-      <div class="builder-editor-grid">
-        <div class="col-start-1 row-start-1 h-5 flex items-center">
-          <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">STATS</span>
-        </div>
-        <div class="col-start-2 row-start-1 h-5 flex items-center border-l border-[#1e1e1e] pl-2">
-          <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">PROPERTIES</span>
-        </div>
+      <div class="space-y-1.5">
+        <div class="builder-editor-grid">
+          <div class="col-start-1 row-start-1 h-5 flex items-center">
+            <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">STATS</span>
+          </div>
+          <div class="col-start-2 row-start-1 h-5 flex items-center border-l border-[#1e1e1e] pl-2">
+            <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">PROPERTIES</span>
+          </div>
 
-        <div class="col-start-1 row-start-2 flex flex-col gap-1 min-w-0">
-          {#if draftStats.length === 0}
-            <div class="text-center py-3 border border-dashed border-[#1e1e1e] rounded text-[10px] text-zinc-500">
-              No stats yet.<br />Tap NEW to create one.
-            </div>
-          {/if}
-          {#each draftStats as stat, index (stat.id)}
-            {@const isSelected = selectedDraftStatId === stat.id}
-            <div
-              class="flex items-stretch gap-1 h-8"
-              ondragover={handleStatDragOver}
-              ondrop={(e) => handleStatDrop(e, index)}
-            >
-              <button
-                type="button"
-                draggable="true"
-                class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none cursor-grab active:cursor-grabbing transition-colors {isSelected ? 'bg-white/15 border-white text-white' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
-                title="Drag to reorder — click to select"
-                onclick={() => {
-                  if (statRowDragged) return;
-                  selectDraftStat(stat.id);
-                }}
-                ondragstart={(e) => handleStatDragStart(e, index)}
-                ondragend={handleStatDragEnd}
-              >{index + 1}</button>
-              <div
-                class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center cursor-pointer transition-colors {isSelected ? 'bg-white/10 border-white text-white' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
-                onclick={() => selectDraftStat(stat.id)}
-              >
-                <BarChart3 class="size-3 shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
-                {#if editingStatNameId === stat.id}
-                  <input
-                    type="text"
-                    autocomplete="off"
-                    use:focusExerciseNameInput
-                    use:clampedStatNameProp={{
-                      getValue: () => stat.name,
-                      setValue: (v) => { stat.name = v; markDraftStatsTouched(); },
-                    }}
-                    onclick={(e) => e.stopPropagation()}
-                    onblur={endStatNameEdit}
-                    onkeydown={(e) => {
-                      if (e.key === 'Enter' || e.key === 'Escape') {
-                        e.preventDefault();
-                        (e.currentTarget as HTMLInputElement).blur();
-                      }
-                    }}
-                    class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isSelected ? 'text-white' : 'text-zinc-400'}"
-                    placeholder="NAME"
-                  />
-                {:else}
-                  <span
-                    class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-white' : 'text-zinc-400'}"
-                    ondblclick={(e) => {
-                      e.stopPropagation();
-                      beginStatNameEdit(stat.id);
-                    }}
-                  >{stat.name || 'Name'}</span>
-                {/if}
-                {#if isSelected}
+          <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
+            <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0">
+              {#if draftStats.length === 0}
+                <div class="text-center py-3 border border-dashed border-[#1e1e1e] rounded text-[10px] text-zinc-500">
+                  No stats yet.<br />
+                  Tap NEW to create one.
+                </div>
+              {/if}
+              {#each draftStats as stat, index (stat.id)}
+                {@const isSelected = selectedDraftStatId === stat.id}
+                <div
+                  class="flex items-stretch gap-1 h-8"
+                  ondragover={handleStatDragOver}
+                  ondrop={(e) => handleStatDrop(e, index)}
+                >
                   <button
                     type="button"
-                    class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-red-900/70 bg-red-950/40 text-red-400 hover:text-red-300"
-                    onclick={(e) => { e.stopPropagation(); deleteSelectedStat(); }}
-                    title="Delete stat"
+                    draggable="true"
+                    class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none cursor-grab active:cursor-grabbing transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
+                    style={isSelected ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white` : ''}
+                    title="Drag to reorder — click to select"
+                    onclick={() => {
+                      if (statRowDragged) return;
+                      selectDraftStat(stat.id);
+                    }}
+                    ondragstart={(e) => handleStatDragStart(e, index)}
+                    ondragend={handleStatDragEnd}
                   >
-                    <Trash2 class="size-3 pointer-events-none" />
+                    {index + 1}
                   </button>
-                {/if}
-              </div>
+                  <div
+                    class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center cursor-pointer transition-colors {isSelected ? '' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
+                    style={isSelected ? `background-color: color-mix(in srgb, white 8%, #0d0d0d); border-color: white; color: white` : ''}
+                    onclick={() => selectDraftStat(stat.id)}
+                  >
+                    <div class="flex items-center gap-1 min-w-0 flex-1">
+                      <BarChart3 class="size-3 shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
+                      {#if editingStatNameId === stat.id}
+                        <input
+                          type="text"
+                          autocomplete="off"
+                          use:focusExerciseNameInput
+                          use:clampedStatNameProp={{
+                            getValue: () => stat.name,
+                            setValue: (v) => { patchDraftStat(stat.id, { name: v }); },
+                          }}
+                          onclick={(e) => e.stopPropagation()}
+                          onblur={endStatNameEdit}
+                          onkeydown={(e) => {
+                            if (e.key === 'Enter' || e.key === 'Escape') {
+                              e.preventDefault();
+                              (e.currentTarget as HTMLInputElement).blur();
+                            }
+                          }}
+                          class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                          placeholder="NAME"
+                        />
+                      {:else}
+                        <span
+                          class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                          ondblclick={(e) => {
+                            e.stopPropagation();
+                            beginStatNameEdit(stat.id);
+                          }}
+                        >{stat.name || 'Name'}</span>
+                      {/if}
+                      {#if isSelected}
+                        <button
+                          type="button"
+                          class="w-6 h-6 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
+                          title="Delete stat"
+                          onclick={(e) => { e.stopPropagation(); deleteSelectedStat(); }}
+                        >
+                          <Trash2 class="size-3 pointer-events-none" />
+                        </button>
+                      {/if}
+                    </div>
+                  </div>
+                </div>
+              {/each}
             </div>
-          {/each}
-        </div>
 
-        <div class="col-start-2 row-start-2 border-l border-[#1e1e1e] pl-2 min-w-0 self-stretch">
-          {#if selectedDraftStatId}
-            {@const stat = draftStats.find((s) => s.id === selectedDraftStatId)}
-            {#if stat}
-              <div class="space-y-2">
-                <div>
-                  <span class="text-zinc-500 block mb-0.5 leading-none text-[9px]">Name</span>
-                  <input
-                    type="text"
-                    autocomplete="off"
-                    class="w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none uppercase"
-                    use:clampedStatNameProp={{
-                      getValue: () => stat.name,
-                      setValue: (v) => { stat.name = v; markDraftStatsTouched(); },
-                    }}
-                    onblur={() => void persistTrackedStatsNow()}
-                  />
-                </div>
-                <div>
-                  <span class="text-zinc-500 block mb-0.5 leading-none text-[9px]">Unit</span>
-                  <input
-                    type="text"
-                    autocomplete="off"
-                    placeholder="KG"
-                    class="w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none uppercase"
-                    use:clampedStatUnitProp={{
-                      getValue: () => stat.unit,
-                      setValue: (v) => { stat.unit = v; markDraftStatsTouched(); },
-                    }}
-                    onblur={() => void persistTrackedStatsNow()}
-                  />
-                </div>
-                <p class="text-[9px] text-zinc-500 leading-snug">Unit is optional — shown when logging (e.g. KG, %, HRS).</p>
-              </div>
-            {/if}
-          {:else}
-            <div class="text-zinc-500 text-[10px] py-6 text-center">Select a stat to edit.</div>
-          {/if}
-        </div>
-      </div>
+            <div class="library-actions mt-1.5">
+              <button
+                type="button"
+                class="library-action-btn library-action-btn--new"
+                disabled={draftStats.length >= MAX_STATS}
+                onclick={addNewStat}
+                title="Create a new stat"
+                aria-label="Create new stat"
+              >
+                <Plus class="size-3.5" strokeWidth={3} />
+                <span>NEW</span>
+              </button>
+            </div>
+          </div>
 
-      <div class="flex gap-1 pt-1">
-        <button
-          type="button"
-          class="flex-1 h-8 rounded border border-[#1e1e1e] bg-[#0d0d0d] text-[9px] font-black tracking-[0.12em] text-white hover:border-[#2a2a2a] disabled:opacity-40"
-          disabled={draftStats.length >= MAX_STATS}
-          onclick={addNewStat}
-        >
-          + NEW
-        </button>
+          <div class="col-start-2 row-start-2 flex flex-col min-h-0 self-stretch border-l border-[#1e1e1e] pl-2">
+            <div class="flex-1 flex flex-col min-h-0 h-full">
+              {#if selectedDraftStatId}
+                {#key selectedDraftStatId}
+                  {@const statId = selectedDraftStatId}
+                  {@const stat = draftStatById(statId)}
+                  {#if stat}
+                    {@const hasTarget = !!draftStatById(statId)?.has_target}
+                    <div class="grid grid-cols-[minmax(0,1.55fr)_minmax(0,0.85fr)] gap-x-1 gap-y-2 text-[9px]">
+                      <div>
+                        <span class="text-zinc-500 block mb-0.5 leading-none">Start</span>
+                        <input
+                          type="text"
+                          inputmode="decimal"
+                          autocomplete="off"
+                          placeholder="0"
+                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
+                          use:clampedNumericProp={{
+                            kind: 'statValue',
+                            getValue: () => draftStatById(statId)?.start_value ?? 0,
+                            setValue: (v) => { patchDraftStat(statId, { start_value: v }); },
+                          }}
+                          onblur={() => void persistTrackedStatsNow()}
+                        />
+                      </div>
+                      <div>
+                        <span class="text-zinc-500 block mb-0.5 leading-none">Unit</span>
+                        <input
+                          type="text"
+                          autocomplete="off"
+                          placeholder="KG"
+                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none uppercase"
+                          use:clampedStatUnitProp={{
+                            getValue: () => draftStatById(statId)?.unit ?? '',
+                            setValue: (v) => { patchDraftStat(statId, { unit: v }); },
+                          }}
+                          onblur={() => void persistTrackedStatsNow()}
+                        />
+                      </div>
+                      <div>
+                        <span class="text-zinc-500 block mb-0.5 leading-none">Target</span>
+                        <input
+                          type="text"
+                          inputmode="decimal"
+                          autocomplete="off"
+                          placeholder="—"
+                          disabled={!hasTarget}
+                          class="prop-num-input w-full h-7 border text-center text-xs rounded outline-none transition-colors {hasTarget ? 'bg-black border-[#1e1e1e] text-white' : 'bg-[#0a0a0a] border-[#1a1a1a] text-zinc-600 cursor-not-allowed opacity-70'}"
+                          use:clampedNumericProp={{
+                            kind: 'statValue',
+                            getValue: () => draftStatById(statId)?.target_value ?? 0,
+                            setValue: (v) => {
+                              patchDraftStat(statId, { target_value: v > 0 ? v : 1 });
+                            },
+                          }}
+                          onblur={() => void persistTrackedStatsNow()}
+                        />
+                      </div>
+                      <div class="flex items-end">
+                        <div
+                          class="relative grid grid-cols-2 w-full rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
+                          role="group"
+                          aria-label="Target enabled"
+                        >
+                          <div
+                            class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+                            style="transform: translateX({hasTarget ? 'calc(100% + 4px)' : '0'})"
+                          ></div>
+                          <button
+                            type="button"
+                            class="relative z-10 h-7 flex items-center justify-center text-[8px] font-black tracking-[0.1em] transition-colors {!hasTarget ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                            onclick={() => {
+                              patchDraftStat(statId, { has_target: false, target_value: null });
+                              void persistTrackedStatsNow();
+                            }}
+                          >OFF</button>
+                          <button
+                            type="button"
+                            class="relative z-10 h-7 flex items-center justify-center text-[8px] font-black tracking-[0.1em] transition-colors {hasTarget ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                            onclick={() => {
+                              const current = draftStatById(statId);
+                              const nextTarget =
+                                (current?.target_value ?? 0) > 0
+                                  ? current?.target_value
+                                  : (current?.start_value ?? 0) > 0
+                                    ? current?.start_value
+                                    : 1;
+                              patchDraftStat(statId, {
+                                has_target: true,
+                                target_value: nextTarget ?? 1,
+                              });
+                              void persistTrackedStatsNow();
+                            }}
+                          >ON</button>
+                        </div>
+                      </div>
+                    </div>
+                  {/if}
+                {/key}
+              {:else}
+                <div class="flex-1 min-h-0 flex items-center justify-center text-center px-1 text-[9px] leading-snug text-zinc-500 border border-dashed border-[#1e1e1e] rounded">Select a stat to edit.</div>
+              {/if}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 

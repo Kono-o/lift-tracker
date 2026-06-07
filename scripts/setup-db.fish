@@ -9,7 +9,7 @@
 #   ./setup-db.fish --file path.sql  # custom SQL for full reset
 #   ./setup-db.fish --help
 
-set -l root (realpath (dirname (status filename)))/..
+set -l root (builtin realpath (dirname (status filename))/..)
 cd $root
 
 set -l script_name scripts/setup-db.fish
@@ -131,7 +131,8 @@ BEGIN
   DELETE FROM public.template_exercises;
   DELETE FROM public.exercises;
   DELETE FROM public.workout_history;
-  DELETE FROM public.bodyweight_logs;
+  DELETE FROM public.stat_logs;
+  DELETE FROM public.tracked_stats;
   DELETE FROM public.templates;
   DELETE FROM public.schedule;
   DELETE FROM public.usernames;

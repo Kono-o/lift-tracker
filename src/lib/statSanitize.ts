@@ -2,7 +2,7 @@
 
 export const MAX_STATS = 20;
 export const MAX_STAT_NAME_LEN = 24;
-export const MAX_STAT_UNIT_LEN = 8;
+export const MAX_STAT_UNIT_LEN = 6;
 export const MIN_STAT_VALUE = 0.0001;
 export const MAX_STAT_VALUE = 999999;
 
@@ -11,6 +11,9 @@ export type DraftStatLike = {
 	name?: string;
 	unit?: string;
 	display_order?: number;
+	start_value?: number;
+	has_target?: boolean;
+	target_value?: number | null;
 };
 
 function clampInt(n: number, min: number, max: number): number {
@@ -48,9 +51,54 @@ export function clampStatUnitFieldInput(raw: string): {
 	return { value, display: value };
 }
 
+export function sanitizeStatConfigValue(raw: number): number {
+	if (!Number.isFinite(raw) || raw < 0) return 0;
+	return Math.min(MAX_STAT_VALUE, raw);
+}
+
+export function clampStatValueFieldInput(raw: string): {
+	value: number;
+	display: string;
+} {
+	const t = raw.trim();
+	if (t === "") return { value: 0, display: "" };
+	const n = Number.parseFloat(t.replace(/,/g, "."));
+	if (!Number.isFinite(n) || n < 0) return { value: 0, display: "" };
+	const value = sanitizeStatConfigValue(n);
+	const display = Number.isInteger(value) ? String(value) : String(value);
+	return { value, display };
+}
+
+export function clampStatLogFieldInput(raw: string): {
+	value: number;
+	display: string;
+} {
+	const t = raw.trim();
+	if (t === "") return { value: 0, display: "" };
+	const n = Number.parseFloat(t.replace(/,/g, "."));
+	if (!Number.isFinite(n) || n <= 0) return { value: 0, display: "" };
+	const value = Math.min(MAX_STAT_VALUE, Math.max(MIN_STAT_VALUE, n));
+	const display = Number.isInteger(value) ? String(value) : String(value);
+	return { value, display };
+}
+
 export function validateDraftStat(stat: DraftStatLike): string | null {
 	const name = sanitizeStatName(stat.name ?? "").trim() || "NEW STAT";
 	if (!name) return "Stat name is required.";
+	if (name.length > MAX_STAT_NAME_LEN) {
+		return `Stat name must be at most ${MAX_STAT_NAME_LEN} characters.`;
+	}
+	const unit = sanitizeStatUnit(stat.unit ?? "");
+	if (unit.length > MAX_STAT_UNIT_LEN) {
+		return `Unit must be at most ${MAX_STAT_UNIT_LEN} characters.`;
+	}
+	const start = sanitizeStatConfigValue(stat.start_value ?? 0);
+	if (!Number.isFinite(start) || start < 0) {
+		return "Start value must be 0 or greater.";
+	}
+	if (stat.has_target && sanitizeStatConfigValue(stat.target_value ?? 0) <= 0) {
+		return "Target value must be greater than 0 when target is enabled.";
+	}
 	return null;
 }
 
@@ -69,12 +117,42 @@ export function normalizeDraftStat(stat: DraftStatLike): void {
 	stat.name = sanitizeStatName(stat.name ?? "").trim() || "NEW STAT";
 	stat.unit = sanitizeStatUnit(stat.unit ?? "");
 	stat.display_order = clampInt(stat.display_order ?? 0, 0, MAX_STATS - 1);
+	stat.start_value = sanitizeStatConfigValue(stat.start_value ?? 0);
+	stat.has_target = !!stat.has_target;
+	stat.target_value = stat.has_target
+		? sanitizeStatConfigValue(stat.target_value ?? 0)
+		: null;
 }
 
 export function sanitizeStatRowForDb(stat: DraftStatLike): DraftStatLike {
 	const copy = { ...stat };
 	normalizeDraftStat(copy);
 	return copy;
+}
+
+export type TrackedStatLike = {
+	id: string;
+	user_id: string;
+	name: string;
+	unit?: string | null;
+	display_order?: number | null;
+	start_value?: number | null;
+	has_target?: boolean | null;
+	target_value?: number | null;
+};
+
+export function toTrackedStat(row: TrackedStatLike, fallbackOrder = 0) {
+	const has_target = !!row.has_target;
+	return {
+		id: row.id,
+		user_id: row.user_id,
+		name: row.name,
+		unit: row.unit ?? "",
+		display_order: row.display_order ?? fallbackOrder,
+		start_value: row.start_value ?? 0,
+		has_target,
+		target_value: has_target ? (row.target_value ?? null) : null,
+	};
 }
 
 export function sanitizeStatLogValue(raw: number): number | null {

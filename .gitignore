@@ -12,6 +12,9 @@ all
 android
 ios
 
+# Generated from static/icon.svg for @capacitor/assets
+assets/
+
 # Android release signing (generate locally; never commit secrets)
 scripts/android-signing/keystore.properties
 scripts/android-signing/*.keystore

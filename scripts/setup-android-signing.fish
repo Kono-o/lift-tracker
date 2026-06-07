@@ -1,7 +1,7 @@
 #!/usr/bin/env fish
 # Generate a release keystore for sideloadable APK builds (one-time setup).
 
-set -l root (realpath (dirname (status filename)))/..
+set -l root (builtin realpath (dirname (status filename))/..)
 set -l signing_dir "$root/scripts/android-signing"
 set -l keystore "$signing_dir/lift-tracker-release.keystore"
 set -l props "$signing_dir/keystore.properties"
@@ -9,8 +9,13 @@ set -l props "$signing_dir/keystore.properties"
 mkdir -p $signing_dir
 
 if test -f $keystore -a -f $props
-    echo "Release keystore already exists at $keystore"
-    exit 0
+    keytool -list -keystore $keystore -storepass (grep '^storePassword=' $props | cut -d= -f2-) >/dev/null 2>&1
+    if test $status -eq 0
+        echo "Release keystore already exists at $keystore"
+        exit 0
+    end
+    echo "⚠️  Existing keystore/password mismatch — regenerating signing key."
+    rm -f $keystore $props
 end
 
 set -l store_pass (openssl rand -base64 24 | tr -d '/+=' | string sub -l 24)

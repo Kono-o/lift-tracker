@@ -7374,8 +7374,8 @@
         <div class="text-[10px] tracking-[2px] text-emerald-400/70 mt-1">v0.0.1</div>
       </div>
 
-      <div class="app-panel-card rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden">
-        <div class="p-1 border-b border-[#1e1e1e] bg-[#111]">
+      <div class="auth-panel-card rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden">
+        <div class="shrink-0 p-1 border-b border-[#1e1e1e] bg-[#111]">
           <div
             class="relative grid grid-cols-2 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
             role="group"
@@ -7404,7 +7404,7 @@
           </div>
         </div>
 
-        <div class="p-3 text-left">
+        <div class="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 text-left">
           <div class="relative mb-3" aria-hidden="true">
             <div class="flex justify-between gap-1.5 pointer-events-none select-none">
               <div

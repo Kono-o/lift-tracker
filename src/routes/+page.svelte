@@ -5530,7 +5530,7 @@
         </div>
         <div class="settings-panel-body text-[10px] leading-snug">
           {#if currentUser}
-            <div class="flex justify-center py-2">
+            <div class="flex justify-center py-1">
               <GeneratedAvatar userId={currentUser.id} size={80} />
             </div>
           {/if}
@@ -5633,8 +5633,7 @@
           </div>
 
           {#if currentUser}
-            <div class="settings-panel-account no-scrollbar"
-              class:settings-panel-account--password-open={showChangePasswordForm}>
+            <div class="settings-panel-account">
             {#if accountError && !showChangePasswordForm}
               <p class="settings-panel-alert">
                 {accountError}

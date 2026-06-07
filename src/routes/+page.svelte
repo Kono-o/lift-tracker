@@ -7588,7 +7588,7 @@
   </div>
 
   <div class="app-footer text-center text-[9px] tracking-[0.5px] text-zinc-500 shrink-0 leading-none">
-    All rights reserved by Arya.
+    LIFT-TRACKER — All rights reserved by Arya.
   </div>
 
 </div>

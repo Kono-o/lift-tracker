@@ -5828,44 +5828,78 @@
   {/if}
 
   {#snippet bootScreen()}
-    <div class="flex flex-1 flex-col items-center justify-center pt-0 pb-10 px-2 gap-6 text-center min-h-0 -translate-y-6">
-      <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center">
-        <Dumbbell class="size-10 text-zinc-400" />
-      </div>
-
-      <div class="text-center">
-        <div class="text-6xl font-black tracking-[8px] text-white">LIFT</div>
-        <div class="text-2xl font-light tracking-[6px] text-zinc-300 -mt-3">TRACKER</div>
-        <div class="text-[10px] tracking-[2px] text-emerald-400/70 mt-1">v0.0.1</div>
-      </div>
-
-      <div class="boot-status-card flex flex-col rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden text-left">
-        <div class="flex shrink-0 items-center gap-2 px-3 py-2.5 border-b border-[#1e1e1e] bg-[#111]">
-          <RefreshCw class="size-3.5 shrink-0 text-emerald-400 animate-spin" aria-hidden="true" />
-          <span class="text-[10px] font-black tracking-[0.12em] text-zinc-200 truncate">{bootMessage}</span>
+    <div
+      class="settings-panel-dialog boot-panel-dialog w-full rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+      aria-label={bootMessage}
+    >
+      <div class="settings-panel-header">
+        <div class="settings-panel-header__title">
+          <div class="settings-panel-brand" aria-hidden="true">
+            <span class="settings-panel-brand__lift">LIFT</span>
+            <span class="settings-panel-brand__dash">—</span>
+            <span class="settings-panel-brand__tracker">TRACKER</span>
+          </div>
         </div>
-        <div class="boot-status-card-body no-scrollbar flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
-          {#if bootSections.length > 0}
-            {#each bootSections as section, i}
-              <div class="space-y-1 {i > 0 ? 'pt-3 border-t border-[#1e1e1e]' : ''}">
-                <p class="text-[9px] font-black tracking-[0.14em] text-zinc-500 uppercase">{section.title}</p>
-                {#each section.lines as line}
-                  <p class="text-xs text-zinc-400 leading-snug">{line}</p>
-                {/each}
-              </div>
-            {/each}
-          {:else}
-            {#each buildGuestBootSections() as section, i}
-              <div class="space-y-1 {i > 0 ? 'pt-3 border-t border-[#1e1e1e]' : ''}">
-                <p class="text-[9px] font-black tracking-[0.14em] text-zinc-500 uppercase">{section.title}</p>
-                {#each section.lines as line}
-                  <p class="text-xs text-zinc-400 leading-snug">{line}</p>
-                {/each}
-              </div>
-            {/each}
-          {/if}
+        <div class="flex items-center gap-2">
+          <div class="settings-panel-header__supabase" aria-hidden="true">
+            <span class="settings-panel-header__supabase-label">Supabase</span>
+            <span class="settings-panel-header__dot-wrap">
+              <span class="db-io-dot settings-panel-header__dot db-io-dot--active boot-panel-dot-pulse"></span>
+            </span>
+            <span class="settings-panel-header__latency">…</span>
+          </div>
         </div>
       </div>
+
+      <div class="settings-panel-body text-[10px] leading-snug">
+        <div class="flex justify-center py-1">
+          <div class="boot-skeleton boot-skeleton--avatar" aria-hidden="true"></div>
+        </div>
+
+        <div class="settings-panel-stats">
+          <div class="settings-panel-header__identity" aria-hidden="true">
+            <div class="boot-skeleton boot-skeleton--line boot-skeleton--name"></div>
+            <div class="boot-skeleton boot-skeleton--line boot-skeleton--meta"></div>
+            <div class="boot-skeleton boot-skeleton--line boot-skeleton--meta"></div>
+            <div class="boot-skeleton boot-skeleton--line boot-skeleton--id"></div>
+          </div>
+
+          <div class="boot-panel-chips" aria-hidden="true">
+            <div class="boot-skeleton boot-skeleton--chip"></div>
+            <div class="boot-skeleton boot-skeleton--chip"></div>
+            <div class="boot-skeleton boot-skeleton--chip"></div>
+            <div class="boot-skeleton boot-skeleton--chip boot-skeleton--chip-wide"></div>
+          </div>
+
+          <div class="settings-panel-table-wrap" aria-hidden="true">
+            <table class="settings-panel-table">
+              <tbody>
+                <tr>
+                  <th scope="row">Server</th>
+                  <td><div class="boot-skeleton boot-skeleton--cell"></div></td>
+                </tr>
+                <tr>
+                  <th scope="row">Edge</th>
+                  <td><div class="boot-skeleton boot-skeleton--cell boot-skeleton--cell-short"></div></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="settings-panel-account" aria-hidden="true">
+          <div class="boot-skeleton boot-skeleton--btn boot-skeleton--full"></div>
+          <div class="settings-panel-actions">
+            <div class="boot-skeleton boot-skeleton--btn"></div>
+            <div class="boot-skeleton boot-skeleton--btn"></div>
+          </div>
+        </div>
+      </div>
+
+      <p class="sr-only">{bootMessage}</p>
     </div>
   {/snippet}
 

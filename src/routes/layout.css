@@ -1923,6 +1923,12 @@ input.prop-num-input::-webkit-outer-spin-button {
 		transition-duration: 0.01ms;
 	}
 
+	.boot-panel-dot-pulse,
+	.boot-skeleton {
+		animation: none;
+		opacity: 0.55;
+	}
+
 	.library-actions,
 	.library-action-btn,
 	.library-picker-panel {
@@ -1982,10 +1988,123 @@ input.prop-num-input::-webkit-outer-spin-button {
 	gap: var(--app-gap);
 }
 
-.boot-status-card {
+.boot-panel-dialog {
+	pointer-events: none;
+}
+
+.boot-panel-dot-pulse {
+	animation: boot-panel-dot-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes boot-panel-dot-pulse {
+	0%,
+	100% {
+		opacity: 0.55;
+		box-shadow: 0 0 0.2rem rgb(59 130 246 / 0.35);
+	}
+	50% {
+		opacity: 1;
+		box-shadow: 0 0 0.45rem rgb(59 130 246 / 0.95);
+	}
+}
+
+@keyframes boot-skeleton-shimmer {
+	0%,
+	100% {
+		opacity: 0.42;
+	}
+	50% {
+		opacity: 0.78;
+	}
+}
+
+.boot-skeleton {
+	background: linear-gradient(90deg, #161616 0%, #1f1f1f 50%, #161616 100%);
+	background-size: 200% 100%;
+	border: 1px solid #262626;
+	animation: boot-skeleton-shimmer 1.35s ease-in-out infinite;
+}
+
+.boot-skeleton--avatar {
+	width: 5rem;
+	height: 5rem;
+	border-radius: 9999px;
+}
+
+.boot-skeleton--line {
+	height: 0.625rem;
+	border-radius: 0.25rem;
+	margin-inline: auto;
+}
+
+.boot-skeleton--name {
+	width: 5.5rem;
+	height: 0.75rem;
+}
+
+.boot-skeleton--meta {
+	width: 6.75rem;
+	margin-top: 0.125rem;
+}
+
+.boot-skeleton--id {
+	width: 9.5rem;
+	height: 0.5rem;
+	margin-top: 0.125rem;
+}
+
+.boot-panel-chips {
+	display: flex;
+	justify-content: center;
+	flex-wrap: wrap;
+	gap: 0.25rem;
+	margin-top: 0.25rem;
+	margin-bottom: 0.5rem;
+}
+
+.boot-skeleton--chip {
+	width: 3.25rem;
+	height: 1.375rem;
+	border-radius: 0.25rem;
+}
+
+.boot-skeleton--chip-wide {
+	width: 4.25rem;
+}
+
+.boot-skeleton--cell {
 	width: 100%;
-	max-width: var(--hero-panel-max-w);
-	height: clamp(20rem, 52vh, 28rem);
+	max-width: 10rem;
+	height: 0.625rem;
+	border-radius: 0.25rem;
+}
+
+.boot-skeleton--cell-short {
+	max-width: 4.5rem;
+}
+
+.boot-skeleton--btn {
+	height: var(--sp-control-h, 2.2rem);
+	border-radius: 0.5rem;
+	flex: 1 1 0;
+	min-width: 0;
+}
+
+.boot-skeleton--full {
+	width: 100%;
+	flex: none;
+}
+
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
 }
 
 .app-stage {
@@ -2062,7 +2181,10 @@ input.prop-num-input::-webkit-outer-spin-button {
 	z-index: 30;
 	display: flex;
 	flex-direction: column;
+	align-items: center;
+	justify-content: center;
 	min-height: 0;
+	padding: 1rem;
 	background: #0a0a0a;
 	opacity: 1;
 	pointer-events: auto;

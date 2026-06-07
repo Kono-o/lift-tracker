@@ -1925,6 +1925,7 @@ input.prop-num-input::-webkit-outer-spin-button {
 
 	.boot-panel-dot-pulse,
 	.boot-skeleton,
+	.boot-panel-avatar-spinner,
 	.boot-panel-placeholder::after {
 		animation: none;
 		opacity: 0.55;
@@ -1998,12 +1999,20 @@ input.prop-num-input::-webkit-outer-spin-button {
 	overflow: hidden;
 }
 
-.boot-panel-placeholder--avatar {
+.boot-panel-avatar-spinner {
 	width: 5rem;
 	height: 5rem;
 	border-radius: 9999px;
-	background-color: #141414;
+	border: 3px solid #262626;
+	border-top-color: #a1a1aa;
 	flex-shrink: 0;
+	animation: boot-panel-avatar-spin 0.85s linear infinite;
+}
+
+@keyframes boot-panel-avatar-spin {
+	to {
+		transform: rotate(360deg);
+	}
 }
 
 .boot-panel-placeholder__ghost {
@@ -2020,7 +2029,6 @@ input.prop-num-input::-webkit-outer-spin-button {
 	cursor: default;
 }
 
-.boot-panel-placeholder--avatar::after,
 span.boot-panel-placeholder::after,
 td.boot-panel-placeholder::after,
 .settings-panel-action-btn.boot-panel-placeholder::after {

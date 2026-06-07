@@ -5865,7 +5865,7 @@
 
       <div class="settings-panel-body text-[10px] leading-snug">
         <div class="flex justify-center py-1">
-          <div class="boot-panel-placeholder boot-panel-placeholder--avatar" aria-hidden="true"></div>
+          <div class="boot-panel-avatar-spinner" aria-hidden="true"></div>
         </div>
 
         <div class="settings-panel-stats">

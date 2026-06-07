@@ -3,6 +3,7 @@
   import { PUBLIC_SUPABASE_URL } from '$env/static/public';
   import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type TrackedStat, type WorkoutHistory } from '$lib/db';
   import GeneratedAvatar from '$lib/components/GeneratedAvatar.svelte';
+  import HeaderClock from '$lib/components/HeaderClock.svelte';
   import { horizontalSwipe } from '$lib/horizontalSwipe';
   import { scrollEdgeFade } from '$lib/scrollEdgeFade';
   import { getDbActivitySnapshot, runDbActivityBatch, subscribeDbActivity, subscribeDbActivitySnapshot } from '$lib/dbActivity';
@@ -122,7 +123,6 @@
   const REAL_TODAY_STR = toDateStr(REAL_TODAY);
   const TODAY_WEEKDAY = REAL_TODAY.getDay();
 
-  let clockTimeStr = $state('');
   let dbIoFlash = $state(false);
   let dbIoFlashTimer: ReturnType<typeof setTimeout> | null = null;
   let dbActivitySnapshot = $state(getDbActivitySnapshot());
@@ -141,16 +141,6 @@
       dbIoFlashTimer = null;
     }, 100);
   }
-
-  function updateClock() {
-    const now = new Date();
-    const h = now.getHours().toString().padStart(2, '0');
-    const m = now.getMinutes().toString().padStart(2, '0');
-    const s = now.getSeconds().toString().padStart(2, '0');
-    clockTimeStr = `${h}:${m}:${s}`;
-  }
-
-  updateClock();
 
   // State
   let selectedDate = $state(new Date(REAL_TODAY));
@@ -310,29 +300,10 @@
   }
 
   let weekCalendarCollapsed = $state(true);
-  let weekCalendarClosing = $state(false);
-  const WEEK_CALENDAR_MS = 260;
-
-  function collapseWeekCalendar() {
-    if (weekCalendarCollapsed) {
-      weekCalendarClosing = false;
-      return;
-    }
-    weekCalendarClosing = true;
-    weekCalendarCollapsed = true;
-    setTimeout(() => {
-      weekCalendarClosing = false;
-    }, WEEK_CALENDAR_MS);
-  }
 
   function toggleWeekCalendar() {
     if (workoutState === 'active') return;
-    if (weekCalendarCollapsed) {
-      weekCalendarClosing = false;
-      weekCalendarCollapsed = false;
-      return;
-    }
-    collapseWeekCalendar();
+    weekCalendarCollapsed = !weekCalendarCollapsed;
   }
 
   // Auth state (powered by new db.ts + Supabase OAuth Google/GitHub)
@@ -526,7 +497,7 @@
 
   $effect(() => {
     if (workoutState === 'active') {
-      collapseWeekCalendar();
+      weekCalendarCollapsed = true;
     }
   });
 
@@ -1058,6 +1029,7 @@
   // This avoids repeating expensive lookups + function calls inside the Svelte {#each},
   // which helps a lot on lower-powered phones when expanding the week calendar.
   let weekDayData = $derived.by(() => {
+    if (weekCalendarDisplayCollapsed) return [];
     return currentWeekDates.map((dayInfo) => {
       const isSelected = dayInfo.key === selectedDateStr;
       const isRealToday = dayInfo.isRealToday;
@@ -1258,9 +1230,9 @@
       });
   });
 
-  // Fetch logs for all currently visible days in the week strip (batched + single state update for better perf)
+  // Fetch logs for week strip only when expanded (avoid work while collapsed)
   $effect(() => {
-    if (!currentUser) return;
+    if (!currentUser || weekCalendarDisplayCollapsed) return;
     const visible = currentWeekDates;
     const missing: string[] = [];
     for (const d of visible) {
@@ -1277,10 +1249,8 @@
     }
     if (missing.length === 0) return;
 
-    // Defer the actual fetch slightly when the calendar is animating open.
-    // This prevents the network + state update from competing with the 260ms
-    // CSS transition on low-end phones (big source of perceived lag).
-    const delay = weekCalendarDisplayCollapsed ? 0 : 80;
+    // Defer fetch so the panel can paint before network + state updates.
+    const delay = 32;
 
     setTimeout(() => {
       // Re-check visibility in case the user navigated away very quickly
@@ -3069,8 +3039,6 @@
 	}
 
   onMount(() => {
-    updateClock();
-    const clockInterval = setInterval(updateClock, 50);
     const unsubDbActivity = subscribeDbActivity(flashDbIoIndicator);
     const unsubDbActivitySnapshot = subscribeDbActivitySnapshot(() => {
       dbActivitySnapshot = getDbActivitySnapshot();
@@ -3166,7 +3134,6 @@
     document.addEventListener('visibilitychange', onPageHide);
 
     return () => {
-      clearInterval(clockInterval);
       stopSupabaseBackgroundSync();
       unsubDbActivity();
       unsubDbActivitySnapshot();
@@ -5931,7 +5898,7 @@
           {/if}
         </button>
         <span class="header-clock-group shrink-0">
-          <span class="font-header-clock font-header-clock--fixed text-[10px] text-zinc-500 leading-none">{clockTimeStr}</span>
+          <HeaderClock />
           <button
             type="button"
             class="db-io-dot-btn"
@@ -5948,13 +5915,8 @@
         </span>
       </div>
     </div>
-    <div
-      class="week-calendar-panel grid"
-      class:week-calendar-panel--open={!weekCalendarDisplayCollapsed}
-      class:week-calendar-panel--closing={weekCalendarClosing}
-      style="grid-template-rows: {weekCalendarDisplayCollapsed ? '0fr' : '1fr'}"
-    >
-      <div class="overflow-hidden min-h-0 {weekCalendarDisplayCollapsed ? 'pointer-events-none' : ''}">
+    {#if !weekCalendarDisplayCollapsed}
+      <div class="week-calendar-panel">
         <div class="flex items-stretch">
           <button 
             class="w-5 shrink-0 flex items-center justify-center bg-[#141414] border-r border-[#1e1e1e] text-zinc-400 hover:text-white active:bg-[#0d0d0d] transition disabled:opacity-40"
@@ -5964,17 +5926,11 @@
           >
             <ChevronLeft class="size-3.5" />
           </button>
-          <div
-            class="day-strip grid grid-cols-7 gap-0.5 flex-1 min-w-0 bg-[#141414] p-1 {weekCalendarClosing
-              ? 'week-calendar-closing'
-              : !weekCalendarDisplayCollapsed
-                ? 'week-calendar-open'
-                : ''}"
-          >
+          <div class="day-strip grid grid-cols-7 gap-0.5 flex-1 min-w-0 bg-[#141414] p-1">
             {#each weekDayData as data (data.dayInfo.key)}
               {@const d = data.dayInfo}
               <button 
-                class="day-btn aspect-square w-full flex flex-col items-center justify-center gap-0 rounded-md text-[10px] font-bold tracking-wide border-none bg-transparent text-zinc-600 hover:text-white relative origin-center {data.dynamicClasses}"
+                class="day-btn aspect-square w-full flex flex-col items-center justify-center gap-0 rounded-md text-[10px] font-bold tracking-wide border-none bg-transparent text-zinc-600 hover:text-white relative {data.dynamicClasses}"
                 onclick={() => selectDate(d.date)}
                 disabled={workoutState === 'active'}
                 title={DAY_NAMES[d.weekday] + ' ' + d.key}
@@ -6002,7 +5958,7 @@
           </button>
         </div>
       </div>
-    </div>
+    {/if}
   </div>
 
   {#if ctaBarVisible}

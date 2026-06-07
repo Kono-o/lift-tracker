@@ -1758,52 +1758,7 @@ input.prop-num-input::-webkit-outer-spin-button {
 }
 
 .week-calendar-panel {
-	--week-calendar-ms: 260ms;
-	--week-day-stagger: 10ms;
-	--week-day-anim: 200ms;
-	transition: grid-template-rows var(--week-calendar-ms) ease-in;
-}
-
-.week-calendar-panel--open {
-	transition-timing-function: ease-out;
-}
-
-@keyframes week-day-in {
-	from {
-		opacity: 0;
-		transform: scale(0.82);
-	}
-	to {
-		opacity: 1;
-		transform: scale(1);
-	}
-}
-
-@keyframes week-day-out {
-	from {
-		opacity: 1;
-		transform: scale(1);
-	}
-	to {
-		opacity: 0;
-		transform: scale(0.82);
-	}
-}
-
-/* Simpler uniform animation for the week day buttons.
-   The previous per-nth-child stagger was pretty but could feel laggy on phones
-   because it forces the browser to schedule + composite 7 separate animations
-   at the same time the main thread may be doing other work (reactivity, etc).
-*/
-.week-calendar-open .day-btn {
-	transition: opacity 180ms ease-out, transform 180ms ease-out;
-	opacity: 1;
-	transform: translateY(0);
-}
-.week-calendar-closing .day-btn {
-	transition: opacity 140ms ease-in, transform 140ms ease-in;
-	opacity: 0;
-	transform: translateY(-4px);
+	contain: layout style;
 }
 
 .auth-confirm-reveal {
@@ -1929,16 +1884,10 @@ input.prop-num-input::-webkit-outer-spin-button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.week-calendar-panel,
 	.library-actions,
 	.library-action-btn,
 	.library-picker-panel {
 		transition-duration: 0.01ms;
-	}
-
-	.week-calendar-open .day-btn,
-	.week-calendar-closing .day-btn {
-		animation: none;
 	}
 
 	.status-surface,

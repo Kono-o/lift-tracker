@@ -2,6 +2,12 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.2] - 2026-06-08
+
+### Changed
+
+- Faux test release (identical to 1.0.1) to verify the in-app auto-update flow from GitHub releases.
+
 ## [1.0.1] - 2026-06-08
 
 ### Added

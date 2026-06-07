@@ -331,45 +331,66 @@
   let showBootScreen = $derived(isAuthLoading || (currentUser !== null && isLoading));
   let bootOverlayVisible = $state(true);
   let bootOverlayExiting = $state(false);
+  let bootAccountReveal = $state(false);
   let stageRevealActive = $state(false);
+  const BOOT_ACCOUNT_REVEAL_HOLD_MS = 900;
 
   function onBootOverlayTransitionEnd(e: TransitionEvent) {
     if (e.propertyName !== 'opacity' || !bootOverlayExiting) return;
     bootOverlayVisible = false;
     bootOverlayExiting = false;
+    bootAccountReveal = false;
   }
 
   $effect(() => {
     if (showBootScreen) {
       bootOverlayVisible = true;
       bootOverlayExiting = false;
+      bootAccountReveal = false;
       stageRevealActive = false;
       return;
     }
     let cancelled = false;
-    let fallback: ReturnType<typeof setTimeout> | undefined;
+    let revealHoldTimer: ReturnType<typeof setTimeout> | undefined;
+    let exitFallbackTimer: ReturnType<typeof setTimeout> | undefined;
     stageRevealActive = false;
-    void tick().then(() => {
-      if (cancelled) return;
-      requestAnimationFrame(() => {
+    bootAccountReveal = false;
+
+    if (!currentUser) {
+      bootOverlayVisible = false;
+      bootOverlayExiting = false;
+      void tick().then(() => {
         if (cancelled) return;
         stageRevealActive = true;
-        if (currentUser && bootOverlayVisible) {
-          bootOverlayExiting = true;
-          fallback = setTimeout(() => {
-            if (!bootOverlayExiting) return;
-            bootOverlayVisible = false;
-            bootOverlayExiting = false;
-          }, 340);
-        } else if (!currentUser) {
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void (async () => {
+      await tick();
+      if (cancelled) return;
+      await preloadSupabaseBackend();
+      if (cancelled) return;
+      bootAccountReveal = true;
+      revealHoldTimer = setTimeout(() => {
+        if (cancelled) return;
+        stageRevealActive = true;
+        bootOverlayExiting = true;
+        exitFallbackTimer = setTimeout(() => {
+          if (cancelled || !bootOverlayExiting) return;
           bootOverlayVisible = false;
           bootOverlayExiting = false;
-        }
-      });
-    });
+          bootAccountReveal = false;
+        }, 340);
+      }, BOOT_ACCOUNT_REVEAL_HOLD_MS);
+    })();
+
     return () => {
       cancelled = true;
-      if (fallback) clearTimeout(fallback);
+      if (revealHoldTimer) clearTimeout(revealHoldTimer);
+      if (exitFallbackTimer) clearTimeout(exitFallbackTimer);
     };
   });
   let signingIn = $state(false);
@@ -5474,7 +5495,7 @@
       tabindex="-1"
       onclick={(e) => { if (e.target === e.currentTarget) closeSettingsPanel(); }}
     >
-      <div class="settings-panel-dialog w-full rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left">
+      <div class="settings-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left">
         <div class="settings-panel-header">
           <div class="settings-panel-header__title">
             <div class="settings-panel-brand" aria-hidden="true">
@@ -5590,24 +5611,6 @@
                   </span>
                 </div>
               {/if}
-              <div class="settings-panel-table-wrap">
-                <table class="settings-panel-table">
-                  <tbody>
-                    {#if panel.health.server}
-                      <tr>
-                        <th scope="row">Server</th>
-                        <td class="settings-panel-table__mono settings-panel-table__truncate" title={panel.health.server}>{panel.health.server}</td>
-                      </tr>
-                    {/if}
-                    {#if panel.health.region}
-                      <tr>
-                        <th scope="row">Edge</th>
-                        <td class="settings-panel-table__mono">{panel.health.region}</td>
-                      </tr>
-                    {/if}
-                  </tbody>
-                </table>
-              </div>
 
               {#if panel.health.error || panel.sessionError}
                 <p class="settings-panel-alert">
@@ -5828,12 +5831,14 @@
   {/if}
 
   {#snippet bootScreen()}
+    {@const panel = supabasePanel}
     <div
-      class="settings-panel-dialog boot-panel-dialog w-full rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left"
+      class="settings-panel-dialog boot-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left"
+      class:boot-panel-reveal--active={bootAccountReveal}
       role="status"
       aria-live="polite"
-      aria-busy="true"
-      aria-label={bootMessage}
+      aria-busy={!bootAccountReveal}
+      aria-label={bootAccountReveal ? 'Account ready' : bootMessage}
     >
       <div class="settings-panel-header">
         <div class="settings-panel-header__title">
@@ -5847,9 +5852,25 @@
           <div class="settings-panel-header__supabase" aria-hidden="true">
             <span class="settings-panel-header__supabase-label">Supabase</span>
             <span class="settings-panel-header__dot-wrap">
-              <span class="db-io-dot settings-panel-header__dot db-io-dot--active boot-panel-dot-pulse"></span>
+              <span
+                class="db-io-dot settings-panel-header__dot"
+                class:db-io-dot--active={bootAccountReveal && !!panel && panel.health.ok && panel.sessionOk}
+                class:boot-panel-dot-pulse={!bootAccountReveal}
+              ></span>
             </span>
-            <span class="settings-panel-header__latency">…</span>
+            <span
+              class="settings-panel-header__latency"
+              class:boot-panel-reveal-item={bootAccountReveal}
+              class:boot-panel-reveal-item--header={bootAccountReveal}
+            >
+              {#if bootAccountReveal && panel?.health.latencyMs != null}
+                {formatSupabaseLatencyMs(panel.health.latencyMs)}
+              {:else if bootAccountReveal}
+                —
+              {:else}
+                …
+              {/if}
+            </span>
           </div>
           <button
             type="button"
@@ -5864,91 +5885,146 @@
       </div>
 
       <div class="settings-panel-body text-[10px] leading-snug">
-        <div class="flex justify-center py-1">
-          <div class="boot-panel-avatar-spinner" aria-hidden="true"></div>
-        </div>
-
-        <div class="settings-panel-stats">
-          <div class="settings-panel-header__identity boot-panel-placeholder" aria-hidden="true">
-            <span class="settings-panel-header__name boot-panel-placeholder__ghost">account name</span>
-            <span class="text-[10px] boot-panel-placeholder__ghost">joined Jan 2026</span>
-            <span class="text-[10px] boot-panel-placeholder__ghost">Session: 1h 00m</span>
-            <span class="settings-panel-header__user-id boot-panel-placeholder__ghost">00000000-0000-0000-0000-000000000000</span>
+        {#if bootAccountReveal && currentUser && panel}
+          <div class="flex justify-center py-1 boot-panel-reveal-item boot-panel-reveal-item--avatar">
+            <GeneratedAvatar userId={currentUser.id} size={80} />
           </div>
 
-          <div class="flex justify-center gap-1 text-[9px] text-zinc-400 mt-1 mb-2" aria-hidden="true">
-            <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
-              <List class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-              <span class="leading-none boot-panel-placeholder__ghost">0 tpl</span>
-            </span>
-            <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
-              <Dumbbell class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-              <span class="leading-none boot-panel-placeholder__ghost">0 ex</span>
-            </span>
-            <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
-              <History class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-              <span class="leading-none boot-panel-placeholder__ghost">0 logs</span>
-            </span>
-            <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
-              <HardDrive class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-              <span class="leading-none boot-panel-placeholder__ghost">~0 B</span>
-            </span>
-          </div>
-
-          <div class="settings-panel-table-wrap" aria-hidden="true">
-            <table class="settings-panel-table">
-              <tbody>
-                <tr>
-                  <th scope="row">Server</th>
-                  <td class="settings-panel-table__mono settings-panel-table__truncate boot-panel-placeholder">
-                    <span class="boot-panel-placeholder__ghost">https://example.supabase.co</span>
-                  </td>
-                </tr>
-                <tr>
-                  <th scope="row">Edge</th>
-                  <td class="settings-panel-table__mono boot-panel-placeholder">
-                    <span class="boot-panel-placeholder__ghost">us-east-1</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="settings-panel-account" aria-hidden="true">
-          <div class="settings-panel-password">
-            <div
-              class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--change-password boot-panel-placeholder"
-            >
-              <span class="settings-panel-action-btn__label boot-panel-placeholder__ghost">
-                <LockKeyhole class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
-                CHANGE PASSWORD
-              </span>
+          <div class="settings-panel-stats">
+            <div class="settings-panel-header__identity boot-panel-reveal-item boot-panel-reveal-item--identity">
+              <span class="settings-panel-header__name">{accountDisplayName}</span>
+              <span class="text-[10px] text-zinc-500">joined {accountMemberSince}</span>
+              <span class="text-[10px] text-zinc-500">Session: {formatSessionExpiry(panel.expiresAt)}</span>
+              <span class="settings-panel-header__user-id" title={currentUser.id}>{currentUser.id}</span>
             </div>
+
+            {#if panel.usage}
+              <div class="flex justify-center gap-1 text-[9px] text-zinc-400 mt-1 mb-2 boot-panel-reveal-item boot-panel-reveal-item--chips">
+                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
+                  <List class="size-3 shrink-0" aria-hidden="true" />
+                  <span class="leading-none">{panel.usage.templates} tpl</span>
+                </span>
+                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
+                  <Dumbbell class="size-3 shrink-0" aria-hidden="true" />
+                  <span class="leading-none">{panel.usage.exercises} ex</span>
+                </span>
+                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
+                  <History class="size-3 shrink-0" aria-hidden="true" />
+                  <span class="leading-none">{panel.usage.workout_history} logs</span>
+                </span>
+                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
+                  <HardDrive class="size-3 shrink-0" aria-hidden="true" />
+                  <span class="leading-none">{panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}</span>
+                </span>
+              </div>
+            {/if}
+
+            {#if panel.health.error || panel.sessionError}
+              <p class="settings-panel-alert boot-panel-reveal-item boot-panel-reveal-item--chips">
+                {panel.sessionError ?? panel.health.error}
+              </p>
+            {/if}
           </div>
 
-          <div class="settings-panel-actions-reveal settings-panel-actions-reveal--open">
-            <div class="settings-panel-actions-reveal__inner">
-              <div class="settings-panel-actions">
-                <div class="settings-panel-action-btn settings-panel-action-btn--signout boot-panel-placeholder">
-                  <span class="settings-panel-action-btn__label boot-panel-placeholder__ghost">
-                    <LogOut class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
-                    SIGN OUT
+          <div class="settings-panel-account boot-panel-reveal-item boot-panel-reveal-item--actions">
+            {#if accountCanChangePassword}
+              <div class="settings-panel-password">
+                <div class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--change-password">
+                  <span class="settings-panel-action-btn__label">
+                    <LockKeyhole class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                    CHANGE PASSWORD
                   </span>
                 </div>
-                <div class="settings-panel-action-btn settings-panel-action-btn--delete boot-panel-placeholder">
-                  <span class="settings-panel-action-btn__label boot-panel-placeholder__ghost">
-                    <Trash2 class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
-                    DELETE
-                  </span>
+              </div>
+            {/if}
+
+            <div class="settings-panel-actions-reveal settings-panel-actions-reveal--open">
+              <div class="settings-panel-actions-reveal__inner">
+                <div class="settings-panel-actions">
+                  <div class="settings-panel-action-btn settings-panel-action-btn--signout">
+                    <span class="settings-panel-action-btn__label">
+                      <LogOut class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                      SIGN OUT
+                    </span>
+                  </div>
+                  <div class="settings-panel-action-btn settings-panel-action-btn--delete">
+                    <span class="settings-panel-action-btn__label">
+                      <Trash2 class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                      DELETE
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
+        {:else}
+          <div class="flex justify-center py-1">
+            <div class="boot-panel-avatar-spinner" aria-hidden="true"></div>
+          </div>
+
+          <div class="settings-panel-stats">
+            <div class="settings-panel-header__identity boot-panel-placeholder" aria-hidden="true">
+              <span class="settings-panel-header__name boot-panel-placeholder__ghost">account name</span>
+              <span class="text-[10px] boot-panel-placeholder__ghost">joined Jan 2026</span>
+              <span class="text-[10px] boot-panel-placeholder__ghost">Session: 1h 00m</span>
+              <span class="settings-panel-header__user-id boot-panel-placeholder__ghost">00000000-0000-0000-0000-000000000000</span>
+            </div>
+
+            <div class="flex justify-center gap-1 text-[9px] text-zinc-400 mt-1 mb-2" aria-hidden="true">
+              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
+                <List class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+                <span class="leading-none boot-panel-placeholder__ghost">0 tpl</span>
+              </span>
+              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
+                <Dumbbell class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+                <span class="leading-none boot-panel-placeholder__ghost">0 ex</span>
+              </span>
+              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
+                <History class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+                <span class="leading-none boot-panel-placeholder__ghost">0 logs</span>
+              </span>
+              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
+                <HardDrive class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+                <span class="leading-none boot-panel-placeholder__ghost">~0 B</span>
+              </span>
+            </div>
+          </div>
+
+          <div class="settings-panel-account" aria-hidden="true">
+            <div class="settings-panel-password">
+              <div
+                class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--change-password boot-panel-placeholder"
+              >
+                <span class="settings-panel-action-btn__label boot-panel-placeholder__ghost">
+                  <LockKeyhole class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                  CHANGE PASSWORD
+                </span>
+              </div>
+            </div>
+
+            <div class="settings-panel-actions-reveal settings-panel-actions-reveal--open">
+              <div class="settings-panel-actions-reveal__inner">
+                <div class="settings-panel-actions">
+                  <div class="settings-panel-action-btn settings-panel-action-btn--signout boot-panel-placeholder">
+                    <span class="settings-panel-action-btn__label boot-panel-placeholder__ghost">
+                      <LogOut class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                      SIGN OUT
+                    </span>
+                  </div>
+                  <div class="settings-panel-action-btn settings-panel-action-btn--delete boot-panel-placeholder">
+                    <span class="settings-panel-action-btn__label boot-panel-placeholder__ghost">
+                      <Trash2 class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                      DELETE
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        {/if}
       </div>
 
-      <p class="sr-only">{bootMessage}</p>
+      <p class="sr-only">{bootAccountReveal ? 'Account ready' : bootMessage}</p>
     </div>
   {/snippet}
 

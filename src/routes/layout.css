@@ -731,14 +731,17 @@ input.prop-num-input::-webkit-outer-spin-button {
 }
 
 .settings-panel-dialog {
-	max-width: var(--panel-max-w);
-	width: 100%;
+	/* Match auth-panel-card: fixed width, grows vertically only */
+	width: min(100%, 300px);
+	max-width: 300px;
+	min-width: min(100%, 300px);
+	flex-shrink: 0;
 	max-height: calc(100dvh - 2rem);
 	overflow: hidden;
-	--sp-pad: clamp(0.75rem, 2vw, 1rem);
-	--sp-gap: clamp(0.5rem, 1.5vw, 0.75rem);
-	--sp-control-h: clamp(2.2rem, 6vw, 2.75rem);
-	--sp-control-px: clamp(0.625rem, 2vw, 0.875rem);
+	--sp-pad: 0.75rem;
+	--sp-gap: 0.5rem;
+	--sp-control-h: 2.25rem;
+	--sp-control-px: 0.75rem;
 }
 
 .settings-panel-body {
@@ -746,7 +749,9 @@ input.prop-num-input::-webkit-outer-spin-button {
 	flex-direction: column;
 	gap: 0;
 	padding: var(--sp-pad);
-	overflow: hidden;
+	overflow-x: hidden;
+	overflow-y: visible;
+	min-width: 0;
 }
 
 .settings-panel-body > * + * {
@@ -1926,9 +1931,15 @@ input.prop-num-input::-webkit-outer-spin-button {
 	.boot-panel-dot-pulse,
 	.boot-skeleton,
 	.boot-panel-avatar-spinner,
-	.boot-panel-placeholder::after {
+	.boot-panel-placeholder::after,
+	.boot-panel-reveal-item {
 		animation: none;
 		opacity: 0.55;
+	}
+
+	.boot-panel-reveal--active .boot-panel-reveal-item {
+		opacity: 1;
+		transform: none;
 	}
 
 	.library-actions,
@@ -1994,6 +2005,46 @@ input.prop-num-input::-webkit-outer-spin-button {
 	pointer-events: none;
 }
 
+.boot-panel-reveal-item {
+	opacity: 0;
+	transform: translateY(5px);
+}
+
+.boot-panel-reveal--active .boot-panel-reveal-item {
+	animation: boot-panel-reveal-in 360ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.boot-panel-reveal--active .boot-panel-reveal-item--header {
+	animation-delay: 40ms;
+}
+
+.boot-panel-reveal--active .boot-panel-reveal-item--avatar {
+	animation-delay: 0ms;
+}
+
+.boot-panel-reveal--active .boot-panel-reveal-item--identity {
+	animation-delay: 80ms;
+}
+
+.boot-panel-reveal--active .boot-panel-reveal-item--chips {
+	animation-delay: 150ms;
+}
+
+.boot-panel-reveal--active .boot-panel-reveal-item--actions {
+	animation-delay: 220ms;
+}
+
+@keyframes boot-panel-reveal-in {
+	from {
+		opacity: 0;
+		transform: translateY(5px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
 .boot-panel-placeholder {
 	position: relative;
 	overflow: hidden;
@@ -2030,7 +2081,6 @@ input.prop-num-input::-webkit-outer-spin-button {
 }
 
 span.boot-panel-placeholder::after,
-td.boot-panel-placeholder::after,
 .settings-panel-action-btn.boot-panel-placeholder::after {
 	content: '';
 	position: absolute;

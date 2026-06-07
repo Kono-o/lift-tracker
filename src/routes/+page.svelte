@@ -5804,6 +5804,7 @@
           {@const dayTpl = dayAssignedId ? templates.find((t) => t.id === dayAssignedId) : null}
           {@const dayColor = dayTpl ? getTemplateColor(dayTpl.color ?? 0) : null}
           {@const isDaySelected = builderEditingDay === i}
+          {@const iconStyle = isDaySelected && dayColor ? `color: color-mix(in srgb, ${dayColor} 20%, black)` : 'color: black'}
           <button
             type="button"
             class="flex flex-col items-center gap-0.5 transition-all duration-150"
@@ -5811,13 +5812,13 @@
           >
             <div class="text-[10px] font-medium leading-none {isDaySelected ? 'text-white' : 'text-zinc-400'}">{d}</div>
             <div
-              class="w-full aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {isDaySelected ? (dayColor ? '' : '') : (dayColor ? 'border' : 'border border-[#2a2a2a] hover:border-[#3a3a3a]')}"
-              style={dayColor ? (isDaySelected ? `background-color: ${dayColor};` : `background-color: color-mix(in srgb, ${dayColor} 12%, #141414); border-color: ${dayColor};`) : ''}
+              class="w-full aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {isDaySelected ? (dayColor ? '' : 'bg-white') : (dayColor ? '' : 'border border-[#2a2a2a] hover:border-[#3a3a3a]')} {isDaySelected ? '' : 'scale-90'}"
+              style={dayColor ? `background-color: ${dayColor};` : isDaySelected ? 'background-color: white;' : ''}
             >
               {#if hasTemplate}
-                <Dumbbell class="size-3" strokeWidth={2.5} style={dayColor ? (isDaySelected ? 'color: black' : `color: ${dayColor}`) : ''} />
+                <Dumbbell class={isDaySelected ? 'size-4' : 'size-3'} strokeWidth={2.5} style={iconStyle} />
               {:else}
-                <Bed class="size-3 {isDaySelected ? 'text-white' : 'text-zinc-500'}" />
+                <Bed class={isDaySelected ? 'size-4 text-black' : 'size-3 text-zinc-500'} />
               {/if}
             </div>
           </button>

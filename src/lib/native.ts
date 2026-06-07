@@ -42,7 +42,7 @@ export async function initNativeShell(): Promise<void> {
 
 	try {
 		await StatusBar.setStyle({ style: Style.Dark });
-		await StatusBar.setBackgroundColor({ color: '#0a0a0a' });
+		await StatusBar.setBackgroundColor({ color: '#000000' });
 	} catch {
 		/* Status bar APIs vary by platform/version */
 	}

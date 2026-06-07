@@ -5287,7 +5287,7 @@
   }
 </script>
 
-<div class="app w-full h-dvh max-h-dvh overflow-hidden select-none text-white bg-[#0a0a0a] flex flex-col font-sans">
+<div class="app w-full h-dvh max-h-dvh overflow-hidden select-none text-white bg-black flex flex-col font-sans">
 
   {#snippet ctaEmptySlot()}
     <div class="{workoutSideBtnClass} {workoutCtaEmptyClass}" aria-hidden="true">

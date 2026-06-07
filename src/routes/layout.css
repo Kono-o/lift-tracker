@@ -189,9 +189,10 @@
 		@apply border-border outline-ring/50;
 	}
 	body {
-		@apply bg-background text-foreground;
+		@apply text-foreground;
 		overflow: hidden;
 		height: 100dvh;
+		background: #000000;
 	}
 	html {
 		@apply font-sans;
@@ -2299,7 +2300,7 @@ span.boot-panel-placeholder::after,
 	padding: 1rem;
 	overflow: hidden;
 	overscroll-behavior: none;
-	background: #0a0a0a;
+	background: #000000;
 	opacity: 1;
 	pointer-events: auto;
 	transition: opacity 280ms cubic-bezier(0.22, 1, 0.36, 1);

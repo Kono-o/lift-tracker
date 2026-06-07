@@ -19,7 +19,7 @@
   });
 </script>
 
-<div class="min-h-screen flex flex-col items-center justify-center bg-[#0a0a0a] text-white p-6 text-center">
+<div class="min-h-screen flex flex-col items-center justify-center bg-black text-white p-6 text-center">
   {#if errorMessage}
     <p class="text-sm text-red-400 mb-4">{errorMessage}</p>
     <a href="/" class="text-xs tracking-[2px] text-zinc-400 hover:text-white">Back to sign in</a>

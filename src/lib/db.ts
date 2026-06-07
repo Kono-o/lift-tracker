@@ -12,6 +12,11 @@ import {
 	validateDraftExercises,
 	type DraftExerciseLike,
 } from "./exerciseSanitize";
+import {
+	sanitizeStatRowForDb,
+	validateDraftStats,
+	type DraftStatLike,
+} from "./statSanitize";
 import { createDbTrackingFetch, pulseDbActivity } from "./dbActivity";
 
 export const supabase = createClient(
@@ -240,8 +245,24 @@ export function formatAccountError(error: unknown): string {
 	if (lower.includes("your workout data was removed")) {
 		return raw!;
 	}
+	if (
+		lower.includes("username already taken") ||
+		lower.includes("usernames_pkey") ||
+		lower.includes("23505")
+	) {
+		return "This username is already taken.";
+	}
+	if (lower.includes("invalid username")) {
+		return "Use 3–24 characters: letters, numbers, underscores, and hyphens.";
+	}
+	if (
+		lower.includes("could not find the function") ||
+		lower.includes("rename_username")
+	) {
+		return `Username rename is not set up yet. ${getSupabaseSqlEditorHint()}`;
+	}
 
-	return raw ?? "Could not delete account. Please try again.";
+	return raw ?? "Could not complete account action. Please try again.";
 }
 
 export function validateEmail(raw: string): string | null {
@@ -676,6 +697,14 @@ function stripNullishJson<T extends Record<string, unknown>>(obj: T): T {
 	return JSON.parse(JSON.stringify(obj)) as T;
 }
 
+export interface TrackedStat {
+	id: string;
+	user_id: string;
+	name: string;
+	unit: string;
+	display_order: number;
+}
+
 export interface CompleteWorkoutResult {
 	workout: WorkoutHistory;
 	updatedExercises: Array<{ id: string; current_weight: number | null }>;
@@ -794,6 +823,41 @@ export const db = {
 			p_username: normalized,
 		});
 		if (error) throw error;
+	},
+
+	async renameUsername(newUsername: string): Promise<User> {
+		const validationError = validateUsername(newUsername);
+		if (validationError) throw new Error(validationError);
+
+		const {
+			data: { user: before },
+			error: userErr,
+		} = await supabase.auth.getUser();
+		if (userErr) throw userErr;
+		if (!before) throw new Error("Not signed in");
+		if (!isUsernameAccount(before)) {
+			throw new Error("Only username accounts can be renamed here.");
+		}
+
+		const normalized = normalizeUsername(newUsername);
+		const current = normalizeUsername(getAuthDisplayName(before));
+		if (normalized === current) return before;
+
+		const { error } = await supabase.rpc("rename_username", {
+			p_new_username: normalized,
+		});
+		if (error) throw error;
+
+		const { error: refreshErr } = await supabase.auth.refreshSession();
+		if (refreshErr) throw refreshErr;
+
+		const {
+			data: { user },
+			error: afterErr,
+		} = await supabase.auth.getUser();
+		if (afterErr) throw afterErr;
+		if (!user) throw new Error("Not signed in");
+		return user;
 	},
 
 	async signUpWithUsername(username: string, password: string) {
@@ -1035,7 +1099,8 @@ export const db = {
 			supabase.from("exercise_personal_bests").delete().eq("user_id", uid),
 			supabase.from("exercises").delete().eq("user_id", uid),
 			supabase.from("workout_history").delete().eq("user_id", uid),
-			supabase.from("bodyweight_logs").delete().eq("user_id", uid),
+			supabase.from("stat_logs").delete().eq("user_id", uid),
+			supabase.from("tracked_stats").delete().eq("user_id", uid),
 			supabase.from("templates").delete().eq("user_id", uid),
 			supabase.from("schedule").delete().eq("user_id", uid),
 		]);
@@ -1203,59 +1268,130 @@ export const db = {
 	},
 
 	/* ==================================================
-		 BODYWEIGHT (separate daily tracking, not tied to workouts)
+		 TRACKED STATS (user-defined metrics, logged by day)
 		 ================================================== */
 
-	async getBodyweightLogs(days = 90): Promise<Record<string, number>> {
+	async getTrackedStats(): Promise<TrackedStat[]> {
+		const { data, error } = await supabase
+			.from("tracked_stats")
+			.select("id, user_id, name, unit, display_order")
+			.order("display_order")
+			.order("created_at");
+
+		if (error) {
+			console.warn("[db] tracked_stats fetch warning:", error.message);
+			return [];
+		}
+
+		return (data ?? []).map((row, i) => ({
+			id: row.id,
+			user_id: row.user_id,
+			name: row.name,
+			unit: row.unit ?? "",
+			display_order: row.display_order ?? i,
+		}));
+	},
+
+	async getStatLogs(
+		days = 90,
+	): Promise<Record<string, Record<string, number>>> {
 		const since = new Date();
 		since.setDate(since.getDate() - days);
 		const sinceStr = since.toISOString().slice(0, 10);
 
 		const { data, error } = await supabase
-			.from("bodyweight_logs")
-			.select("log_date, weight")
+			.from("stat_logs")
+			.select("stat_id, log_date, value")
 			.gte("log_date", sinceStr)
 			.order("log_date", { ascending: false });
 
 		if (error) {
-			// table may not exist yet on old DBs — fail soft
-			console.warn("[db] bodyweight_logs fetch warning:", error.message);
+			console.warn("[db] stat_logs fetch warning:", error.message);
 			return {};
 		}
 
-		const map: Record<string, number> = {};
+		const map: Record<string, Record<string, number>> = {};
 		for (const row of data ?? []) {
-			if (row.log_date && typeof row.weight === "number") {
-				map[row.log_date] = row.weight;
+			if (!row.stat_id || !row.log_date || typeof row.value !== "number") {
+				continue;
 			}
+			if (!map[row.stat_id]) map[row.stat_id] = {};
+			map[row.stat_id][row.log_date] = row.value;
 		}
 		return map;
 	},
 
-	async saveBodyweight(logDate: string, weight: number) {
-		const { data: { user } } = await supabase.auth.getUser();
+	async saveStatLog(statId: string, logDate: string, value: number) {
+		const {
+			data: { user },
+		} = await supabase.auth.getUser();
 		if (!user) throw new Error("Not authenticated");
 
-		const { error } = await supabase.from("bodyweight_logs").upsert(
+		const { error } = await supabase.from("stat_logs").upsert(
 			{
 				user_id: user.id,
+				stat_id: statId,
 				log_date: logDate,
-				weight,
+				value,
 				updated_at: new Date().toISOString(),
 			},
-			{ onConflict: "user_id,log_date" }
+			{ onConflict: "user_id,stat_id,log_date" },
 		);
 
 		if (error) throw error;
 	},
 
-	async deleteBodyweight(logDate: string) {
+	async deleteStatLog(statId: string, logDate: string) {
 		const { error } = await supabase
-			.from("bodyweight_logs")
+			.from("stat_logs")
 			.delete()
+			.eq("stat_id", statId)
 			.eq("log_date", logDate);
 
 		if (error) throw error;
+	},
+
+	async saveTrackedStats(
+		stats: Array<{
+			id?: string;
+			name: string;
+			unit?: string;
+			display_order?: number;
+		}>,
+	): Promise<TrackedStat[]> {
+		const validationError = validateDraftStats(stats as DraftStatLike[]);
+		if (validationError) throw new Error(validationError);
+
+		const payload = stats.map((d, i) => {
+			const safe = sanitizeStatRowForDb(d as DraftStatLike);
+			const row: Record<string, unknown> = {
+				name: safe.name,
+				unit: safe.unit ?? "",
+				display_order: safe.display_order ?? i,
+			};
+			const statId = typeof d.id === "string" ? d.id : "";
+			if (
+				statId &&
+				!statId.startsWith("temp-") &&
+				/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+					statId,
+				)
+			) {
+				row.id = statId;
+			}
+			return row;
+		});
+
+		const { data, error } = await supabase.rpc("save_tracked_stats", {
+			p_stats: payload,
+		});
+		if (error) throw error;
+
+		return ((data as TrackedStat[] | null) ?? []).map((row, display_order) => ({
+			...row,
+			unit: row.unit ?? "",
+			display_order: row.display_order ?? display_order,
+		}));
 	},
 
 	/* ==================================================

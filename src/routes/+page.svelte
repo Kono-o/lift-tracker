@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { PUBLIC_SUPABASE_URL } from '$env/static/public';
-  import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type WorkoutHistory } from '$lib/db';
+  import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type TrackedStat, type WorkoutHistory } from '$lib/db';
   import GeneratedAvatar from '$lib/components/GeneratedAvatar.svelte';
   import { horizontalSwipe } from '$lib/horizontalSwipe';
+  import { scrollEdgeFade } from '$lib/scrollEdgeFade';
   import { getDbActivitySnapshot, runDbActivityBatch, subscribeDbActivity, subscribeDbActivitySnapshot } from '$lib/dbActivity';
   import {
     formatBytes,
@@ -35,12 +36,21 @@
     syncClampedInput,
   } from '$lib/exerciseSanitize';
   import {
+    MAX_STATS,
+    normalizeDraftStat,
+    sanitizeStatLogValue,
+    validateDraftStats,
+  } from '$lib/statSanitize';
+  import {
     clampedNumericProp,
     clampedTemplateNameProp,
     clampedExerciseNameProp,
+    clampedStatNameProp,
+    clampedStatUnitProp,
   } from '$lib/clampedInputs';
   import {
     ArrowLeft,
+    BarChart3,
     Bed,
     CalendarDays,
     ChevronDown,
@@ -117,9 +127,8 @@
   let dbIoFlashTimer: ReturnType<typeof setTimeout> | null = null;
   let dbActivitySnapshot = $state(getDbActivitySnapshot());
   let showSettingsPanel = $state(false);
-  let showBodyweightPanel = $state(false);
-  let bwInputDate = $state(REAL_TODAY_STR);
-  let bwInputWeight = $state<number | ''>('');
+
+
   let supabasePanelLoading = $state(false);
   let supabasePanel = $state<SupabasePanelSnapshot | null>(null);
   let supabaseHealthPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -147,8 +156,19 @@
   let selectedDate = $state(new Date(REAL_TODAY));
   let viewedLog = $state<any>(null);
   let weekLogs = $state<Record<string, any | null>>({});
-  let bodyweightLogs = $state<Record<string, number>>({});
-  let currentView = $state<'track' | 'swap_template' | 'edit_template'>('track');
+  let trackedStats = $state<TrackedStat[]>([]);
+  let statLogs = $state<Record<string, Record<string, number>>>({});
+  let selectedStatId = $state<string | null>(null);
+
+  let statInputValue = $state<number | ''>('');
+  let draftStats = $state<TrackedStat[]>([]);
+  let selectedDraftStatId = $state<string | null>(null);
+  let editingStatNameId = $state<string | null>(null);
+  let statSaveError = $state<string | null>(null);
+  let statDraftSaveInFlight = false;
+  let statDraggedIndex = $state<number | null>(null);
+  let statRowDragged = false;
+  let currentView = $state<'track' | 'swap_template' | 'edit_template' | 'stats' | 'edit_stats'>('track');
   let templateEditorReturnView = $state<'track' | 'swap_template'>('track');
 
   let selectedDateDisplay = $derived.by(() => {
@@ -447,6 +467,8 @@
 
   let accountBusy = $state(false);
   let accountError = $state<string | null>(null);
+  let editingAccountName = $state(false);
+  let accountNameEditValue = $state('');
   let showChangePasswordForm = $state(false);
   let changePasswordNew = $state('');
   let changePasswordConfirm = $state('');
@@ -777,11 +799,14 @@
   const SKIP_CTA_TARGET = 'CANCEL';
   const COMPLETE_CTA_SOURCE = 'WORKOUT COMPLETE';
   const SKIPPED_CTA_SOURCE = 'WORKOUT SKIPPED';
+  const REST_CTA_SOURCE = 'REST DAY';
   const ERASE_CTA_SOURCE = 'ERASE';
   const workoutCenterBtnClass =
     'workout-cta-center font-sans col-span-3 h-[52px] rounded-xl flex items-center justify-center text-center border-2 hover:brightness-110 group relative';
   const workoutSideBtnClass =
     'workout-cta-side font-sans col-span-1 h-[52px] rounded-xl flex items-center justify-center text-center relative overflow-hidden hover:brightness-110 group';
+  const workoutCtaEmptyClass =
+    'workout-cta-empty bg-[#0d0d0d] pointer-events-none';
   const workoutCenterLabelClass =
     'workout-cta-label transition-[letter-spacing] group-hover:tracking-[0.2em]';
   const workoutSideLabelClass =
@@ -941,6 +966,50 @@
   });
   let isViewingToday = $derived(selectedDateStr === REAL_TODAY_STR);
   let isFuture = $derived(selectedDateStr > REAL_TODAY_STR);
+  let isPastSelected = $derived(selectedDateStr < REAL_TODAY_STR && !isViewingToday);
+  /** No template on this weekday in the current routine. */
+  let isScheduledRestDay = $derived(!activeTemplate && templates.length > 0);
+  /** Real workout log for the selected day (completed, skipped, or in progress — not rest). */
+  let hasViewedWorkoutLog = $derived(!!viewedLog && !viewedLog.workout_snapshot?.is_rest);
+  /** Past day log fetch finished (null = confirmed no log). */
+  let isSelectedDayLogResolved = $derived(isViewingToday || weekLogs[selectedDateStr] !== undefined);
+  let isSelectedDayLogLoading = $derived(!isViewingToday && !!currentUser && !isSelectedDayLogResolved);
+  /** Past weekday had a template assigned but no log was ever saved. */
+  let isPastUnloggedWorkoutDay = $derived(
+    isPastSelected && !!activeTemplate && isSelectedDayLogResolved && weekLogs[selectedDateStr] === null,
+  );
+  /** Rest day screen: logged rest or scheduled rest with no workout log to show. */
+  let isRestDayView = $derived(
+    !!viewedLog?.workout_snapshot?.is_rest || (isScheduledRestDay && !hasViewedWorkoutLog),
+  );
+  let isPastUnloggedView = $derived(isPastUnloggedWorkoutDay);
+  /** Rest / unlogged days: dotted side slots + go-to-today when not on today. */
+  let isNoWorkoutCtaMode = $derived(isRestDayView || isPastUnloggedView);
+  /** Use rest/unlogged CTA layout even if today's session state is non-idle while viewing a rest day. */
+  let useNoWorkoutCtaLayout = $derived(
+    isNoWorkoutCtaMode && (workoutState === 'idle' || !isViewingToday || isRestDayView),
+  );
+  /** Stats CTA on today's rest-day layout (including during an active session). */
+  let statsCtaEnabled = $derived(isViewingToday && isScheduledRestDay);
+  let ctaBarEditorDisabled = $derived(
+    currentView === 'swap_template' ||
+      currentView === 'edit_template' ||
+      currentView === 'edit_stats' ||
+      (currentView === 'stats' && workoutState !== 'active'),
+  );
+  let ctaBarVisible = $derived(
+    (currentView === 'track' ? (activeTemplate || isNoWorkoutCtaMode) : true) &&
+      (currentView === 'track' ||
+        currentView === 'swap_template' ||
+        currentView === 'edit_template' ||
+        currentView === 'stats' ||
+        currentView === 'edit_stats') &&
+      (isViewingToday ||
+        viewedLog ||
+        selectedDateStr > REAL_TODAY_STR ||
+        isNoWorkoutCtaMode ||
+        currentView !== 'track'),
+  );
   /** Reps/times/weight inputs — only while a live session is running. */
   let workoutExercisesEditable = $derived(
     isViewingToday && workoutState === 'active' && !isFuture,
@@ -1124,7 +1193,7 @@
       return 'skipped';
     }
     if (!isViewingToday && viewedCompletionStatus === 'skipped') return 'skipped';
-    if (workoutState === 'active') return sessionStatus as HeaderSurfaceStatus;
+    if (workoutState === 'active' && isViewingToday) return sessionStatus as HeaderSurfaceStatus;
     const completion = headerCompletionDisplay;
     if (completion === 'untouched' || completion === 'skipped') return 'skipped';
     if (completion === 'green') return 'green';
@@ -1155,6 +1224,7 @@
       viewedLog = weekLogs[key];
       return;
     }
+    viewedLog = null;
     db.getLogForDate(key)
       .then((log) => {
         if (selectedDateStr === key) {
@@ -1938,6 +2008,15 @@
     if (dateKey === REAL_TODAY_STR) todayLog = log;
   }
 
+  function saveExerciseBaselineOptimistic(exerciseId: string, rawValue: number) {
+    const { value } = clampBaseKgFieldInput(String(rawValue));
+    patchExerciseWeights([{ id: exerciseId, current_weight: value }]);
+    void db.saveExerciseBaseline(exerciseId, value).catch((err) => {
+      console.error('baseline save failed', err);
+      void loadData({ preserveSession: true });
+    });
+  }
+
   function patchExerciseWeights(
     updates: Array<{ id: string; current_weight: number | null }>,
   ) {
@@ -2163,6 +2242,8 @@
 
   function openSettingsPanel() {
     accountError = null;
+    editingAccountName = false;
+    accountNameEditValue = '';
     stopSignOutHold();
     stopDeleteAccountHold();
     showSettingsPanel = true;
@@ -2174,49 +2255,233 @@
     resetSettingsPanelUi();
   }
 
-  function openBodyweightPanel() {
-    showBodyweightPanel = true;
+  let selectedStat = $derived(
+    selectedStatId ? trackedStats.find((s) => s.id === selectedStatId) ?? null : null,
+  );
+  let selectedStatLogs = $derived(
+    selectedStatId ? (statLogs[selectedStatId] ?? {}) : {},
+  );
+
+  function enterStatsView() {
+    if (!isViewingToday) return;
+    if (!selectedStatId && trackedStats.length > 0) {
+      selectedStatId = trackedStats[0].id;
+    }
+    currentView = 'stats';
   }
 
-  function closeBodyweightPanel() {
-    showBodyweightPanel = false;
+  function exitStatsView() {
+    currentView = 'track';
   }
 
-  async function logBodyweight() {
-    const d = bwInputDate;
-    const w = Number(bwInputWeight);
-    if (!d || !w || w <= 0) return;
+  function openStatsEditor() {
+    draftStats = trackedStats.map((s) => ({ ...s }));
+    selectedDraftStatId = draftStats.length > 0 ? draftStats[0].id : null;
+    editingStatNameId = null;
+    statSaveError = null;
+    currentView = 'edit_stats';
+  }
+
+  function exitStatsEditor() {
+    if (editorExitSaving) return;
+    editorExitSaving = true;
+    trackedStats = draftStats.map((s) => ({ ...s }));
+    if (selectedStatId && !trackedStats.some((s) => s.id === selectedStatId)) {
+      selectedStatId = trackedStats[0]?.id ?? null;
+    }
+    currentView = 'stats';
+    statSaveError = null;
+    void runDbActivityBatch(persistTrackedStatsNow).finally(() => {
+      editorExitSaving = false;
+    });
+  }
+
+  function selectDraftStat(id: string | null) {
+    if (id !== editingStatNameId) editingStatNameId = null;
+    selectedDraftStatId = id;
+  }
+
+  function beginStatNameEdit(id: string) {
+    selectDraftStat(id);
+    editingStatNameId = id;
+  }
+
+  function endStatNameEdit() {
+    editingStatNameId = null;
+    void persistTrackedStatsNow();
+  }
+
+  function markDraftStatsTouched() {
+    draftStats = [...draftStats];
+  }
+
+  function addNewStat() {
+    if (draftStats.length >= MAX_STATS) {
+      statSaveError = `You can track at most ${MAX_STATS} stats.`;
+      return;
+    }
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    draftStats = [
+      ...draftStats,
+      {
+        id: tempId,
+        user_id: currentUser?.id ?? '',
+        name: 'NEW STAT',
+        unit: '',
+        display_order: draftStats.length,
+      },
+    ];
+    selectDraftStat(tempId);
+    void persistTrackedStatsNow();
+  }
+
+  function deleteSelectedStat() {
+    if (!selectedDraftStatId) return;
+    const id = selectedDraftStatId;
+    draftStats = draftStats.filter((s) => s.id !== id);
+    selectedDraftStatId = draftStats.length > 0 ? draftStats[draftStats.length - 1].id : null;
+    editingStatNameId = null;
+    void persistTrackedStatsNow();
+  }
+
+  async function persistTrackedStatsNow() {
+    if (statDraftSaveInFlight) return;
+
+    const snapStats = draftStats.map((s, i) => {
+      const copy = { ...s };
+      normalizeDraftStat(copy);
+      copy.display_order = i;
+      return copy;
+    });
+    const validationErr = validateDraftStats(snapStats);
+    if (validationErr) {
+      statSaveError = validationErr;
+      return;
+    }
+
+    statDraftSaveInFlight = true;
     try {
-      await db.saveBodyweight(d, w);
-      bodyweightLogs[d] = w;
-      bodyweightLogs = { ...bodyweightLogs };
-      bwInputWeight = '';
-    } catch (e) {
-      console.error(e);
-      // silent fail or toast, keep simple
+      const saved = await db.saveTrackedStats(snapStats);
+      const prevDraft = draftStats;
+      const prevSelected = selectedDraftStatId;
+      draftStats = saved.map((s) => ({ ...s }));
+      trackedStats = draftStats.map((s) => ({ ...s }));
+      const nextSelected = prevDraft.findIndex((s) => s.id === prevSelected);
+      if (nextSelected >= 0 && saved[nextSelected]) {
+        selectedDraftStatId = saved[nextSelected].id;
+      } else if (prevSelected && saved.some((s) => s.id === prevSelected)) {
+        selectedDraftStatId = prevSelected;
+      } else {
+        selectedDraftStatId = saved[0]?.id ?? null;
+      }
+      if (selectedStatId && !trackedStats.some((s) => s.id === selectedStatId)) {
+        selectedStatId = trackedStats[0]?.id ?? null;
+      }
+      statSaveError = null;
+    } catch (err) {
+      console.error('stat save failed', err);
+      statSaveError =
+        err && typeof err === 'object' && 'message' in err && typeof err.message === 'string'
+          ? err.message
+          : 'Could not save stats. Try again.';
+    } finally {
+      statDraftSaveInFlight = false;
     }
   }
 
-  async function updateBodyweight(date: string, val: string) {
-    const w = Number(val);
-    if (!date || !w || w <= 0) return;
-    try {
-      await db.saveBodyweight(date, w);
-      bodyweightLogs[date] = w;
-      bodyweightLogs = { ...bodyweightLogs };
-    } catch (e) {
-      console.error(e);
+  function handleStatDragStart(e: DragEvent, index: number) {
+    statDraggedIndex = index;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', index.toString());
     }
   }
 
-  async function deleteBodyweight(date: string) {
-    try {
-      await db.deleteBodyweight(date);
-      delete bodyweightLogs[date];
-      bodyweightLogs = { ...bodyweightLogs };
-    } catch (e) {
-      console.error(e);
+  function handleStatDragOver(e: DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  }
+
+  function handleStatDrop(e: DragEvent, targetIndex: number) {
+    e.preventDefault();
+    if (statDraggedIndex === null || statDraggedIndex === targetIndex) {
+      statDraggedIndex = null;
+      return;
     }
+    const arr = [...draftStats];
+    const [moved] = arr.splice(statDraggedIndex, 1);
+    arr.splice(targetIndex, 0, moved);
+    draftStats = arr;
+    statDraggedIndex = null;
+    void persistTrackedStatsNow();
+  }
+
+  function handleStatDragEnd() {
+    const wasDragging = statDraggedIndex !== null;
+    statDraggedIndex = null;
+    if (wasDragging) {
+      statRowDragged = true;
+      setTimeout(() => {
+        statRowDragged = false;
+      }, 100);
+    }
+  }
+
+  function logSelectedStat() {
+    if (!selectedStatId) return;
+    const value = sanitizeStatLogValue(Number(statInputValue));
+    if (value == null) return;
+    const statId = selectedStatId;
+    const logDate = REAL_TODAY_STR;
+    const prev = statLogs[statId] ?? {};
+    const prevValue = prev[logDate];
+    statLogs = {
+      ...statLogs,
+      [statId]: { ...prev, [logDate]: value },
+    };
+    statInputValue = '';
+    void db.saveStatLog(statId, logDate, value).catch((e) => {
+      console.error(e);
+      const rollback = { ...(statLogs[statId] ?? {}) };
+      if (prevValue === undefined) delete rollback[logDate];
+      else rollback[logDate] = prevValue;
+      statLogs = { ...statLogs, [statId]: rollback };
+    });
+  }
+
+  function updateStatLog(date: string, val: string) {
+    if (!selectedStatId) return;
+    const value = sanitizeStatLogValue(Number(val));
+    if (!date || value == null) return;
+    const statId = selectedStatId;
+    const prev = statLogs[statId] ?? {};
+    const prevValue = prev[date];
+    statLogs = {
+      ...statLogs,
+      [statId]: { ...prev, [date]: value },
+    };
+    void db.saveStatLog(statId, date, value).catch((e) => {
+      console.error(e);
+      const rollback = { ...(statLogs[statId] ?? {}) };
+      if (prevValue === undefined) delete rollback[date];
+      else rollback[date] = prevValue;
+      statLogs = { ...statLogs, [statId]: rollback };
+    });
+  }
+
+  function deleteStatLogEntry(date: string) {
+    if (!selectedStatId) return;
+    const statId = selectedStatId;
+    const prev = { ...(statLogs[statId] ?? {}) };
+    const prevValue = prev[date];
+    delete prev[date];
+    statLogs = { ...statLogs, [statId]: prev };
+    void db.deleteStatLog(statId, date).catch((e) => {
+      console.error(e);
+      const rollback = { ...(statLogs[statId] ?? {}) };
+      if (prevValue !== undefined) rollback[date] = prevValue;
+      statLogs = { ...statLogs, [statId]: rollback };
+    });
   }
 
   function applySupabaseHealthError(e: unknown) {
@@ -2653,20 +2918,25 @@
 			if (isInitial && currentUser) {
 				bootSections = buildAuthBootSections(currentUser, 'syncing');
 			}
-			const [data, recentLogs, bw] = await Promise.all([
+			const [data, recentLogs, stats, logs] = await Promise.all([
 				db.getAppData(),
 				db.getRecentHistory(21).catch((e) => {
 					console.error('Recent history fetch failed', e);
 					return [] as WorkoutHistory[];
 				}),
-				db.getBodyweightLogs(90).catch(() => ({} as Record<string, number>)),
+				db.getTrackedStats().catch(() => [] as TrackedStat[]),
+				db.getStatLogs(90).catch(() => ({} as Record<string, Record<string, number>>)),
 			]);
 			schedule = data.schedule;
 			templates = data.templates;
 			exerciseLibrary = data.exerciseLibrary ?? [];
 			deletedLibraryExerciseIds = new Set(); // server state is now authoritative
 			todayLog = data.todayLog || null;
-			bodyweightLogs = bw;
+			trackedStats = stats;
+			statLogs = logs;
+			if (selectedStatId && !trackedStats.some((s) => s.id === selectedStatId)) {
+				selectedStatId = trackedStats[0]?.id ?? null;
+			}
 			if (isInitial) {
 				bootSections = buildBootSections(currentUser, schedule, templates, todayLog, recentLogs);
 				bootMessage = 'Almost ready…';
@@ -3301,9 +3571,17 @@
     if (workoutState !== 'done' && workoutState !== 'skipped') return;
     stopEraseHold();
     resetHeaderTimerDisplay();
+    const dateKey = selectedDateStr;
+    const rollback = {
+      log: weekLogs[dateKey] ?? null,
+      workoutState,
+      activeWorkoutTemplate,
+      trackedReps,
+      completedTimers,
+    };
     applyEraseLocalReset();
     workoutState = 'idle';
-    void eraseWorkoutLog();
+    void eraseWorkoutLog({ localAlreadyApplied: true, rollback });
   }
 
   function handleStartWorkoutTap(e: Event) {
@@ -3411,21 +3689,20 @@
         const returnView = templateEditorReturnView;
         templateEditorReturnView = 'track';
         void flushTemplateNamePersist();
-        void (async () => {
-          try {
-            if (!templateId.startsWith('temp-')) {
-              await db.deleteTemplate(templateId);
-            }
-            editingTemplateId = '';
-            draftExercises = [];
-            draftTemplateName = '';
-            currentView = returnView;
-            await loadData({ preserveSession: true });
-          } catch (err) {
+        editingTemplateId = '';
+        draftExercises = [];
+        draftTemplateName = '';
+        currentView = returnView;
+        if (!templateId.startsWith('temp-')) {
+          const deletedId = templateId;
+          templates = templates.filter((t) => t.id !== deletedId);
+          void clearTemplateFromAllDays(deletedId);
+          void db.deleteTemplate(deletedId).catch((err) => {
             console.error('Delete template failed', err);
             templateSaveError = formatDbError(err);
-          }
-        })();
+            void loadData({ preserveSession: true });
+          });
+        }
       }
     }, 20);
   }
@@ -3523,37 +3800,57 @@
     deleteAccountTapPulseActive = false;
   }
 
-  async function eraseWorkoutLog() {
+  async function eraseWorkoutLog(
+    options: {
+      localAlreadyApplied?: boolean;
+      rollback?: {
+        log: WorkoutHistory | null;
+        workoutState: typeof workoutState;
+        activeWorkoutTemplate: Template | null;
+        trackedReps: Record<string, number>;
+        completedTimers: Record<string, { result: string; met: boolean }>;
+      };
+    } = {},
+  ) {
     const dateKey = selectedDateStr;
     const opGen = workoutProgressSaveGen;
     stopEraseHold();
     stopSkipHold();
+    const rollback = options.rollback ?? {
+      log: weekLogs[dateKey] ?? null,
+      workoutState,
+      activeWorkoutTemplate,
+      trackedReps,
+      completedTimers,
+    };
+    if (!options.localAlreadyApplied) {
+      applyEraseLocalReset();
+      if (isViewingToday) {
+        workoutState = 'idle';
+      }
+    }
     try {
       workoutActionError = null;
       await db.deleteWorkoutLog(isViewingToday ? undefined : dateKey);
       if (opGen !== workoutProgressSaveGen) return;
-      applyWorkoutLogLocally(null, dateKey);
-      if (isViewingToday) {
-        workoutState = 'idle';
-        activeWorkoutTemplate = null;
-        trackedReps = {};
-        completedTimers = {};
-        clearActiveSessionBackup();
-        resetHeaderWorkoutTimer();
-      }
     } catch (err) {
       if (opGen !== workoutProgressSaveGen) return;
       console.error('erase workout failed', err);
       workoutActionError = 'Could not erase workout log.';
+      applyWorkoutLogLocally(rollback.log, dateKey);
+      if (isViewingToday) {
+        workoutState = rollback.workoutState;
+        activeWorkoutTemplate = rollback.activeWorkoutTemplate;
+        trackedReps = rollback.trackedReps;
+        completedTimers = rollback.completedTimers;
+      }
     }
   }
 
   async function clearTemplateFromAllDays(templateId: string) {
     const affected = schedule.filter((s) => s.template_id === templateId);
     if (!affected.length) return;
-    await db.assignTemplatesToDays(
-      affected.map((s) => ({ dayOfWeek: s.day_of_week, templateId: null })),
-    );
+    const patches = affected.map((s) => ({ dayOfWeek: s.day_of_week, templateId: null as string | null }));
     for (const row of affected) {
       applyLocalScheduleAssignment(row.day_of_week, null);
     }
@@ -3562,6 +3859,12 @@
       if (nextAssignments[i] === templateId) nextAssignments[i] = null;
     }
     builderAssignments = nextAssignments;
+    try {
+      await db.assignTemplatesToDays(patches);
+    } catch (e) {
+      console.error('clear template from schedule failed', e);
+      void loadData({ preserveSession: true });
+    }
   }
 
   function applyLocalScheduleAssignment(dayOfWeek: number, templateId: string | null) {
@@ -3601,14 +3904,9 @@
     await flushTemplateNamePersist();
   }
 
-  async function exitRoutineEditor() {
+  function exitRoutineEditor() {
     if (editorExitSaving) return;
     editorExitSaving = true;
-    try {
-      await runDbActivityBatch(saveRoutineEditorDraft);
-    } finally {
-      editorExitSaving = false;
-    }
     currentView = 'track';
     builderAssignments = {};
     builderEditingDay = 0;
@@ -3620,6 +3918,9 @@
     }
     templateErrorFading = false;
     templateError = null;
+    void runDbActivityBatch(saveRoutineEditorDraft).finally(() => {
+      editorExitSaving = false;
+    });
   }
 
   async function persistBuilderDayAssignment(templateId: string | null) {
@@ -3643,14 +3944,12 @@
     if (effectiveId === priorEffective) return;
 
     applyLocalScheduleAssignment(dayOfWeek, effectiveId);
-    try {
-      await db.assignTemplatesToDays([{ dayOfWeek, templateId: effectiveId }]);
-    } catch (e) {
+    void db.assignTemplatesToDays([{ dayOfWeek, templateId: effectiveId }]).catch((e) => {
       console.error('Day assignment save failed', e);
       templateError = formatDbError(e);
       templateErrorFading = false;
       applyLocalScheduleAssignment(dayOfWeek, priorEffective);
-    }
+    });
   }
 
   async function handleCreateTemplate(defaultName?: string, openAfterCreate = true) {
@@ -4053,12 +4352,57 @@
   /** Closes panel and resets hold UI; safe to call during sign-out / auth changes. */
   function resetSettingsPanelUi() {
     showSettingsPanel = false;
+    editingAccountName = false;
+    accountNameEditValue = '';
     stopSignOutHold();
     stopDeleteAccountHold();
     holdCautionDisplayKind = null;
     holdCautionMorphFade = true;
     resetChangePasswordForm();
     accountError = null;
+  }
+
+  function beginAccountNameEdit() {
+    if (!isUsernameAccount(currentUser) || accountBusy || editingAccountName) return;
+    accountError = null;
+    accountNameEditValue = getAuthDisplayName(currentUser);
+    editingAccountName = true;
+  }
+
+  function cancelAccountNameEdit() {
+    editingAccountName = false;
+    accountNameEditValue = '';
+  }
+
+  async function commitAccountNameEdit() {
+    if (!editingAccountName) return;
+    const next = sanitizeUsernameInput(accountNameEditValue);
+    const current = sanitizeUsernameInput(getAuthDisplayName(currentUser));
+    if (!next || next === current) {
+      cancelAccountNameEdit();
+      return;
+    }
+
+    const validationErr = validateUsername(next);
+    if (validationErr) {
+      accountError = validationErr;
+      cancelAccountNameEdit();
+      return;
+    }
+
+    accountBusy = true;
+    accountError = null;
+    try {
+      const user = await db.renameUsername(next);
+      currentUser = user;
+      cancelAccountNameEdit();
+    } catch (e) {
+      console.error('Rename username failed', e);
+      accountError = formatAccountError(e);
+      cancelAccountNameEdit();
+    } finally {
+      accountBusy = false;
+    }
   }
 
   async function handleChangePassword() {
@@ -4140,16 +4484,19 @@
 
 
 
-  async function undoRestLog(dateStr: string) {
-    try {
-      await db.deleteLogForDate(dateStr);
-      weekLogs[dateStr] = null;
-      if (selectedDateStr === dateStr) {
-        viewedLog = null;
-      }
-    } catch (err) {
-      console.error('undo rest log failed', err);
+  function undoRestLog(dateStr: string) {
+    const prev = weekLogs[dateStr] ?? null;
+    weekLogs = { ...weekLogs, [dateStr]: null };
+    if (selectedDateStr === dateStr) {
+      viewedLog = null;
     }
+    void db.deleteLogForDate(dateStr).catch((err) => {
+      console.error('undo rest log failed', err);
+      weekLogs = { ...weekLogs, [dateStr]: prev };
+      if (selectedDateStr === dateStr) {
+        viewedLog = prev;
+      }
+    });
   }
 
   function createTemplateFromRoutineBuilder() {
@@ -4327,17 +4674,19 @@
       templateId: schedule.find((s) => s.day_of_week === day)?.template_id ?? null,
     }));
 
-    try {
-      if (schedulePatches.length > 0) {
-        await db.assignTemplatesToDays(schedulePatches);
+    void (async () => {
+      try {
+        if (schedulePatches.length > 0) {
+          await db.assignTemplatesToDays(schedulePatches);
+        }
+        await db.deleteTemplate(deletedId);
+      } catch (e) {
+        console.error(e);
+        templateError = formatDbError(e);
+        templateErrorFading = false;
+        void loadData({ preserveSession: true });
       }
-      await db.deleteTemplate(deletedId);
-    } catch (e) {
-      console.error(e);
-      templateError = formatDbError(e);
-      templateErrorFading = false;
-      await loadData({ preserveSession: true });
-    }
+    })();
   }
 
   function resetNewExerciseForm() {
@@ -4536,26 +4885,25 @@
     }
   }
 
-  async function exitEditTemplate() {
+  function exitEditTemplate() {
     if (editorExitSaving) return;
     editorExitSaving = true;
     const returnView = templateEditorReturnView;
-    try {
-      await runDbActivityBatch(saveTemplateEditorDraft);
-    } finally {
-      editorExitSaving = false;
-    }
     templateEditorReturnView = 'track';
     currentView = returnView;
-    draftExercises = [];
-    exerciseTypeFieldStash = {};
-    draftTemplateName = '';
-    draftTemplateColor = 0;
-    selectedExerciseId = null;
-    editingExerciseNameId = null;
-    editingTemplateId = '';
-    deletedLibraryExerciseIds = new Set();
-    templateSaveError = null;
+    void runDbActivityBatch(saveTemplateEditorDraft)
+      .finally(() => {
+        draftExercises = [];
+        exerciseTypeFieldStash = {};
+        draftTemplateName = '';
+        draftTemplateColor = 0;
+        selectedExerciseId = null;
+        editingExerciseNameId = null;
+        editingTemplateId = '';
+        deletedLibraryExerciseIds = new Set();
+        templateSaveError = null;
+        editorExitSaving = false;
+      });
   }
 
   function activateOrSwitchTimeSet(exId: string, s: number) {
@@ -4820,7 +5168,204 @@
   }
 </script>
 
-<div class="app max-w-md mx-auto min-h-screen min-h-dvh select-none text-white bg-[#0a0a0a] p-4 flex flex-col gap-3 font-sans">
+<div class="app max-w-md mx-auto h-dvh max-h-dvh overflow-hidden select-none text-white bg-[#0a0a0a] px-4 pt-4 pb-1 flex flex-col gap-3 font-sans">
+
+  {#snippet ctaEmptySlot()}
+    <div class="{workoutSideBtnClass} {workoutCtaEmptyClass}" aria-hidden="true">
+      <X class="workout-cta-empty-icon size-3.5 shrink-0" strokeWidth={2.25} />
+    </div>
+  {/snippet}
+
+  {#snippet ctaBar(editorDisabled = false)}
+    <div class={editorDisabled ? 'opacity-40 pointer-events-none' : ''}>
+      {#if workoutActionError}
+        <p class="text-[10px] text-red-300 leading-snug mb-2">{workoutActionError}</p>
+      {/if}
+      {#if workoutState === 'idle' || workoutState === 'active' || workoutState === 'done' || workoutState === 'skipped'}
+        <div class="grid grid-cols-5 gap-3">
+          {#if useNoWorkoutCtaLayout}
+            {#if statsCtaEnabled}
+              <button
+                type="button"
+                class="{workoutSideBtnClass} border bg-[#0d0d0d] border-[#1e1e1e] text-white hover:border-white/40"
+                onclick={enterStatsView}
+              >
+                <span class="workout-cta-side-content">
+                  <BarChart3 class="workout-cta-side-icon" strokeWidth={2.25} aria-hidden="true" />
+                  <span class={workoutSideLabelClass} style={ctaChStyle('STATS', SIDE_CTA_MAX_CH)}>STATS</span>
+                </span>
+              </button>
+            {:else}
+              {@render ctaEmptySlot()}
+            {/if}
+
+            {#if isViewingToday && isRestDayView}
+              <button
+                type="button"
+                class="{workoutCenterBtnClass} cursor-default border-[#1e1e1e] bg-[#141414] text-zinc-500"
+                disabled
+                tabindex={-1}
+              >
+                <span
+                  class={workoutCenterLabelClass}
+                  style={ctaChStyle(REST_CTA_SOURCE, CENTER_CTA_MAX_CH)}
+                >{REST_CTA_SOURCE}</span>
+              </button>
+            {:else if !isViewingToday}
+              <button
+                type="button"
+                class="{workoutCenterBtnClass} go-to-today-btn border-transparent bg-white text-black"
+                onclick={goToToday}
+              >
+                <span class="{workoutCenterLabelClass}">GO TO TODAY</span>
+              </button>
+            {/if}
+
+            {@render ctaEmptySlot()}
+          {:else}
+          {#if !isViewingToday}
+              {@render ctaEmptySlot()}
+              <button
+                type="button"
+                class="{workoutCenterBtnClass} go-to-today-btn border-transparent bg-white text-black"
+                onclick={goToToday}
+              >
+                <span class="{workoutCenterLabelClass}">GO TO TODAY</span>
+              </button>
+              {@render ctaEmptySlot()}
+          {:else}
+          <!-- STATS (left, narrow) — opens stats menu -->
+          <button
+            type="button"
+            class="{workoutSideBtnClass} border bg-[#0d0d0d] border-[#1e1e1e] text-white hover:border-white/40"
+            onclick={enterStatsView}
+          >
+            <span class="workout-cta-side-content">
+              <BarChart3 class="workout-cta-side-icon" strokeWidth={2.25} aria-hidden="true" />
+              <span class={workoutSideLabelClass} style={ctaChStyle('STATS', SIDE_CTA_MAX_CH)}>STATS</span>
+            </span>
+          </button>
+
+          {#if workoutState === 'idle'}
+              <button
+                type="button"
+                class="{workoutCenterBtnClass} border-transparent bg-white text-black"
+                onclick={handleStartWorkoutTap}
+              >
+                <span
+                  class={workoutCenterLabelClass}
+                  style={ctaChStyle(START_CTA_SOURCE, CENTER_CTA_MAX_CH)}
+                >
+                  {START_CTA_SOURCE}
+                </span>
+              </button>
+              <button
+                type="button"
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {skipTapPulseActive ? 'hold-skip-tap-pulse' : skipProgress > 0 ? 'border-amber-500 text-[#fbbf24]' : 'border-[#1e1e1e] text-white hover:border-white/40'}"
+                onmousedown={startSkipHold}
+                onmouseup={stopSkipHold}
+                onmouseleave={stopSkipHold}
+                ontouchstart={startSkipHold}
+                ontouchend={stopSkipHold}
+                onanimationend={onSkipTapPulseEnd}
+              >
+                <div class="absolute inset-0 z-0 bg-amber-900/40 transition-all duration-[20ms]" style="width: {skipProgress}%;"></div>
+                <span class="workout-cta-side-content">
+                  <SkipForward class="workout-cta-side-icon" strokeWidth={2.25} aria-hidden="true" />
+                  <span
+                    class={workoutSideLabelClass}
+                    style={ctaChStyle(SKIP_CTA_SOURCE, SIDE_CTA_MAX_CH)}
+                  >
+                    {SKIP_CTA_SOURCE}
+                  </span>
+                </span>
+              </button>
+          {:else if workoutState === 'active'}
+              <button
+                type="button"
+                class="{workoutCenterBtnClass} {isPerfectDay ? 'w-cta-complete-green' : 'w-cta-finish'}"
+                onclick={handleFinishWorkoutTap}
+              >
+                <span
+                  class={workoutCenterLabelClass}
+                  style={ctaChStyle(START_CTA_TARGET, CENTER_CTA_MAX_CH)}
+                >{START_CTA_TARGET}</span>
+              </button>
+              <button
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {cancelTapPulseActive ? 'hold-cancel-tap-pulse' : cancelProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'}"
+                onmousedown={startCancelHold}
+                onmouseup={stopCancelHold}
+                onmouseleave={stopCancelHold}
+                ontouchstart={startCancelHold}
+                ontouchend={stopCancelHold}
+                onanimationend={onCancelTapPulseEnd}
+              >
+                <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {cancelProgress}%;"></div>
+                <span class="workout-cta-side-content">
+                  <X class="workout-cta-side-icon" strokeWidth={2.25} aria-hidden="true" />
+                  <span class={workoutSideLabelClass} style={ctaChStyle(SKIP_CTA_TARGET, SIDE_CTA_MAX_CH)}>{SKIP_CTA_TARGET}</span>
+                </span>
+              </button>
+          {:else if workoutState === 'done'}
+            {@const effectiveStatus = justFinishedStatus ?? todayCompletionStatus}
+            {@const isUntouchedComplete = effectiveStatus === 'untouched'}
+            {@const isYellowComplete = !isUntouchedComplete && (effectiveStatus === 'yellow' || effectiveStatus === 'neutral')}
+              <button
+                class="{workoutCenterBtnClass} cursor-default {isUntouchedComplete ? 'w-cta-skipped' : isYellowComplete ? 'w-cta-complete-yellow' : 'w-cta-complete-green'}"
+              >
+                <span
+                  class={workoutCenterLabelClass}
+                  style={ctaChStyle(COMPLETE_CTA_SOURCE, CENTER_CTA_MAX_CH)}
+                >{COMPLETE_CTA_SOURCE}</span>
+              </button>
+              <button
+                type="button"
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'}"
+                onmousedown={startEraseHold}
+                onmouseup={stopEraseHold}
+                onmouseleave={stopEraseHold}
+                ontouchstart={startEraseHold}
+                ontouchend={stopEraseHold}
+                onanimationend={onEraseTapPulseEnd}
+              >
+                <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {eraseProgress}%;"></div>
+                <span class="workout-cta-side-content">
+                  <Trash2 class="workout-cta-side-icon" strokeWidth={2.25} aria-hidden="true" />
+                  <span class={workoutSideLabelClass} style={ctaChStyle(ERASE_CTA_SOURCE, SIDE_CTA_MAX_CH)}>{ERASE_CTA_SOURCE}</span>
+                </span>
+              </button>
+          {:else if workoutState === 'skipped'}
+              <button
+                class="{workoutCenterBtnClass} w-cta-skipped cursor-default"
+              >
+                <span
+                  class={workoutCenterLabelClass}
+                  style={ctaChStyle(SKIPPED_CTA_SOURCE, CENTER_CTA_MAX_CH)}
+                >{SKIPPED_CTA_SOURCE}</span>
+              </button>
+              <button
+                type="button"
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'}"
+                onmousedown={startEraseHold}
+                onmouseup={stopEraseHold}
+                onmouseleave={stopEraseHold}
+                ontouchstart={startEraseHold}
+                ontouchend={stopEraseHold}
+                onanimationend={onEraseTapPulseEnd}
+              >
+                <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {eraseProgress}%;"></div>
+                <span class="workout-cta-side-content">
+                  <Trash2 class="workout-cta-side-icon" strokeWidth={2.25} aria-hidden="true" />
+                  <span class={workoutSideLabelClass} style={ctaChStyle(ERASE_CTA_SOURCE, SIDE_CTA_MAX_CH)}>{ERASE_CTA_SOURCE}</span>
+                </span>
+              </button>
+          {/if}
+          {/if}
+          {/if}
+        </div>
+      {/if}
+    </div>
+  {/snippet}
 
   {#if showSettingsPanel}
     <div
@@ -4883,7 +5428,43 @@
               {@const panel = supabasePanel}
               {#if currentUser}
                 <div class="settings-panel-header__identity">
-                  <span class="settings-panel-header__name">{accountDisplayName}</span>
+                  {#if editingAccountName && isUsernameAccount(currentUser)}
+                    <input
+                      type="text"
+                      autocomplete="username"
+                      spellcheck="false"
+                      maxlength={MAX_USERNAME_LEN}
+                      class="settings-panel-header__name-input"
+                      use:focusExerciseNameInput
+                      bind:value={accountNameEditValue}
+                      oninput={(e) => {
+                        accountNameEditValue = sanitizeUsernameInput((e.currentTarget as HTMLInputElement).value);
+                      }}
+                      onblur={() => void commitAccountNameEdit()}
+                      onkeydown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          (e.currentTarget as HTMLInputElement).blur();
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          cancelAccountNameEdit();
+                        }
+                      }}
+                      disabled={accountBusy}
+                    />
+                  {:else if isUsernameAccount(currentUser)}
+                    <button
+                      type="button"
+                      class="settings-panel-header__name settings-panel-header__name--editable"
+                      title="Click to rename username"
+                      disabled={accountBusy}
+                      onclick={beginAccountNameEdit}
+                    >
+                      {accountDisplayName}
+                    </button>
+                  {:else}
+                    <span class="settings-panel-header__name">{accountDisplayName}</span>
+                  {/if}
                   <span class="text-[10px] text-zinc-500">joined {accountMemberSince}</span>
                   <span class="text-[10px] text-zinc-500">Session: {formatSessionExpiry(panel.expiresAt)}</span>
                   <span class="settings-panel-header__user-id" title={currentUser.id}>{currentUser.id}</span>
@@ -5191,12 +5772,14 @@
     </div>
   {/snippet}
 
-  <div class="app-stage flex-1 flex flex-col min-h-0 w-full relative">
+  <div class="app-stage flex-1 flex flex-col min-h-0 w-full relative overflow-hidden">
+  <div class="app-stage-scroll flex-1 min-h-0 flex flex-col overflow-hidden">
   <div
-    class="app-stage-reveal flex flex-col flex-1 min-h-0 w-full gap-3"
+    class="app-stage-reveal flex flex-col flex-1 min-h-0 w-full overflow-hidden gap-3"
     class:app-stage-reveal--active={stageRevealActive}
   >
   {#if currentUser}
+  <div class="app-stage-sticky shrink-0 flex flex-col gap-3">
   <!-- Week box: collapsible header + compact day strip -->
   <div
     class="week-calendar-swipe rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden"
@@ -5310,274 +5893,26 @@
     </div>
   </div>
 
-  {#if showBodyweightPanel}
-    <div
-      class="settings-panel-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Daily bodyweight"
-      tabindex="-1"
-      onclick={(e) => { if (e.target === e.currentTarget) closeBodyweightPanel(); }}
-    >
-      <div class="settings-panel-dialog w-full rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left max-h-[80dvh] flex flex-col">
-        <div class="settings-panel-header">
-          <div class="settings-panel-header__title">
-            <span class="settings-panel-header__name">Daily Weight</span>
-          </div>
-          <button
-            type="button"
-            aria-label="Close"
-            class="settings-panel-header__close"
-            onclick={closeBodyweightPanel}
-          >
-            <X class="size-3.5" />
-          </button>
-        </div>
-
-        <div class="p-3 text-[11px] overflow-auto flex-1 space-y-3">
-          <!-- Quick log -->
-          <div class="flex gap-2 items-end">
-            <div class="flex-1">
-              <div class="text-[9px] text-zinc-500 mb-0.5">DATE</div>
-              <input
-                type="date"
-                class="w-full bg-black border border-[#2a2a2a] rounded px-2 py-1 text-white text-xs"
-                bind:value={bwInputDate}
-              />
-            </div>
-            <div class="flex-1">
-              <div class="text-[9px] text-zinc-500 mb-0.5">WEIGHT (KG)</div>
-              <input
-                type="number"
-                step="0.1"
-                min="1"
-                placeholder="80.0"
-                class="w-full bg-black border border-[#2a2a2a] rounded px-2 py-1 text-white text-xs"
-                bind:value={bwInputWeight}
-                onkeydown={(e) => { if (e.key === 'Enter') logBodyweight(); }}
-              />
-            </div>
-            <button
-              class="h-8 px-3 rounded bg-white text-black text-[10px] font-bold tracking-[0.5px]"
-              onclick={logBodyweight}
-            >
-              LOG
-            </button>
-          </div>
-
-          <!-- History table -->
-          <div>
-            <div class="text-[9px] text-zinc-500 mb-1">HISTORY (most recent first)</div>
-            {#if Object.keys(bodyweightLogs).length === 0}
-              <div class="text-zinc-500 text-[10px] py-2">No entries yet. Log your first weight above.</div>
-            {:else}
-              <div class="border border-[#1e1e1e] rounded overflow-hidden text-xs">
-                {#each Object.entries(bodyweightLogs).sort((a,b) => b[0].localeCompare(a[0])) as [date, w]}
-                  <div class="flex items-center border-b border-[#1e1e1e] last:border-b-0 bg-[#111] hover:bg-[#181818]">
-                    <div class="w-28 px-2 py-1 font-mono text-zinc-400 border-r border-[#1e1e1e]">{date}</div>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={w}
-                      class="flex-1 bg-transparent px-2 py-1 text-right outline-none"
-                      onblur={(e) => updateBodyweight(date, e.currentTarget.value)}
-                      onkeydown={(e) => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
-                    />
-                    <button
-                      class="px-2 text-red-400 hover:text-red-300 text-[10px]"
-                      onclick={() => deleteBodyweight(date)}
-                      title="Delete entry"
-                    >
-                      ×
-                    </button>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          </div>
-
-          <div class="text-[9px] text-zinc-500">Weight is tracked separately from workouts. Edit any row or add new dates.</div>
-        </div>
-      </div>
+  {#if ctaBarVisible}
+    <div class="app-stage-cta shrink-0">
+      {@render ctaBar(ctaBarEditorDisabled)}
     </div>
   {/if}
+  </div>
 
-  {#snippet ctaBar(editorDisabled = false)}
-    <div class={editorDisabled ? 'opacity-40 pointer-events-none' : ''}>
-      {#if workoutActionError}
-        <p class="text-[10px] text-red-300 leading-snug mb-2">{workoutActionError}</p>
-      {/if}
-      {#if workoutState === 'idle' || workoutState === 'active' || workoutState === 'done' || workoutState === 'skipped'}
-        <div class="grid grid-cols-5 gap-3">
-          <!-- STATS (left, narrow) — opens bodyweight tracking panel -->
-          <button
-            type="button"
-            class="{workoutSideBtnClass} border bg-[#0d0d0d] border-[#1e1e1e] text-white hover:border-white/40 {!isViewingToday ? 'opacity-40' : ''}"
-            onclick={openBodyweightPanel}
-          >
-            <span class={workoutSideLabelClass} style={ctaChStyle('STATS', SIDE_CTA_MAX_CH)}>STATS</span>
-          </button>
-
-          {#if !isViewingToday}
-              <button
-                type="button"
-                class="{workoutCenterBtnClass} go-to-today-btn border-transparent bg-white text-black"
-                onclick={goToToday}
-              >
-                <span class="{workoutCenterLabelClass}">GO TO TODAY</span>
-              </button>
-              {#if workoutState === 'idle'}
-                <button
-                  type="button"
-                  class="{workoutSideBtnClass} group border bg-[#0d0d0d] border-[#1e1e1e] text-zinc-500 opacity-40 pointer-events-none"
-                  tabindex={-1}
-                  aria-hidden="true"
-                  disabled
-                >
-                  <span class={workoutSideLabelClass} style={ctaChStyle(SKIP_CTA_SOURCE, SIDE_CTA_MAX_CH)}>
-                    {SKIP_CTA_SOURCE}
-                  </span>
-                </button>
-              {:else if workoutState === 'active'}
-                <button
-                  type="button"
-                  class="{workoutSideBtnClass} group border bg-[#0d0d0d] border-[#1e1e1e] text-zinc-500 opacity-40 pointer-events-none"
-                  tabindex={-1}
-                  aria-hidden="true"
-                  disabled
-                >
-                  <span class={workoutSideLabelClass} style={ctaChStyle(SKIP_CTA_TARGET, SIDE_CTA_MAX_CH)}>CANCEL</span>
-                </button>
-              {:else}
-                <button
-                  type="button"
-                  class="{workoutSideBtnClass} group border bg-[#0d0d0d] border-[#1e1e1e] text-zinc-500 opacity-40 pointer-events-none"
-                  tabindex={-1}
-                  aria-hidden="true"
-                  disabled
-                >
-                  <span class={workoutSideLabelClass} style={ctaChStyle(ERASE_CTA_SOURCE, SIDE_CTA_MAX_CH)}>ERASE</span>
-                </button>
-              {/if}
-          {:else if workoutState === 'idle'}
-              <button
-                type="button"
-                class="{workoutCenterBtnClass} border-transparent bg-white text-black"
-                onclick={handleStartWorkoutTap}
-              >
-                <span
-                  class={workoutCenterLabelClass}
-                  style={ctaChStyle(START_CTA_SOURCE, CENTER_CTA_MAX_CH)}
-                >
-                  {START_CTA_SOURCE}
-                </span>
-              </button>
-              <button
-                type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {skipTapPulseActive ? 'hold-skip-tap-pulse' : skipProgress > 0 ? 'border-amber-500 text-[#fbbf24]' : 'border-[#1e1e1e] text-zinc-500'}"
-                onmousedown={startSkipHold}
-                onmouseup={stopSkipHold}
-                onmouseleave={stopSkipHold}
-                ontouchstart={startSkipHold}
-                ontouchend={stopSkipHold}
-                onanimationend={onSkipTapPulseEnd}
-              >
-                <div class="absolute inset-0 z-0 bg-amber-900/40 transition-all duration-[20ms]" style="width: {skipProgress}%;"></div>
-                <span
-                  class={workoutSideLabelClass}
-                  style={ctaChStyle(SKIP_CTA_SOURCE, SIDE_CTA_MAX_CH)}
-                >
-                  {SKIP_CTA_SOURCE}
-                </span>
-              </button>
-          {:else if workoutState === 'active'}
-              <button
-                type="button"
-                class="{workoutCenterBtnClass} {isPerfectDay ? 'w-cta-complete-green' : 'w-cta-finish'}"
-                onclick={handleFinishWorkoutTap}
-              >
-                <span
-                  class={workoutCenterLabelClass}
-                  style={ctaChStyle(START_CTA_TARGET, CENTER_CTA_MAX_CH)}
-                >{START_CTA_TARGET}</span>
-              </button>
-              <button
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {cancelTapPulseActive ? 'hold-cancel-tap-pulse' : cancelProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'}"
-                onmousedown={startCancelHold}
-                onmouseup={stopCancelHold}
-                onmouseleave={stopCancelHold}
-                ontouchstart={startCancelHold}
-                ontouchend={stopCancelHold}
-                onanimationend={onCancelTapPulseEnd}
-              >
-                <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {cancelProgress}%;"></div>
-                <span class={workoutSideLabelClass} style={ctaChStyle(SKIP_CTA_TARGET, SIDE_CTA_MAX_CH)}>CANCEL</span>
-              </button>
-          {:else if workoutState === 'done'}
-            {@const effectiveStatus = justFinishedStatus ?? todayCompletionStatus}
-            {@const isUntouchedComplete = effectiveStatus === 'untouched'}
-            {@const isYellowComplete = !isUntouchedComplete && (effectiveStatus === 'yellow' || effectiveStatus === 'neutral')}
-              <button
-                class="{workoutCenterBtnClass} cursor-default {isUntouchedComplete ? 'w-cta-skipped' : isYellowComplete ? 'w-cta-complete-yellow' : 'w-cta-complete-green'}"
-              >
-                <span
-                  class={workoutCenterLabelClass}
-                  style={ctaChStyle(COMPLETE_CTA_SOURCE, CENTER_CTA_MAX_CH)}
-                >{COMPLETE_CTA_SOURCE}</span>
-              </button>
-              <button
-                type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'}"
-                onmousedown={startEraseHold}
-                onmouseup={stopEraseHold}
-                onmouseleave={stopEraseHold}
-                ontouchstart={startEraseHold}
-                ontouchend={stopEraseHold}
-                onanimationend={onEraseTapPulseEnd}
-              >
-                <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {eraseProgress}%;"></div>
-                <span class={workoutSideLabelClass} style={ctaChStyle(ERASE_CTA_SOURCE, SIDE_CTA_MAX_CH)}>ERASE</span>
-              </button>
-          {:else if workoutState === 'skipped'}
-              <button
-                class="{workoutCenterBtnClass} w-cta-skipped cursor-default"
-              >
-                <span
-                  class={workoutCenterLabelClass}
-                  style={ctaChStyle(SKIPPED_CTA_SOURCE, CENTER_CTA_MAX_CH)}
-                >{SKIPPED_CTA_SOURCE}</span>
-              </button>
-              <button
-                type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'}"
-                onmousedown={startEraseHold}
-                onmouseup={stopEraseHold}
-                onmouseleave={stopEraseHold}
-                ontouchstart={startEraseHold}
-                ontouchend={stopEraseHold}
-                onanimationend={onEraseTapPulseEnd}
-              >
-                <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {eraseProgress}%;"></div>
-                <span class={workoutSideLabelClass} style={ctaChStyle(ERASE_CTA_SOURCE, SIDE_CTA_MAX_CH)}>ERASE</span>
-              </button>
-          {/if}
-        </div>
-      {/if}
-    </div>
-  {/snippet}
-
-    {#if (currentView === 'track' ? activeTemplate : true) && (currentView === 'track' || currentView === 'swap_template' || currentView === 'edit_template') && (isViewingToday || viewedLog || selectedDateStr > REAL_TODAY_STR || currentView !== 'track')}
-      {@render ctaBar(currentView !== 'track')}
-    {/if}
-
+  <div class="app-stage-body flex-1 min-h-0 flex flex-col overflow-hidden min-w-0">
   {#if currentView === 'track'}
     {@const isPast = selectedDateStr < REAL_TODAY_STR && !isViewingToday}
     {@const hasLog = !!viewedLog}
     {@const isRestLog = hasLog && viewedLog.workout_snapshot?.is_rest}
-    {@const isPastNoLog = isPast && !hasLog}
-    {@const currentScheduleIsRest = !activeTemplate}
 
-    {#if templates.length === 0}
+    <div class="track-view flex flex-col flex-1 min-h-0 overflow-hidden min-w-0">
+    {#if isSelectedDayLogLoading}
+      <div class="flex flex-col items-center justify-center py-16 px-2 text-center text-zinc-500">
+        <RefreshCw class="size-5 animate-spin mb-3 opacity-70" aria-hidden="true" />
+        <div class="text-[10px] uppercase tracking-[2px]">Loading day…</div>
+      </div>
+    {:else if templates.length === 0}
       <!-- Onboarding: entire routine is rest (starting out, or last template deleted). Not a tutorial; just a clean create-first page matching rest/unlogged style exactly. -->
       <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
         <!-- Hero icon -->
@@ -5610,8 +5945,8 @@
           CREATE ROUTINE
         </button>
       </div>
-    {:else if isPastNoLog}
-      <!-- UNLOGGED for past with truly no history entry (distinguishes from current-schedule backtrack rests) -->
+    {:else if isPastUnloggedWorkoutDay}
+      <!-- UNLOGGED: past workout day with no saved log -->
       <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
         <!-- Hero icon -->
         <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
@@ -5620,25 +5955,45 @@
 
         <div class="text-center">
           <div class="text-3xl font-semibold tracking-[-0.02em] text-white">UNLOGGED</div>
-          <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">NO WORKOUT LOGGED FOR {selectedDateDisplay.nice}</div>
+          <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">NO WORKOUT WAS LOGGED ON {selectedDateDisplay.nice}</div>
         </div>
 
         <div class="max-w-[240px] text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200">
           Progress unlogged is progress lost.
         </div>
 
-        {#if !isViewingToday}
-          <button
-            type="button"
-            class="go-to-today-btn h-[52px] border-none rounded-xl font-sans font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-white text-black transition-all duration-150 hover:brightness-110 w-full max-w-xs"
-            onclick={goToToday}
-          >
-            GO TO TODAY
-          </button>
-        {/if}
+        <!-- Week overview — tap to open routine editor -->
+        <button
+          type="button"
+          class="w-full max-w-xs rounded-xl border border-transparent p-1 -m-1 transition-all duration-150 hover:border-[#2a2a2a] hover:bg-[#141414]/50 cursor-pointer"
+          onclick={() => enterRoutineBuilder({ fromWeeklyPlan: true })}
+          title="Open routine editor"
+        >
+          <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 mb-2 text-center pointer-events-none">WEEKLY PLAN</div>
+          <div class="grid grid-cols-7 gap-1 pointer-events-none">
+            {#each weekPlan as d, i}
+              <div class="flex flex-col items-center gap-0.5 transition-all duration-150">
+                <div class="text-[10px] font-medium {i === TODAY_WEEKDAY ? 'text-white' : 'text-zinc-400'}">{d.day}</div>
+                <div
+                  class="w-full aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {d.color ? 'border' : 'bg-[#1e1e1e] border border-[#2a2a2a]'}"
+                  style={d.color ? `background-color: color-mix(in srgb, ${d.color} 12%, #141414); border-color: ${d.color};` : ''}
+                >
+                  {#if d.hasTemplate}
+                    <Dumbbell class="size-3" style={d.color ? `color: ${d.color}` : ''} />
+                  {:else}
+                    <Bed class="size-3 text-zinc-500" />
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+          <div class="text-center text-[10px] text-zinc-500 mt-2 pointer-events-none">
+            {weekPlan.filter(d => d.hasTemplate).length} training • {weekPlan.filter(d => !d.hasTemplate).length} rest
+          </div>
+        </button>
       </div>
-    {:else if isRestLog || (!isPast && currentScheduleIsRest)}
-      <!-- REST DAY: current/future per schedule, or past explicitly logged rest (historical truth) -->
+    {:else if (isRestLog || isScheduledRestDay) && !hasViewedWorkoutLog}
+      <!-- REST DAY: scheduled rest or logged rest — never when a real workout log exists -->
       <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
         <!-- Hero icon -->
         <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a] {isFuture && !isRestLog ? 'opacity-80' : ''}">
@@ -5648,23 +6003,13 @@
         <div class="text-center {isFuture && !isRestLog ? 'opacity-80' : ''}">
           <div class="text-3xl font-semibold tracking-[-0.02em] text-white">REST DAY</div>
           <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">
-            {isRestLog ? `LOGGED FOR ${selectedDateDisplay.nice}` : 'NO TEMPLATE ASSIGNED'}
+            {isRestLog ? `LOGGED FOR ${selectedDateDisplay.nice}` : `NO TEMPLATE ASSIGNED FOR ${selectedDateDisplay.nice}`}
           </div>
         </div>
 
         <div class="max-w-[240px] text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200 {isFuture && !isRestLog ? 'opacity-80' : ''}">
           Recovery is where the gains happen. 
         </div>
-
-        {#if !isViewingToday && !isRestLog}
-          <button
-            type="button"
-            class="go-to-today-btn h-[52px] border-none rounded-xl font-sans font-black text-[11px] tracking-[0.15em] flex items-center justify-center bg-white text-black transition-all duration-150 hover:brightness-110 w-full max-w-xs"
-            onclick={goToToday}
-          >
-            GO TO TODAY
-          </button>
-        {/if}
 
         <!-- Week overview — tap to open routine editor (shown on rest days too for schedule context) -->
         <button
@@ -5702,9 +6047,6 @@
       </div>
     {:else}
       <!-- Template box on main screen (supports historical past logged workouts even if current schedule has no template for the day, for edge cases like deleted templates) -->
-      {#if templateSaveError}
-        <p class="text-[10px] text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{templateSaveError}</p>
-      {/if}
       {@const useHistorical = isPast && viewedLog && !viewedLog.workout_snapshot?.is_rest && !logIsSkipped(viewedLog)}
       {@const skippedDisplayLog = isSkippedWorkoutView() ? (isViewingToday ? todayLog : viewedLog) : null}
       {@const skippedDisplayTemplate = skippedDisplayLog?.template_id
@@ -5730,7 +6072,11 @@
           : headerSurfaceStatus === 'yellow'
             ? 'tpl-workout-timer--yellow'
             : 'tpl-workout-timer--neutral'}
-      <div class="flex flex-col gap-3">
+      <div class="track-workout-shell flex flex-col flex-1 min-h-0 overflow-hidden gap-3">
+      <div class="track-workout-header shrink-0 flex flex-col gap-3">
+      {#if templateSaveError}
+        <p class="text-[10px] text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{templateSaveError}</p>
+      {/if}
       <div
         class="tpl-header status-surface status-surface--prompt rounded-xl px-3 py-1 flex flex-col gap-0.5 {headerSurfaceStatus === 'green'
           ? 'status-surface--green'
@@ -5822,8 +6168,13 @@
           {/if}
         </div>
       </div>
+      </div>
 
       <!-- Exercises in one shared box separated by horizontal dividers, with list numbers on left (like editor list) -->
+      <div
+        class="track-workout-exercises flex-1 min-h-0 overflow-y-auto no-scrollbar"
+        use:scrollEdgeFade
+      >
       <div
         class="rounded-xl overflow-hidden border {isFuture ? 'opacity-80' : ''} {headerSkipped
           ? 'status-surface status-surface--skipped'
@@ -5883,22 +6234,21 @@
 
               {#if !isTimeEx}
                 {#if displayCurrentWeight !== null}
-                  <div class="weight-num font-timer text-2xl leading-none {exRed ? 'text-current' : 'text-white'}">{displayCurrentWeight}<span class="unit text-[10px] font-sans font-normal ml-1 tracking-[1px] {exRed ? 'w-fg-skipped-muted' : 'text-zinc-400'}">KG</span></div>
+                  <div class="weight-num font-7segment text-2xl leading-none {exRed ? 'text-current' : 'text-white'}">{displayCurrentWeight}<span class="unit text-[10px] font-sans font-normal ml-1 tracking-[1px] {exRed ? 'w-fg-skipped-muted' : 'text-zinc-400'}">KG</span></div>
                 {:else}
                   <!-- Narrow baseline input (fits ~3 digits) in the KG position, right-aligned -->
                   <div class="flex items-baseline justify-end">
-                    <input type="text" inputmode="decimal" autocomplete="off" placeholder="80" class="prop-num-input font-timer text-2xl leading-none text-white bg-transparent border-none outline-none w-12 text-right"
+                    <input type="text" inputmode="decimal" autocomplete="off" placeholder="80" class="prop-num-input font-7segment text-2xl leading-none text-white bg-transparent border-none outline-none w-12 text-right"
                       disabled={!workoutExercisesEditable}
                       use:clampedNumericProp={{
                         kind: 'baseKg',
                         getValue: () => exercise.current_weight ?? 0,
                         setValue: () => {},
                       }}
-                      onchange={async (e) => {
+                      onchange={(e) => {
                         const input = e.currentTarget as HTMLInputElement;
                         const { value } = clampBaseKgFieldInput(input.value);
-                        await db.saveExerciseBaseline(exercise.id, value);
-                        await loadData({ preserveSession: true });
+                        saveExerciseBaselineOptimistic(exercise.id, value);
                       }} />
                     <span class="unit text-[10px] text-zinc-400 font-normal ml-1 tracking-[1px]">KG</span>
                   </div>
@@ -6089,7 +6439,7 @@
                             disabled={!workoutExercisesEditable}
                           >
                             <span class="sl text-[8px] tracking-wider opacity-60 block leading-none text-zinc-400">S{s + 1}</span>
-                            <span class="sv font-7segment text-[11px] block text-current leading-none tabular-nums">{saved ? saved.result : '—'}</span>
+                            <span class="sv text-[11px] font-extrabold block text-current leading-none tabular-nums">{saved ? saved.result : '—'}</span>
                           </button>
                         {/if}
                       </div>
@@ -6103,11 +6453,13 @@
         {/each}
       </div>
       </div>
+      </div>
     {/if}
+    </div>
 
   {:else if currentView === 'swap_template'}
     <!-- Routine editor: assign templates to full SMTWTFS week -->
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3">
+    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto no-scrollbar">
       <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
         <button
           type="button"
@@ -6297,9 +6649,297 @@
       </div>
     </div>
 
+  {:else if currentView === 'stats'}
+    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto no-scrollbar">
+      <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
+        <button
+          type="button"
+          class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
+          title="Go back"
+          onclick={exitStatsView}
+        >
+          <ArrowLeft class="size-4" />
+        </button>
+        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">STATS</span>
+        <div class="flex-1 min-w-0 flex items-center">
+          <span
+            class="w-full h-8 flex items-center justify-center px-2 rounded border border-[#2a2a2a] bg-black text-xs font-medium truncate leading-none text-center text-white"
+          >{selectedStat?.name ?? (trackedStats.length ? 'SELECT STAT' : 'NO STATS YET')}</span>
+        </div>
+        <button
+          type="button"
+          class="w-8 h-8 rounded-lg shrink-0 flex items-center justify-center border border-[#1e1e1e] bg-transparent text-zinc-400 hover:bg-[#1a1a1a] hover:text-white"
+          onclick={openStatsEditor}
+          title="Edit stats"
+        >
+          <Pencil class="size-4" />
+        </button>
+      </div>
+
+      {#if trackedStats.length === 0}
+        <div class="text-center py-6 space-y-3">
+          <div class="text-xs text-zinc-500">No stats defined yet.</div>
+          <button
+            type="button"
+            class="h-8 px-3 bg-[#141414] border border-[#1e1e1e] text-xs font-bold rounded hover:border-[#2a2a2a]"
+            onclick={openStatsEditor}
+          >
+            CREATE STATS
+          </button>
+        </div>
+      {:else}
+        <div class="grid grid-cols-[minmax(0,1fr)_9.25rem] gap-x-2 gap-y-1.5 items-stretch">
+          <div class="col-start-1 row-start-1 h-5 flex items-center">
+            <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">YOUR STATS</span>
+          </div>
+          <div class="col-start-2 row-start-1 h-5 flex items-center border-l border-[#1e1e1e] pl-2">
+            <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">LOG</span>
+          </div>
+
+          <div class="col-start-1 row-start-2 flex flex-col gap-1 min-w-0">
+            {#each trackedStats as stat, index (stat.id)}
+              {@const isSelected = selectedStatId === stat.id}
+              <div class="flex items-stretch gap-1 h-8">
+                <div
+                  class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none {isSelected ? 'bg-white/15 border-white text-white' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400'}"
+                >{index + 1}</div>
+                <button
+                  type="button"
+                  class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center transition-colors {isSelected ? 'bg-white/10 border-white text-white' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a] text-zinc-300'}"
+                  onclick={() => { selectedStatId = stat.id; }}
+                >
+                  <BarChart3 class="size-3 shrink-0 mr-1 {isSelected ? 'text-white' : 'text-zinc-500'}" />
+                  <span class="font-medium truncate leading-none text-left flex-1">{stat.name}</span>
+                  {#if stat.unit}
+                    <span class="text-[9px] text-zinc-500 ml-1 shrink-0">{stat.unit}</span>
+                  {/if}
+                </button>
+              </div>
+            {/each}
+          </div>
+
+          <div class="col-start-2 row-start-2 border-l border-[#1e1e1e] pl-2 min-w-0 self-stretch">
+            {#if selectedStat}
+              <div class="space-y-2 h-full flex flex-col">
+                <div>
+                  <span class="text-zinc-500 block mb-0.5 leading-none text-[9px]">
+                    Value{selectedStat.unit ? ` (${selectedStat.unit})` : ''}
+                  </span>
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    placeholder="0"
+                    class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
+                    bind:value={statInputValue}
+                    onkeydown={(e) => { if (e.key === 'Enter') logSelectedStat(); }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  class="h-7 w-full rounded bg-white text-black text-[9px] font-black tracking-[0.12em] hover:brightness-110"
+                  onclick={logSelectedStat}
+                >
+                  LOG
+                </button>
+                <div class="flex-1 min-h-0 overflow-auto">
+                  <div class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none text-center mb-1">HISTORY</div>
+                  {#if Object.keys(selectedStatLogs).length === 0}
+                    <div class="text-zinc-500 text-[10px] py-2 text-center">No entries yet.</div>
+                  {:else}
+                    <div class="border border-[#1e1e1e] rounded overflow-hidden text-xs">
+                      {#each Object.entries(selectedStatLogs).sort((a, b) => b[0].localeCompare(a[0])) as [date, value]}
+                        <div class="flex items-center border-b border-[#1e1e1e] last:border-b-0 bg-[#0d0d0d] hover:bg-[#141414]">
+                          <div class="w-24 px-2 py-1 font-mono text-zinc-400 border-r border-[#1e1e1e] text-[10px]">{date}</div>
+                          <input
+                            type="number"
+                            step="any"
+                            value={value}
+                            class="prop-num-input flex-1 bg-transparent px-2 py-1 text-right text-white outline-none text-xs"
+                            onblur={(e) => updateStatLog(date, e.currentTarget.value)}
+                            onkeydown={(e) => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
+                          />
+                          <button
+                            type="button"
+                            class="px-2 py-1 text-red-400 hover:text-red-300 text-[10px] font-bold"
+                            onclick={() => deleteStatLogEntry(date)}
+                            title="Delete entry"
+                          >×</button>
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            {:else}
+              <div class="text-zinc-500 text-[10px] py-6 text-center">Select a stat to log.</div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+    </div>
+
+  {:else if currentView === 'edit_stats'}
+    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto no-scrollbar">
+      <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
+        <button
+          type="button"
+          class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
+          onclick={() => void exitStatsEditor()}
+          disabled={editorExitSaving}
+          title="Go back"
+        >
+          <ArrowLeft class="size-4" />
+        </button>
+        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">STATS EDITOR</span>
+        <div class="flex-1 min-w-0 flex items-center">
+          <span
+            class="w-full h-8 flex items-center justify-center px-2 rounded border border-[#2a2a2a] bg-black text-xs font-medium truncate leading-none text-center text-white"
+          >{draftStats.length} {draftStats.length === 1 ? 'STAT' : 'STATS'}</span>
+        </div>
+      </div>
+      {#if statSaveError}
+        <p class="text-[10px] text-red-300 leading-snug">{statSaveError}</p>
+      {/if}
+
+      <div class="grid grid-cols-[minmax(0,1fr)_9.25rem] gap-x-2 gap-y-1.5 items-stretch">
+        <div class="col-start-1 row-start-1 h-5 flex items-center">
+          <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">STATS</span>
+        </div>
+        <div class="col-start-2 row-start-1 h-5 flex items-center border-l border-[#1e1e1e] pl-2">
+          <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">PROPERTIES</span>
+        </div>
+
+        <div class="col-start-1 row-start-2 flex flex-col gap-1 min-w-0">
+          {#if draftStats.length === 0}
+            <div class="text-center py-3 border border-dashed border-[#1e1e1e] rounded text-[10px] text-zinc-500">
+              No stats yet.<br />Tap NEW to create one.
+            </div>
+          {/if}
+          {#each draftStats as stat, index (stat.id)}
+            {@const isSelected = selectedDraftStatId === stat.id}
+            <div
+              class="flex items-stretch gap-1 h-8"
+              ondragover={handleStatDragOver}
+              ondrop={(e) => handleStatDrop(e, index)}
+            >
+              <button
+                type="button"
+                draggable="true"
+                class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none cursor-grab active:cursor-grabbing transition-colors {isSelected ? 'bg-white/15 border-white text-white' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
+                title="Drag to reorder — click to select"
+                onclick={() => {
+                  if (statRowDragged) return;
+                  selectDraftStat(stat.id);
+                }}
+                ondragstart={(e) => handleStatDragStart(e, index)}
+                ondragend={handleStatDragEnd}
+              >{index + 1}</button>
+              <div
+                class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center cursor-pointer transition-colors {isSelected ? 'bg-white/10 border-white text-white' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
+                onclick={() => selectDraftStat(stat.id)}
+              >
+                <BarChart3 class="size-3 shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
+                {#if editingStatNameId === stat.id}
+                  <input
+                    type="text"
+                    autocomplete="off"
+                    use:focusExerciseNameInput
+                    use:clampedStatNameProp={{
+                      getValue: () => stat.name,
+                      setValue: (v) => { stat.name = v; markDraftStatsTouched(); },
+                    }}
+                    onclick={(e) => e.stopPropagation()}
+                    onblur={endStatNameEdit}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter' || e.key === 'Escape') {
+                        e.preventDefault();
+                        (e.currentTarget as HTMLInputElement).blur();
+                      }
+                    }}
+                    class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                    placeholder="NAME"
+                  />
+                {:else}
+                  <span
+                    class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                    ondblclick={(e) => {
+                      e.stopPropagation();
+                      beginStatNameEdit(stat.id);
+                    }}
+                  >{stat.name || 'Name'}</span>
+                {/if}
+                {#if isSelected}
+                  <button
+                    type="button"
+                    class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-red-900/70 bg-red-950/40 text-red-400 hover:text-red-300"
+                    onclick={(e) => { e.stopPropagation(); deleteSelectedStat(); }}
+                    title="Delete stat"
+                  >
+                    <Trash2 class="size-3 pointer-events-none" />
+                  </button>
+                {/if}
+              </div>
+            </div>
+          {/each}
+        </div>
+
+        <div class="col-start-2 row-start-2 border-l border-[#1e1e1e] pl-2 min-w-0 self-stretch">
+          {#if selectedDraftStatId}
+            {@const stat = draftStats.find((s) => s.id === selectedDraftStatId)}
+            {#if stat}
+              <div class="space-y-2">
+                <div>
+                  <span class="text-zinc-500 block mb-0.5 leading-none text-[9px]">Name</span>
+                  <input
+                    type="text"
+                    autocomplete="off"
+                    class="w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none uppercase"
+                    use:clampedStatNameProp={{
+                      getValue: () => stat.name,
+                      setValue: (v) => { stat.name = v; markDraftStatsTouched(); },
+                    }}
+                    onblur={() => void persistTrackedStatsNow()}
+                  />
+                </div>
+                <div>
+                  <span class="text-zinc-500 block mb-0.5 leading-none text-[9px]">Unit</span>
+                  <input
+                    type="text"
+                    autocomplete="off"
+                    placeholder="KG"
+                    class="w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none uppercase"
+                    use:clampedStatUnitProp={{
+                      getValue: () => stat.unit,
+                      setValue: (v) => { stat.unit = v; markDraftStatsTouched(); },
+                    }}
+                    onblur={() => void persistTrackedStatsNow()}
+                  />
+                </div>
+                <p class="text-[9px] text-zinc-500 leading-snug">Unit is optional — shown when logging (e.g. KG, %, HRS).</p>
+              </div>
+            {/if}
+          {:else}
+            <div class="text-zinc-500 text-[10px] py-6 text-center">Select a stat to edit.</div>
+          {/if}
+        </div>
+      </div>
+
+      <div class="flex gap-1 pt-1">
+        <button
+          type="button"
+          class="flex-1 h-8 rounded border border-[#1e1e1e] bg-[#0d0d0d] text-[9px] font-black tracking-[0.12em] text-white hover:border-[#2a2a2a] disabled:opacity-40"
+          disabled={draftStats.length >= MAX_STATS}
+          onclick={addNewStat}
+        >
+          + NEW
+        </button>
+      </div>
+    </div>
+
   {:else if currentView === 'edit_template'}
     {@const templateEditorColor = getTemplateColor(draftTemplateColor)}
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3">
+    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto no-scrollbar">
       <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
         <button
           type="button"
@@ -6621,6 +7261,7 @@
       {/if}
     </div>
   {/if}
+  </div>
   {:else if !bootOverlayVisible}
     <div class="flex flex-1 flex-col items-center justify-center pt-0 pb-10 px-2 gap-6 text-center min-h-0 -translate-y-6">
       <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
@@ -6833,6 +7474,7 @@
     </div>
   {/if}
   </div>
+  </div>
 
   {#if bootOverlayVisible}
     <div
@@ -6845,8 +7487,8 @@
   {/if}
   </div>
 
-  <div class="mt-auto pt-5 text-center text-[9px] tracking-[1px] text-zinc-500 shrink-0">
-    © 2026 LIFT TRACKER — All rights reserved by Arya
+  <div class="app-footer text-center text-[9px] uppercase tracking-[1px] text-zinc-500 shrink-0 leading-none">
+    © 2026 LIFT TRACKER — ALL RIGHTS RESERVED BY ARYA
   </div>
 
 </div>

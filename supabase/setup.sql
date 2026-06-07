@@ -11,7 +11,7 @@
 --
 -- Storage-oriented design notes:
 --   - workout_history: composite PK (user_id, workout_date) — one row/day, no surrogate id
---   - bodyweight_logs: composite PK (user_id, log_date)
+--   - tracked_stats + stat_logs: user-defined metrics and daily values
 --   - exercises: real weights, type-specific nullable target columns (no zero-padding)
 --   - exercise_personal_bests: O(1) PR lookup instead of scanning JSON history
 --   - workout_status smallint: filter calendar rows without parsing JSONB
@@ -28,6 +28,7 @@ drop trigger if exists on_auth_user_username on auth.users;
 
 drop function if exists public.create_template(text) cascade;
 drop function if exists public.save_template_exercises(uuid, jsonb) cascade;
+drop function if exists public.save_tracked_stats(jsonb) cascade;
 drop function if exists public.assign_schedule_days(jsonb) cascade;
 drop function if exists public.update_template_display_orders(jsonb) cascade;
 drop function if exists public.complete_workout_session(date, uuid, text, integer, jsonb, jsonb, jsonb) cascade;
@@ -38,6 +39,7 @@ drop function if exists public.get_own_data_usage() cascade;
 drop function if exists public.delete_own_account() cascade;
 drop function if exists public.delete_all_accounts() cascade;
 drop function if exists public.register_username(text) cascade;
+drop function if exists public.rename_username(text) cascade;
 drop function if exists public.is_username_available(text) cascade;
 drop function if exists public.handle_auth_user_username() cascade;
 
@@ -45,7 +47,8 @@ drop table if exists public.exercise_personal_bests cascade;
 drop table if exists public.template_exercises cascade;
 drop table if exists public.exercises cascade;
 drop table if exists public.workout_history cascade;
-drop table if exists public.bodyweight_logs cascade;
+drop table if exists public.stat_logs cascade;
+drop table if exists public.tracked_stats cascade;
 drop table if exists public.schedule cascade;
 drop table if exists public.templates cascade;
 drop table if exists public.usernames cascade;
@@ -148,14 +151,26 @@ create table public.workout_history (
   )
 );
 
-create table public.bodyweight_logs (
+create table public.tracked_stats (
+  id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
+  name text not null,
+  unit text not null default '',
+  display_order integer not null default 0,
+  created_at timestamptz not null default now(),
+  constraint tracked_stats_name_not_empty check (char_length(trim(name)) > 0),
+  constraint tracked_stats_display_order_nonneg check (display_order >= 0)
+);
+
+create table public.stat_logs (
+  user_id uuid not null references auth.users (id) on delete cascade,
+  stat_id uuid not null references public.tracked_stats (id) on delete cascade,
   log_date date not null,
-  weight real not null,
+  value real not null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  primary key (user_id, log_date),
-  constraint bodyweight_logs_weight_positive check (weight > 0)
+  primary key (user_id, stat_id, log_date),
+  constraint stat_logs_value_positive check (value > 0)
 );
 
 create table public.usernames (
@@ -180,7 +195,8 @@ create index workout_history_user_date_idx on public.workout_history (user_id, w
 create index workout_history_status_idx on public.workout_history (user_id, workout_status);
 create index workout_history_perfect_day_idx on public.workout_history (user_id, is_perfect_day)
   where is_perfect_day = true;
-create index bodyweight_logs_user_date_idx on public.bodyweight_logs (user_id, log_date desc);
+create index tracked_stats_user_order_idx on public.tracked_stats (user_id, display_order);
+create index stat_logs_user_stat_date_idx on public.stat_logs (user_id, stat_id, log_date desc);
 
 -- -----------------------------------------------------------------------------
 -- 4. Row Level Security
@@ -191,7 +207,8 @@ alter table public.template_exercises enable row level security;
 alter table public.exercise_personal_bests enable row level security;
 alter table public.schedule enable row level security;
 alter table public.workout_history enable row level security;
-alter table public.bodyweight_logs enable row level security;
+alter table public.tracked_stats enable row level security;
+alter table public.stat_logs enable row level security;
 alter table public.usernames enable row level security;
 
 create policy templates_select_own on public.templates
@@ -324,20 +341,37 @@ create policy workout_history_delete_own on public.workout_history
   for delete to authenticated
   using (user_id = (select auth.uid()));
 
-create policy bodyweight_logs_select_own on public.bodyweight_logs
+create policy tracked_stats_select_own on public.tracked_stats
   for select to authenticated
   using (user_id = (select auth.uid()));
 
-create policy bodyweight_logs_insert_own on public.bodyweight_logs
+create policy tracked_stats_insert_own on public.tracked_stats
   for insert to authenticated
   with check (user_id = (select auth.uid()));
 
-create policy bodyweight_logs_update_own on public.bodyweight_logs
+create policy tracked_stats_update_own on public.tracked_stats
   for update to authenticated
   using (user_id = (select auth.uid()))
   with check (user_id = (select auth.uid()));
 
-create policy bodyweight_logs_delete_own on public.bodyweight_logs
+create policy tracked_stats_delete_own on public.tracked_stats
+  for delete to authenticated
+  using (user_id = (select auth.uid()));
+
+create policy stat_logs_select_own on public.stat_logs
+  for select to authenticated
+  using (user_id = (select auth.uid()));
+
+create policy stat_logs_insert_own on public.stat_logs
+  for insert to authenticated
+  with check (user_id = (select auth.uid()));
+
+create policy stat_logs_update_own on public.stat_logs
+  for update to authenticated
+  using (user_id = (select auth.uid()))
+  with check (user_id = (select auth.uid()));
+
+create policy stat_logs_delete_own on public.stat_logs
   for delete to authenticated
   using (user_id = (select auth.uid()));
 
@@ -354,7 +388,8 @@ grant select, insert, update, delete on public.template_exercises to authenticat
 grant select, insert, update, delete on public.exercise_personal_bests to authenticated;
 grant select, insert, update, delete on public.schedule to authenticated;
 grant select, insert, update, delete on public.workout_history to authenticated;
-grant select, insert, update, delete on public.bodyweight_logs to authenticated;
+grant select, insert, update, delete on public.tracked_stats to authenticated;
+grant select, insert, update, delete on public.stat_logs to authenticated;
 
 grant select on public.templates to anon;
 grant select on public.exercises to anon;
@@ -362,7 +397,8 @@ grant select on public.template_exercises to anon;
 grant select on public.exercise_personal_bests to anon;
 grant select on public.schedule to anon;
 grant select on public.workout_history to anon;
-grant select on public.bodyweight_logs to anon;
+grant select on public.tracked_stats to anon;
+grant select on public.stat_logs to anon;
 
 -- -----------------------------------------------------------------------------
 -- 6. Username system
@@ -419,6 +455,57 @@ $$;
 revoke all on function public.register_username(text) from public;
 grant execute on function public.register_username(text) to authenticated;
 
+create or replace function public.rename_username(p_new_username text)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  uid uuid := auth.uid();
+  u text := lower(trim(p_new_username));
+  old_u text;
+  new_email text;
+begin
+  if uid is null then
+    raise exception 'Not authenticated';
+  end if;
+  if u is null or u = '' or u !~ '^[a-z0-9_-]{3,24}$' then
+    raise exception 'Invalid username';
+  end if;
+
+  select username into old_u
+  from public.usernames
+  where user_id = uid
+  order by username
+  limit 1;
+
+  if old_u is not null and old_u = u then
+    return;
+  end if;
+
+  if exists (
+    select 1 from public.usernames where username = u and user_id <> uid
+  ) then
+    raise exception 'Username already taken' using errcode = '23505';
+  end if;
+
+  new_email := 'lt_' || u || '@example.com';
+
+  delete from public.usernames where user_id = uid;
+
+  insert into public.usernames (username, user_id) values (u, uid);
+
+  update auth.users set
+    email = new_email,
+    raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb) || jsonb_build_object('username', u)
+  where id = uid;
+end;
+$$;
+
+revoke all on function public.rename_username(text) from public;
+grant execute on function public.rename_username(text) to authenticated;
+
 create or replace function public.handle_auth_user_username()
 returns trigger
 language plpgsql
@@ -465,7 +552,8 @@ begin
   delete from public.exercise_personal_bests where user_id = uid;
   delete from public.exercises where user_id = uid;
   delete from public.workout_history where user_id = uid;
-  delete from public.bodyweight_logs where user_id = uid;
+  delete from public.stat_logs where user_id = uid;
+  delete from public.tracked_stats where user_id = uid;
   delete from public.templates where user_id = uid;
   delete from public.schedule where user_id = uid;
   delete from public.usernames where user_id = uid;
@@ -496,8 +584,10 @@ as $$
       coalesce((select count(*)::int from public.schedule where user_id = auth.uid()), 0),
     'workout_history',
       coalesce((select count(*)::int from public.workout_history where user_id = auth.uid()), 0),
-    'bodyweight_logs',
-      coalesce((select count(*)::int from public.bodyweight_logs where user_id = auth.uid()), 0),
+    'tracked_stats',
+      coalesce((select count(*)::int from public.tracked_stats where user_id = auth.uid()), 0),
+    'stat_logs',
+      coalesce((select count(*)::int from public.stat_logs where user_id = auth.uid()), 0),
     'estimated_bytes',
       (
         coalesce(
@@ -517,7 +607,11 @@ as $$
           0
         )
         + coalesce(
-          (select sum(octet_length(row_to_json(b)::text))::bigint from public.bodyweight_logs b where b.user_id = auth.uid()),
+          (select sum(octet_length(row_to_json(ts)::text))::bigint from public.tracked_stats ts where ts.user_id = auth.uid()),
+          0
+        )
+        + coalesce(
+          (select sum(octet_length(row_to_json(sl)::text))::bigint from public.stat_logs sl where sl.user_id = auth.uid()),
           0
         )
         + coalesce(
@@ -1232,6 +1326,96 @@ grant execute on function public.assign_schedule_days(jsonb) to authenticated;
 revoke all on function public.update_template_display_orders(jsonb) from public;
 grant execute on function public.update_template_display_orders(jsonb) to authenticated;
 
+create or replace function public.save_tracked_stats(p_stats jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  uid uuid := auth.uid();
+  st jsonb;
+  v_stat_id uuid;
+  v_name text;
+  v_unit text;
+  saved_ids uuid[] := '{}';
+  ord integer := 0;
+  result jsonb := '[]'::jsonb;
+  row public.tracked_stats;
+begin
+  if uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  if coalesce(jsonb_array_length(p_stats), 0) = 0 then
+    delete from public.tracked_stats where user_id = uid;
+    return '[]'::jsonb;
+  end if;
+
+  if jsonb_array_length(p_stats) > 20 then
+    raise exception 'Too many stats (max 20)';
+  end if;
+
+  for st in select * from jsonb_array_elements(p_stats)
+  loop
+    v_name := upper(trim(coalesce(st->>'name', 'STAT')));
+    if char_length(v_name) = 0 then
+      raise exception 'Stat name required';
+    end if;
+    if char_length(v_name) > 24 then
+      v_name := left(v_name, 24);
+    end if;
+
+    v_unit := upper(trim(coalesce(st->>'unit', '')));
+    if char_length(v_unit) > 8 then
+      v_unit := left(v_unit, 8);
+    end if;
+
+    v_stat_id := null;
+    begin
+      if st->>'id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+         and not (st->>'id') like 'temp-%' then
+        v_stat_id := (st->>'id')::uuid;
+      end if;
+    exception when others then
+      v_stat_id := null;
+    end;
+
+    if v_stat_id is not null and exists (
+      select 1 from public.tracked_stats s
+      where s.id = v_stat_id and s.user_id = uid
+    ) then
+      update public.tracked_stats set
+        name = v_name,
+        unit = v_unit,
+        display_order = ord
+      where id = v_stat_id and user_id = uid
+      returning * into row;
+    else
+      insert into public.tracked_stats (user_id, name, unit, display_order)
+      values (uid, v_name, v_unit, ord)
+      returning * into row;
+      v_stat_id := row.id;
+    end if;
+
+    saved_ids := array_append(saved_ids, v_stat_id);
+    result := result || jsonb_build_array(
+      to_jsonb(row) || jsonb_build_object('display_order', ord)
+    );
+    ord := ord + 1;
+  end loop;
+
+  delete from public.tracked_stats
+  where user_id = uid
+    and not (id = any(saved_ids));
+
+  return result;
+end;
+$$;
+
+revoke all on function public.save_tracked_stats(jsonb) from public;
+grant execute on function public.save_tracked_stats(jsonb) to authenticated;
+
 -- -----------------------------------------------------------------------------
 -- 11. Delete all accounts (setup-db.fish --users-only)
 -- -----------------------------------------------------------------------------
@@ -1246,7 +1430,8 @@ begin
   delete from public.template_exercises;
   delete from public.exercises;
   delete from public.workout_history;
-  delete from public.bodyweight_logs;
+  delete from public.stat_logs;
+  delete from public.tracked_stats;
   delete from public.templates;
   delete from public.schedule;
   delete from public.usernames;

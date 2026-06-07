@@ -154,9 +154,13 @@
 	}
 	body {
 		@apply bg-background text-foreground;
+		overflow: hidden;
+		height: 100dvh;
 	}
 	html {
 		@apply font-sans;
+		height: 100%;
+		overflow: hidden;
 	}
 }
 
@@ -316,6 +320,15 @@
 	opacity: 1;
 }
 
+.workout-cta-empty {
+	border: 1px dotted #333338 !important;
+}
+
+.workout-cta-empty-icon {
+	color: #3f3f46;
+	opacity: 0.85;
+}
+
 .workout-cta-label {
 	display: inline-flex;
 	align-items: center;
@@ -337,6 +350,23 @@
 	max-width: calc(var(--cta-ch-side-max, 6) * 1ch);
 }
 
+.workout-cta-side-content {
+	position: relative;
+	z-index: 10;
+	display: inline-flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 0.2rem;
+	pointer-events: none;
+}
+
+.workout-cta-side-icon {
+	width: 0.875rem;
+	height: 0.875rem;
+	flex-shrink: 0;
+}
+
 .font-timer {
 	font-family: var(--font-timer);
 	font-variant-numeric: tabular-nums;
@@ -353,7 +383,9 @@
 	letter-spacing: 0.06em;
 }
 
-.time-readout.font-7segment {
+.time-readout.font-7segment,
+.weight-num.font-7segment,
+input.prop-num-input.font-7segment {
 	font-weight: 700;
 }
 
@@ -491,6 +523,48 @@ input.prop-num-input::-webkit-outer-spin-button {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 	min-width: 0;
+}
+
+.settings-panel-header__name--editable {
+	display: block;
+	width: 100%;
+	max-width: 12rem;
+	padding: 0;
+	border: none;
+	background: transparent;
+	cursor: text;
+	text-align: center;
+	transition: color 150ms ease;
+}
+
+.settings-panel-header__name--editable:hover:not(:disabled) {
+	color: #e4e4e7;
+}
+
+.settings-panel-header__name--editable:disabled {
+	cursor: default;
+	opacity: 0.6;
+}
+
+.settings-panel-header__name-input {
+	display: block;
+	width: 100%;
+	max-width: 12rem;
+	margin: 0 auto;
+	padding: 0 0 0.125rem;
+	border: none;
+	border-bottom: 1px solid #3f3f46;
+	background: transparent;
+	font-size: 0.75rem;
+	font-weight: 500;
+	line-height: 1;
+	color: #fff;
+	text-align: center;
+	outline: none;
+}
+
+.settings-panel-header__name-input:focus {
+	border-bottom-color: #71717a;
 }
 
 .settings-panel-header__user-id {
@@ -1786,9 +1860,65 @@ input.prop-num-input::-webkit-outer-spin-button {
 
 }
 
-/* Boot → main crossfade (main mounts under overlay so both can animate) */
+/* App shell: main scrolls; copyright footer stays pinned at viewport bottom */
+.app {
+	height: 100dvh;
+	max-height: 100dvh;
+}
+
 .app-stage {
 	position: relative;
+	overflow: hidden;
+}
+
+.app-stage-scroll {
+	overflow: hidden;
+}
+
+.app-stage-sticky {
+	flex-shrink: 0;
+}
+
+.app-stage-body {
+	flex: 1 1 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.track-workout-exercises {
+	flex: 1 1 0;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
+	-ms-overflow-style: none;
+	scrollbar-width: none;
+	-webkit-mask-size: 100% 100%;
+	mask-size: 100% 100%;
+	-webkit-mask-repeat: no-repeat;
+	mask-repeat: no-repeat;
+}
+
+.track-workout-exercises::-webkit-scrollbar {
+	display: none;
+}
+
+.app-stage-cta {
+	flex-shrink: 0;
+	padding-top: 0.25rem;
+}
+
+.app-footer {
+	flex-shrink: 0;
+	margin-top: -0.25rem;
+	padding-top: 0.25rem;
+	padding-bottom: calc(0.25rem + env(safe-area-inset-bottom, 0px));
+	line-height: 1;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .app-stage-reveal {

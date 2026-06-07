@@ -16,6 +16,12 @@ import {
 	type ClampedFieldInput,
 	type ClampedTextFieldInput,
 } from "./exerciseSanitize";
+import {
+	clampStatNameFieldInput,
+	clampStatUnitFieldInput,
+	MAX_STAT_NAME_LEN,
+	MAX_STAT_UNIT_LEN,
+} from "./statSanitize";
 
 export type NumericPropKind =
 	| "sets"
@@ -179,4 +185,16 @@ export const clampedTemplateNameProp = createClampedTextProp(
 export const clampedExerciseNameProp = createClampedTextProp(
 	clampExerciseNameFieldInput,
 	MAX_EXERCISE_NAME_LEN,
+);
+
+/** Live clamp: stat names ≤24 chars, always uppercase. */
+export const clampedStatNameProp = createClampedTextProp(
+	clampStatNameFieldInput,
+	MAX_STAT_NAME_LEN,
+);
+
+/** Live clamp: stat units ≤8 chars, always uppercase. */
+export const clampedStatUnitProp = createClampedTextProp(
+	clampStatUnitFieldInput,
+	MAX_STAT_UNIT_LEN,
 );

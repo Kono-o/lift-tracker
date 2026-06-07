@@ -487,6 +487,8 @@ export interface Template {
 	id: string;
 	user_id: string;
 	name: string;
+	color?: number; // 0-4 (5 colors), defaults to 0
+	display_order?: number;
 	exercises: Exercise[];
 }
 
@@ -1122,7 +1124,7 @@ export const db = {
 			// Load templates without embedded join. We hydrate exercises below using
 			// the junction (preferred) or legacy template_id on exercises (for accounts
 			// that predate the shared_exercise_library migration).
-			supabase.from("templates").select(`id, user_id, name`),
+			supabase.from("templates").select(`id, user_id, name, color, display_order`).order("display_order").order("created_at"),
 
 			supabase.from("exercises").select("*").order("created_at"),
 
@@ -1195,6 +1197,8 @@ export const db = {
 				id: t.id,
 				user_id: t.user_id,
 				name: t.name,
+				color: typeof t.color === 'number' ? t.color : 0,
+				display_order: typeof t.display_order === 'number' ? t.display_order : 0,
 				exercises: exs,
 			};
 		});
@@ -1205,6 +1209,62 @@ export const db = {
 			exerciseLibrary,
 			todayLog: (todayRes.data as WorkoutHistory) ?? null,
 		};
+	},
+
+	/* ==================================================
+		 BODYWEIGHT (separate daily tracking, not tied to workouts)
+		 ================================================== */
+
+	async getBodyweightLogs(days = 90): Promise<Record<string, number>> {
+		const since = new Date();
+		since.setDate(since.getDate() - days);
+		const sinceStr = since.toISOString().slice(0, 10);
+
+		const { data, error } = await supabase
+			.from("bodyweight_logs")
+			.select("log_date, weight")
+			.gte("log_date", sinceStr)
+			.order("log_date", { ascending: false });
+
+		if (error) {
+			// table may not exist yet on old DBs — fail soft
+			console.warn("[db] bodyweight_logs fetch warning:", error.message);
+			return {};
+		}
+
+		const map: Record<string, number> = {};
+		for (const row of data ?? []) {
+			if (row.log_date && typeof row.weight === "number") {
+				map[row.log_date] = row.weight;
+			}
+		}
+		return map;
+	},
+
+	async saveBodyweight(logDate: string, weight: number) {
+		const { data: { user } } = await supabase.auth.getUser();
+		if (!user) throw new Error("Not authenticated");
+
+		const { error } = await supabase.from("bodyweight_logs").upsert(
+			{
+				user_id: user.id,
+				log_date: logDate,
+				weight,
+				updated_at: new Date().toISOString(),
+			},
+			{ onConflict: "user_id,log_date" }
+		);
+
+		if (error) throw error;
+	},
+
+	async deleteBodyweight(logDate: string) {
+		const { error } = await supabase
+			.from("bodyweight_logs")
+			.delete()
+			.eq("log_date", logDate);
+
+		if (error) throw error;
 	},
 
 	/* ==================================================
@@ -1251,9 +1311,16 @@ export const db = {
 		const uid = await requireUserId();
 		const safeName = sanitizeTemplateName(name.trim()) || "NEW TEMPLATE";
 
+		// Append to the end of the user's template list
+		const { count } = await supabase
+			.from("templates")
+			.select("id", { count: "exact", head: true })
+			.eq("user_id", uid);
+		const nextOrder = (count ?? 0);
+
 		const { data, error } = await supabase
 			.from("templates")
-			.insert([{ name: safeName, user_id: uid }])
+			.insert([{ name: safeName, user_id: uid, color: 0, display_order: nextOrder }])
 			.select()
 			.single();
 
@@ -1279,6 +1346,25 @@ export const db = {
 			.update({ name: trimmed })
 			.eq("id", templateId);
 		if (error) throw error;
+	},
+
+	async updateTemplateColor(templateId: string, color: number) {
+		const c = Math.max(0, Math.min(4, Math.floor(color || 0)));
+		const { error } = await supabase
+			.from("templates")
+			.update({ color: c })
+			.eq("id", templateId);
+		if (error) throw error;
+	},
+
+	async updateTemplateDisplayOrders(orders: Array<{ id: string; display_order: number }>) {
+		for (const { id, display_order } of orders) {
+			const { error } = await supabase
+				.from("templates")
+				.update({ display_order })
+				.eq("id", id);
+			if (error) throw error;
+		}
 	},
 
 	/**

@@ -37,6 +37,7 @@ drop function if exists public.handle_auth_user_username() cascade;
 drop table if exists public.template_exercises cascade;
 drop table if exists public.exercises cascade;
 drop table if exists public.workout_history cascade;
+drop table if exists public.bodyweight_logs cascade;
 drop table if exists public.schedule cascade;
 drop table if exists public.templates cascade;
 drop table if exists public.usernames cascade;
@@ -49,8 +50,12 @@ create table public.templates (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
   name text not null,
+  color smallint not null default 0,
+  display_order integer not null default 0,
   created_at timestamptz not null default now(),
-  constraint templates_name_not_empty check (char_length(trim(name)) > 0)
+  constraint templates_name_not_empty check (char_length(trim(name)) > 0),
+  constraint templates_color_range check (color >= 0 and color <= 4),
+  constraint templates_display_order_nonneg check (display_order >= 0)
 );
 
 create table public.exercises (
@@ -109,6 +114,17 @@ create table public.workout_history (
   )
 );
 
+create table public.bodyweight_logs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  log_date date not null,
+  weight numeric not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint bodyweight_logs_user_date_unique unique (user_id, log_date),
+  constraint bodyweight_logs_weight_positive check (weight > 0)
+);
+
 create table public.usernames (
   username text primary key,
   user_id uuid not null unique references auth.users (id) on delete cascade,
@@ -129,6 +145,7 @@ create index schedule_template_id_idx on public.schedule (template_id)
 create index workout_history_user_date_idx on public.workout_history (user_id, workout_date desc);
 create index workout_history_perfect_day_idx on public.workout_history (user_id, is_perfect_day)
   where is_perfect_day = true;
+create index bodyweight_logs_user_date_idx on public.bodyweight_logs (user_id, log_date desc);
 
 -- -----------------------------------------------------------------------------
 -- 4. Row Level Security
@@ -138,6 +155,7 @@ alter table public.exercises enable row level security;
 alter table public.template_exercises enable row level security;
 alter table public.schedule enable row level security;
 alter table public.workout_history enable row level security;
+alter table public.bodyweight_logs enable row level security;
 alter table public.usernames enable row level security;
 
 -- templates
@@ -266,6 +284,24 @@ create policy workout_history_delete_own on public.workout_history
   for delete to authenticated
   using (user_id = (select auth.uid()));
 
+-- bodyweight_logs
+create policy bodyweight_logs_select_own on public.bodyweight_logs
+  for select to authenticated
+  using (user_id = (select auth.uid()));
+
+create policy bodyweight_logs_insert_own on public.bodyweight_logs
+  for insert to authenticated
+  with check (user_id = (select auth.uid()));
+
+create policy bodyweight_logs_update_own on public.bodyweight_logs
+  for update to authenticated
+  using (user_id = (select auth.uid()))
+  with check (user_id = (select auth.uid()));
+
+create policy bodyweight_logs_delete_own on public.bodyweight_logs
+  for delete to authenticated
+  using (user_id = (select auth.uid()));
+
 -- usernames table is never directly accessible from client
 revoke all on table public.usernames from anon, authenticated;
 
@@ -279,12 +315,14 @@ grant select, insert, update, delete on public.exercises to authenticated;
 grant select, insert, update, delete on public.template_exercises to authenticated;
 grant select, insert, update, delete on public.schedule to authenticated;
 grant select, insert, update, delete on public.workout_history to authenticated;
+grant select, insert, update, delete on public.bodyweight_logs to authenticated;
 
 grant select on public.templates to anon;
 grant select on public.exercises to anon;
 grant select on public.template_exercises to anon;
 grant select on public.schedule to anon;
 grant select on public.workout_history to anon;
+grant select on public.bodyweight_logs to anon;
 
 -- -----------------------------------------------------------------------------
 -- 6. Username system (availability check + registration + auto-creation on signup)
@@ -386,6 +424,7 @@ begin
 
   delete from public.exercises where user_id = uid;
   delete from public.workout_history where user_id = uid;
+  delete from public.bodyweight_logs where user_id = uid;
   delete from public.templates where user_id = uid;
   delete from public.schedule where user_id = uid;
   delete from public.usernames where user_id = uid;
@@ -416,6 +455,8 @@ as $$
       coalesce((select count(*)::int from public.schedule where user_id = auth.uid()), 0),
     'workout_history',
       coalesce((select count(*)::int from public.workout_history where user_id = auth.uid()), 0),
+    'bodyweight_logs',
+      coalesce((select count(*)::int from public.bodyweight_logs where user_id = auth.uid()), 0),
     'estimated_bytes',
       (
         coalesce(
@@ -432,6 +473,10 @@ as $$
         )
         + coalesce(
           (select sum(octet_length(row_to_json(w)::text))::bigint from public.workout_history w where w.user_id = auth.uid()),
+          0
+        )
+        + coalesce(
+          (select sum(octet_length(row_to_json(b)::text))::bigint from public.bodyweight_logs b where b.user_id = auth.uid()),
           0
         )
       )

@@ -196,11 +196,11 @@ export function sanitizeTrackedReps(n: number): number {
 }
 
 export function sanitizeExerciseName(raw: string): string {
-	return raw.slice(0, MAX_EXERCISE_NAME_LEN).toUpperCase().trim();
+	return raw.slice(0, MAX_EXERCISE_NAME_LEN).toUpperCase();
 }
 
 export function sanitizeTemplateName(raw: string): string {
-	return raw.slice(0, MAX_TEMPLATE_NAME_LEN).toUpperCase().trim();
+	return raw.slice(0, MAX_TEMPLATE_NAME_LEN).toUpperCase();
 }
 
 /** Live typing for exercise names (24 chars, uppercase). */
@@ -263,7 +263,7 @@ export function bumpIncrementSec(value: number, delta: number): number {
 }
 
 export function validateDraftExercise(ex: DraftExerciseLike): string | null {
-	const name = sanitizeExerciseName(ex.name ?? '');
+	const name = sanitizeExerciseName(ex.name ?? '').trim() || 'NEW EXERCISE';
 
 	const sets = sanitizeSets(ex.target_sets ?? 0);
 	if (sets === 0) return `"${name}" must have at least 1 set.`;
@@ -298,7 +298,7 @@ export function validateDraftExercises(
 
 /** Normalize draft row in place (clamps fields; does not fix invalid 0 reps/time). */
 export function normalizeDraftExercise(ex: DraftExerciseLike): void {
-	ex.name = sanitizeExerciseName(ex.name ?? '') || 'NEW EXERCISE';
+	ex.name = sanitizeExerciseName(ex.name ?? '').trim() || 'NEW EXERCISE';
 	ex.target_sets = sanitizeSets(ex.target_sets ?? 0);
 	if (ex.exercise_type === "reps") {
 		ex.target_reps = sanitizeReps(ex.target_reps ?? 0);

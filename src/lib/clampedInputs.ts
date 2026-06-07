@@ -130,6 +130,11 @@ function createClampedTextProp(
 			const data = e.data;
 			if (data == null) return;
 
+			// Allow whitespace in name fields (spaces etc. are preserved by the name clamp/sanitize which no longer trims)
+			if (data.trim() === '') {
+				return;
+			}
+
 			const start = node.selectionStart ?? node.value.length;
 			const end = node.selectionEnd ?? node.value.length;
 			const merged = node.value.slice(0, start) + data + node.value.slice(end);

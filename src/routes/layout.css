@@ -338,6 +338,19 @@
 	font-weight: 400;
 }
 
+/* Dot matrix / pixel font for timer numbers (temporary test - VT323) */
+.font-7segment {
+	font-family: 'VT323', 'Courier New', monospace;
+	font-variant-numeric: tabular-nums;
+	font-feature-settings: 'tnum' 1;
+	letter-spacing: 0.15em;
+}
+
+/* Main live timer — dot matrix */
+.time-readout.font-7segment {
+	font-weight: 700;
+}
+
 .font-timer.text-2xl,
 input.font-timer {
 	font-weight: 400;
@@ -356,8 +369,10 @@ input.prop-num-input::-webkit-outer-spin-button {
 
 .ex-time-digit {
 	display: inline-block;
-	min-width: 2ch;
+	min-width: 5ch;
 	text-align: right;
+	font-feature-settings: 'tnum' 1;
+	letter-spacing: 0.04em;
 }
 
 .ex-time-digit--plus {
@@ -1304,6 +1319,23 @@ input.prop-num-input::-webkit-outer-spin-button {
 	white-space: nowrap;
 }
 
+/* Bodyweight panel uses similar look as settings for consistency */
+.settings-panel-overlay {
+	position: fixed;
+	inset: 0;
+	background: rgba(0,0,0,0.7);
+	z-index: 100;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 12px;
+}
+
+.settings-panel-dialog {
+	max-width: 320px;
+	width: 100%;
+}
+
 .time-active-bar {
 	display: flex;
 	align-items: center;
@@ -1388,7 +1420,7 @@ input.prop-num-input::-webkit-outer-spin-button {
 	background-color: #1a1a1a;
 }
 
-.timer-progress-cube--completed {
+.timer-progress-cube--on {
 	background-color: #666;
 }
 

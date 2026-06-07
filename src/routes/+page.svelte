@@ -68,6 +68,18 @@
   const DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
   const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
+  const TEMPLATE_COLORS: string[] = [
+    '#4ADE80', // green (was orange)
+    '#afe64f', // saturated lime (25% less saturated, slightly brighter)
+    '#65c7e9', // sky blue (25% less saturated, slightly brighter)
+    '#9173eb', // blurple (25% less saturated, slightly brighter)
+    '#eb7393', // pink (25% less saturated, slightly brighter)
+  ];
+
+  function getTemplateColor(id: number): string {
+    return TEMPLATE_COLORS[Math.max(0, Math.min(4, Math.floor(id || 0)))];
+  }
+
   function toDateStr(d: Date): string {
     const year = d.getFullYear();
     const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -94,6 +106,9 @@
   let dbIoFlashTimer: ReturnType<typeof setTimeout> | null = null;
   let dbActivitySnapshot = $state(getDbActivitySnapshot());
   let showSettingsPanel = $state(false);
+  let showBodyweightPanel = $state(false);
+  let bwInputDate = $state(REAL_TODAY_STR);
+  let bwInputWeight = $state<number | ''>('');
   let supabasePanelLoading = $state(false);
   let supabasePanel = $state<SupabasePanelSnapshot | null>(null);
   let supabaseHealthPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -121,6 +136,7 @@
   let selectedDate = $state(new Date(REAL_TODAY));
   let viewedLog = $state<any>(null);
   let weekLogs = $state<Record<string, any | null>>({});
+  let bodyweightLogs = $state<Record<string, number>>({});
   let currentView = $state<'track' | 'swap_template' | 'edit_template'>('track');
   let templateEditorReturnView = $state<'track' | 'swap_template'>('track');
 
@@ -146,6 +162,12 @@
       countdownSeconds = 0;
       countdownRunning = false;
       clearInterval(countdownTimer);
+      clearInterval(visualUpdateTimer);
+      timerStartTimestamp = null;
+      currentVisualDot = 0;
+      visualMsPerDot = 0;
+      visualRawStep = 0;
+      visualRawStep = 0;
     }
     selectedDate = new Date(newD);
     selectedDate.setHours(0, 0, 0, 0);
@@ -654,6 +676,12 @@
   let countdownSeconds = $state(0);
   let countdownRunning = $state(false);
   let countdownTimer: any = null;
+  let timerStartTimestamp = $state<number | null>(null);
+  let currentVisualDot = $state(0);
+  let visualMsPerDot = $state(0);
+  let visualDotCount = $state(36);
+  let visualRawStep = $state(0);
+  let visualUpdateTimer: any = null;
   let activeTimerExerciseId = $state<string | null>(null);
   let activeTimerSetIndex = $state<number | null>(null);
 
@@ -741,6 +769,7 @@
   // Draft state for template editing (local until commit on finish)
   let draftExercises = $state<any[]>([]);
   let draftTemplateName = $state('');
+  let draftTemplateColor = $state(0); // 0-4 (5 colors)
   let selectedExerciseId = $state<string | null>(null);
   let editingExerciseNameId = $state<string | null>(null);
   let showExerciseLibraryPicker = $state(false);
@@ -925,9 +954,13 @@
   let weekPlan = $derived.by(() =>
     Array.from({ length: 7 }, (_, dayOfWeek) => {
       const row = schedule.find((s) => s.day_of_week === dayOfWeek);
+      const tid = effectiveAssignmentTemplateId(row?.template_id ?? null);
+      const tpl = tid ? templates.find((t) => t.id === tid) : null;
+      const color = tpl ? getTemplateColor(tpl.color ?? 0) : null;
       return {
         day: DAYS[dayOfWeek],
-        hasTemplate: !!effectiveAssignmentTemplateId(row?.template_id ?? null),
+        hasTemplate: !!tid,
+        color,
       };
     }),
   );
@@ -1127,6 +1160,17 @@
     const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
     const seconds = (totalSeconds % 60).toString().padStart(2, '0');
     return `${minutes}:${seconds}`;
+  }
+
+  function parseSecondsFromTimeResult(result: string | null | undefined): number {
+    if (!result) return 0;
+    // New format: MM:SS (or M:SS)
+    let match = result.match(/(\d+):(\d{1,2})/);
+    if (match) return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+    // Legacy format: 00m00s (or 0m0s)
+    match = result.match(/(\d+)m(\d+)s/i);
+    if (match) return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+    return 0;
   }
 
   function durationSecondsFromLog(log: { duration_seconds?: number | null; performance_snapshot?: { duration_seconds?: number }; workout_snapshot?: { duration_seconds?: number } } | null): number {
@@ -1584,16 +1628,13 @@
     } else {
       const str = ex.performed_times?.[s];
       if (str) {
-        const m = String(str).match(/(\d+)m(\d+)s/i);
-        if (m) secs = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+        secs = parseSecondsFromTimeResult(String(str));
       }
     }
     if (secs == null) return undefined;
-    const m = Math.floor(secs / 60).toString().padStart(2, '0');
-    const ss = (secs % 60).toString().padStart(2, '0');
     const met =
       targetSecs != null && targetSecs > 0 ? secs >= targetSecs : secs > 0;
-    return { result: `${m}m${ss}s`, met };
+    return { result: formatTime(secs), met };
   }
 
   function hydrateTrackingFromLog(log: any, template: Template | null) {
@@ -1616,10 +1657,7 @@
           ex && ex.exercise_type === 'time'
             ? (ex.target_minutes || 0) * 60 + (ex.target_seconds || 0)
             : 0;
-        const match = e.result.match(/(\d+)m(\d+)s/i);
-        const secs = match
-          ? parseInt(match[1], 10) * 60 + parseInt(match[2], 10)
-          : 0;
+        const secs = parseSecondsFromTimeResult(e.result);
         times[key] = {
           result: e.result,
           met: targetSecs > 0 ? secs >= targetSecs : secs > 0,
@@ -1648,10 +1686,8 @@
           }
           if (row?.seconds_completed != null && times[key] === undefined) {
             const secs = row.seconds_completed;
-            const m = Math.floor(secs / 60).toString().padStart(2, '0');
-            const ss = (secs % 60).toString().padStart(2, '0');
             times[key] = {
-              result: `${m}m${ss}s`,
+              result: formatTime(secs),
               met: targetSecs > 0 ? secs >= targetSecs : secs > 0,
             };
           }
@@ -1686,6 +1722,7 @@
         log.workout_snapshot?.template_name ||
         log.template_name_snapshot ||
         'Workout',
+      color: 0,
       exercises: snapEx.map(normalizeLoggedExForList),
     };
   }
@@ -2034,6 +2071,51 @@
   function closeSettingsPanel() {
     if (accountBusy) return;
     resetSettingsPanelUi();
+  }
+
+  function openBodyweightPanel() {
+    showBodyweightPanel = true;
+  }
+
+  function closeBodyweightPanel() {
+    showBodyweightPanel = false;
+  }
+
+  async function logBodyweight() {
+    const d = bwInputDate;
+    const w = Number(bwInputWeight);
+    if (!d || !w || w <= 0) return;
+    try {
+      await db.saveBodyweight(d, w);
+      bodyweightLogs[d] = w;
+      bodyweightLogs = { ...bodyweightLogs };
+      bwInputWeight = '';
+    } catch (e) {
+      console.error(e);
+      // silent fail or toast, keep simple
+    }
+  }
+
+  async function updateBodyweight(date: string, val: string) {
+    const w = Number(val);
+    if (!date || !w || w <= 0) return;
+    try {
+      await db.saveBodyweight(date, w);
+      bodyweightLogs[date] = w;
+      bodyweightLogs = { ...bodyweightLogs };
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async function deleteBodyweight(date: string) {
+    try {
+      await db.deleteBodyweight(date);
+      delete bodyweightLogs[date];
+      bodyweightLogs = { ...bodyweightLogs };
+    } catch (e) {
+      console.error(e);
+    }
   }
 
   function applySupabaseHealthError(e: unknown) {
@@ -2470,18 +2552,20 @@
 			if (isInitial && currentUser) {
 				bootSections = buildAuthBootSections(currentUser, 'syncing');
 			}
-			const [data, recentLogs] = await Promise.all([
+			const [data, recentLogs, bw] = await Promise.all([
 				db.getAppData(),
 				db.getRecentHistory(21).catch((e) => {
 					console.error('Recent history fetch failed', e);
 					return [] as WorkoutHistory[];
 				}),
+				db.getBodyweightLogs(90).catch(() => ({} as Record<string, number>)),
 			]);
 			schedule = data.schedule;
 			templates = data.templates;
 			exerciseLibrary = data.exerciseLibrary ?? [];
 			deletedLibraryExerciseIds = new Set(); // server state is now authoritative
 			todayLog = data.todayLog || null;
+			bodyweightLogs = bw;
 			if (isInitial) {
 				bootSections = buildBootSections(currentUser, schedule, templates, todayLog, recentLogs);
 				bootMessage = 'Almost ready…';
@@ -2658,6 +2742,12 @@
     if (dbIoFlashTimer) clearTimeout(dbIoFlashTimer);
     clearInterval(workoutTimer);
     clearInterval(countdownTimer);
+    clearInterval(visualUpdateTimer);
+    timerStartTimestamp = null;
+    currentVisualDot = 0;
+    visualMsPerDot = 0;
+    visualRawStep = 0;
+    visualRawStep = 0;
     cancelRepSetHold();
   });
 
@@ -2711,10 +2801,16 @@
     workoutStartedAt = Date.now();
     clearInterval(workoutTimer);
     clearInterval(countdownTimer);
+    clearInterval(visualUpdateTimer);
     activeTimerExerciseId = null;
     activeTimerSetIndex = null;
     countdownSeconds = 0;
     countdownRunning = false;
+    timerStartTimestamp = null;
+    currentVisualDot = 0;
+    visualMsPerDot = 0;
+    visualRawStep = 0;
+    visualRawStep = 0;
     skipProgress = 0;
     cancelProgress = 0;
     deleteTemplateProgress = 0;
@@ -2758,10 +2854,16 @@
     resetHeaderWorkoutTimer();
     finishedHeaderDuration = 0;
     clearInterval(countdownTimer);
+    clearInterval(visualUpdateTimer);
     countdownSeconds = 0;
     countdownRunning = false;
     activeTimerExerciseId = null;
     activeTimerSetIndex = null;
+    timerStartTimestamp = null;
+    currentVisualDot = 0;
+    visualMsPerDot = 0;
+    visualRawStep = 0;
+    visualRawStep = 0;
     skipProgress = 0;
     cancelProgress = 0;
     deleteTemplateProgress = 0;
@@ -2927,37 +3029,74 @@
 
   function startTimedSet(exerciseId: string, setIndex: number) {
     clearInterval(countdownTimer);
+    clearInterval(visualUpdateTimer);
     activeTimerExerciseId = exerciseId;
     activeTimerSetIndex = setIndex;
     countdownSeconds = 0;
     countdownRunning = true;
+    timerStartTimestamp = Date.now();
+    const template = activeWorkoutTemplate ?? activeTemplate;
+    const ex = template?.exercises?.find((e) => e.id === exerciseId);
+    const target = ex ? ((ex.target_minutes || 0) * 60 + (ex.target_seconds || 0)) : 0;
+    visualMsPerDot = target > 0 ? (target * 1000) / visualDotCount : 0;
+    visualRawStep = 0;
+    currentVisualDot = 0;
     countdownTimer = setInterval(() => { countdownSeconds++; }, 1000);
+    visualUpdateTimer = setInterval(() => {
+      if (timerStartTimestamp !== null && countdownRunning && visualMsPerDot > 0) {
+        const elapsed = Date.now() - timerStartTimestamp;
+        const newStep = Math.floor(elapsed / visualMsPerDot);
+        if (newStep !== visualRawStep) {
+          visualRawStep = newStep;
+        }
+      }
+    }, 30);
   }
 
   function toggleExerciseTimer() {
     if (countdownRunning) {
       clearInterval(countdownTimer);
+      clearInterval(visualUpdateTimer);
       countdownRunning = false;
     } else {
       countdownRunning = true;
+      // Adjust start timestamp so visual elapsed continues correctly from current countdownSeconds
+      timerStartTimestamp = Date.now() - (countdownSeconds * 1000);
       countdownTimer = setInterval(() => { countdownSeconds++; }, 1000);
+      clearInterval(visualUpdateTimer);
+      visualUpdateTimer = setInterval(() => {
+        if (timerStartTimestamp !== null && countdownRunning && visualMsPerDot > 0) {
+          const elapsed = Date.now() - timerStartTimestamp;
+          const newStep = Math.floor(elapsed / visualMsPerDot);
+          if (newStep !== visualRawStep) {
+            visualRawStep = newStep;
+          }
+        }
+      }, 30);
     }
   }
 
   function stopAndSaveTimedSet(exerciseId: string, setIndex: number, targetSeconds: number) {
     clearInterval(countdownTimer);
+    clearInterval(visualUpdateTimer);
     countdownRunning = false;
     const key = `${exerciseId}-${setIndex}`;
     completedTimers = {
       ...completedTimers,
       [key]: {
-        result: `${Math.floor(countdownSeconds / 60).toString().padStart(2, '0')}m${(countdownSeconds % 60).toString().padStart(2, '0')}s`,
+        result: formatTime(countdownSeconds),
         met: countdownSeconds >= targetSeconds,
       },
     };
     activeTimerExerciseId = null;
     activeTimerSetIndex = null;
     countdownSeconds = 0;
+    timerStartTimestamp = null;
+    currentVisualDot = 0;
+    visualMsPerDot = 0;
+    visualRawStep = 0;
+    visualRawStep = 0;
+    visualRawStep = 0;
     scheduleWorkoutProgressSave();
   }
 
@@ -2975,10 +3114,16 @@
 
   function cancelActiveTimer() {
     clearInterval(countdownTimer);
+    clearInterval(visualUpdateTimer);
     countdownRunning = false;
     activeTimerExerciseId = null;
     activeTimerSetIndex = null;
     countdownSeconds = 0;
+    timerStartTimestamp = null;
+    currentVisualDot = 0;
+    visualMsPerDot = 0;
+    visualRawStep = 0;
+    visualRawStep = 0;
   }
 
   async function syncSkipWorkout() {
@@ -3439,7 +3584,8 @@
       templateErrorFading = false;
 
       const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-      const optimistic: Template = { id: tempId, user_id: uid, name, exercises: [] };
+      const nextOrder = templates.length;
+      const optimistic: Template = { id: tempId, user_id: uid, name, color: 0, display_order: nextOrder, exercises: [] };
       templates = [...templates, optimistic];
       newTemplateName = '';
       if (openAfterCreate) {
@@ -3970,7 +4116,7 @@
     template.name = savedName;
     if (template.id.startsWith('temp-')) return;
     if (originalName === savedName) return;
-    patchTemplateInCache(template.id, savedName, template.exercises);
+    patchTemplateInCache(template.id, savedName, template.exercises, template.color);
     void db.updateTemplateName(template.id, savedName).catch((e) => {
       console.error('Template name save failed', e);
       templateError = 'Could not save template name.';
@@ -4049,6 +4195,7 @@
       return copy;
     });
     draftTemplateName = sanitizeTemplateName(tpl.name);
+    draftTemplateColor = (tpl as any).color ?? 0;
     selectedExerciseId = draftExercises.length > 0 ? draftExercises[0].id : null;
     editingExerciseNameId = null;
     templateSaveError = null;
@@ -4064,11 +4211,12 @@
     templateId: string,
     name: string,
     exercises: Exercise[],
+    color?: number,
   ) {
     const trimmed = name.trim();
     templates = templates.map((t) =>
       t.id === templateId
-        ? { ...t, name: trimmed || t.name, exercises }
+        ? { ...t, name: trimmed || t.name, exercises, color: typeof color === 'number' ? color : t.color ?? 0 }
         : t,
     );
   }
@@ -4100,13 +4248,21 @@
     exercises: any[],
     name: string,
     previousName: string,
+    color?: number,
+    previousColor?: number,
   ) {
     const trimmedName = name.trim();
     if (trimmedName && trimmedName !== previousName) {
       await db.updateTemplateName(templateId, trimmedName);
     }
+    if (typeof color === 'number') {
+      const prev = typeof previousColor === 'number' ? previousColor : (templates.find((t) => t.id === templateId)?.color ?? 0);
+      if (color !== prev) {
+        await db.updateTemplateColor(templateId, color);
+      }
+    }
     const saved = await db.saveTemplateExercises(templateId, exercises);
-    patchTemplateInCache(templateId, trimmedName || previousName, saved);
+    patchTemplateInCache(templateId, trimmedName || previousName, saved, color);
     if (!isTemplateAssignable({ exercises: saved })) {
       await clearTemplateFromAllDays(templateId);
     }
@@ -4130,10 +4286,12 @@
     }
     const previousName =
       templates.find((t) => t.id === templateId)?.name ?? snapName;
+    const previousColor = templates.find((t) => t.id === templateId)?.color ?? 0;
     const displayName = snapName || previousName;
 
     templateSaveError = null;
-    patchTemplateInCache(templateId, displayName, draftToExercises(templateId, snapExercises));
+    const colorToSave = draftTemplateColor;
+    patchTemplateInCache(templateId, displayName, draftToExercises(templateId, snapExercises), colorToSave);
 
     // Return to where we came from (supports nesting: routine editor → template editor → back to routine editor)
     const returnView = templateEditorReturnView;
@@ -4141,13 +4299,14 @@
     currentView = returnView;
     draftExercises = [];
     draftTemplateName = '';
+    draftTemplateColor = 0;
     selectedExerciseId = null;
     editingExerciseNameId = null;
     editingTemplateId = '';
     deletedLibraryExerciseIds = new Set();
 
     templateSaveInFlight = true;
-    void commitDraftExercises(templateId, snapExercises, snapName, previousName)
+    void commitDraftExercises(templateId, snapExercises, snapName, previousName, colorToSave, previousColor)
       .then(() => {
         templateSaveError = null;
       })
@@ -4329,6 +4488,60 @@
       exerciseRowDragged = true;
       setTimeout(() => {
         exerciseRowDragged = false;
+      }, 100);
+    }
+  }
+
+  // Drag and drop reorder for the templates list in the routine builder
+  let templateDraggedIndex = $state<number | null>(null);
+  let templateRowDragged = $state(false);
+
+  function handleTemplateDragStart(e: DragEvent, index: number) {
+    templateDraggedIndex = index;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', index.toString());
+    }
+  }
+
+  function handleTemplateDragOver(e: DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'move';
+    }
+  }
+
+  function handleTemplateDrop(e: DragEvent, targetIndex: number) {
+    e.preventDefault();
+    if (templateDraggedIndex === null || templateDraggedIndex === targetIndex) {
+      templateDraggedIndex = null;
+      return;
+    }
+    const arr = [...templates];
+    const [moved] = arr.splice(templateDraggedIndex, 1);
+    arr.splice(targetIndex, 0, moved);
+    // Re-assign sequential display orders
+    arr.forEach((t, i) => {
+      (t as any).display_order = i;
+    });
+    templates = arr;
+    // Persist
+    const orders = arr.map((t, i) => ({ id: t.id, display_order: i }));
+    void db.updateTemplateDisplayOrders(orders).catch((err) => {
+      console.error('Failed to persist template reorder', err);
+      // refresh to restore server order
+      loadData({ preserveSession: true });
+    });
+    templateDraggedIndex = null;
+  }
+
+  function handleTemplateDragEnd() {
+    const wasDragging = templateDraggedIndex !== null;
+    templateDraggedIndex = null;
+    if (wasDragging) {
+      templateRowDragged = true;
+      setTimeout(() => {
+        templateRowDragged = false;
       }, 100);
     }
   }
@@ -4808,6 +5021,98 @@
     </div>
   </div>
 
+  {#if showBodyweightPanel}
+    <div
+      class="settings-panel-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Daily bodyweight"
+      tabindex="-1"
+      onclick={(e) => { if (e.target === e.currentTarget) closeBodyweightPanel(); }}
+    >
+      <div class="settings-panel-dialog w-full rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left max-h-[80dvh] flex flex-col">
+        <div class="settings-panel-header">
+          <div class="settings-panel-header__title">
+            <span class="settings-panel-header__name">Daily Weight</span>
+          </div>
+          <button
+            type="button"
+            aria-label="Close"
+            class="settings-panel-header__close"
+            onclick={closeBodyweightPanel}
+          >
+            <X class="size-3.5" />
+          </button>
+        </div>
+
+        <div class="p-3 text-[11px] overflow-auto flex-1 space-y-3">
+          <!-- Quick log -->
+          <div class="flex gap-2 items-end">
+            <div class="flex-1">
+              <div class="text-[9px] text-zinc-500 mb-0.5">DATE</div>
+              <input
+                type="date"
+                class="w-full bg-black border border-[#2a2a2a] rounded px-2 py-1 text-white text-xs"
+                bind:value={bwInputDate}
+              />
+            </div>
+            <div class="flex-1">
+              <div class="text-[9px] text-zinc-500 mb-0.5">WEIGHT (KG)</div>
+              <input
+                type="number"
+                step="0.1"
+                min="1"
+                placeholder="80.0"
+                class="w-full bg-black border border-[#2a2a2a] rounded px-2 py-1 text-white text-xs"
+                bind:value={bwInputWeight}
+                onkeydown={(e) => { if (e.key === 'Enter') logBodyweight(); }}
+              />
+            </div>
+            <button
+              class="h-8 px-3 rounded bg-white text-black text-[10px] font-bold tracking-[0.5px]"
+              onclick={logBodyweight}
+            >
+              LOG
+            </button>
+          </div>
+
+          <!-- History table -->
+          <div>
+            <div class="text-[9px] text-zinc-500 mb-1">HISTORY (most recent first)</div>
+            {#if Object.keys(bodyweightLogs).length === 0}
+              <div class="text-zinc-500 text-[10px] py-2">No entries yet. Log your first weight above.</div>
+            {:else}
+              <div class="border border-[#1e1e1e] rounded overflow-hidden text-xs">
+                {#each Object.entries(bodyweightLogs).sort((a,b) => b[0].localeCompare(a[0])) as [date, w]}
+                  <div class="flex items-center border-b border-[#1e1e1e] last:border-b-0 bg-[#111] hover:bg-[#181818]">
+                    <div class="w-28 px-2 py-1 font-mono text-zinc-400 border-r border-[#1e1e1e]">{date}</div>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={w}
+                      class="flex-1 bg-transparent px-2 py-1 text-right outline-none"
+                      onblur={(e) => updateBodyweight(date, e.currentTarget.value)}
+                      onkeydown={(e) => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
+                    />
+                    <button
+                      class="px-2 text-red-400 hover:text-red-300 text-[10px]"
+                      onclick={() => deleteBodyweight(date)}
+                      title="Delete entry"
+                    >
+                      ×
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+
+          <div class="text-[9px] text-zinc-500">Weight is tracked separately from workouts. Edit any row or add new dates.</div>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   {#snippet ctaBar(disabled = false)}
     <div class={(disabled && isViewingToday) ? 'opacity-40 pointer-events-none' : ''}>
       {#if workoutActionError}
@@ -4815,12 +5120,11 @@
       {/if}
       {#if workoutState === 'idle' || workoutState === 'active' || workoutState === 'done' || workoutState === 'skipped'}
         <div class="grid grid-cols-5 gap-3">
-          <!-- STATS (left, narrow) — matches SKIP at rest; no hold/tap interaction yet -->
+          <!-- STATS (left, narrow) — opens bodyweight tracking panel -->
           <button
             type="button"
-            tabindex="-1"
-            aria-disabled="true"
-            class="{workoutSideBtnClass} border bg-[#0d0d0d] border-[#1e1e1e] text-zinc-500 pointer-events-none {!isViewingToday ? 'opacity-40' : ''}"
+            class="{workoutSideBtnClass} border bg-[#0d0d0d] border-[#1e1e1e] text-white hover:border-white/40 {!isViewingToday ? 'opacity-40' : ''}"
+            onclick={openBodyweightPanel}
           >
             <span class={workoutSideLabelClass} style={ctaChStyle('STATS', SIDE_CTA_MAX_CH)}>STATS</span>
           </button>
@@ -5042,34 +5346,37 @@
           </button>
         {/if}
 
-        {#if !isRestLog}
-          <!-- Week overview — tap to open routine editor -->
-          <button
-            type="button"
-            class="w-full max-w-xs rounded-xl border border-transparent p-1 -m-1 transition-all duration-150 hover:border-[#2a2a2a] hover:bg-[#141414]/50 cursor-pointer"
-            onclick={() => enterRoutineBuilder({ fromWeeklyPlan: true })}
-            title="Open routine editor"
-          >
-            <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 mb-2 text-center pointer-events-none">WEEKLY PLAN</div>
-            <div class="grid grid-cols-7 gap-1 pointer-events-none">
-              {#each weekPlan as d, i}
-                <div class="flex flex-col items-center gap-0.5 transition-all duration-150">
-                  <div class="text-[10px] font-medium {i === TODAY_WEEKDAY ? 'text-white' : 'text-zinc-400'}">{d.day}</div>
-                  <div class="w-full aspect-square rounded-lg flex items-center justify-center border transition-all duration-150 {d.hasTemplate ? 'bg-emerald-950/30 border-emerald-900' : 'bg-[#1e1e1e] border-[#2a2a2a]'}">
-                    {#if d.hasTemplate}
-                      <Dumbbell class="size-3 text-emerald-400" />
-                    {:else}
-                      <Bed class="size-3 text-zinc-500" />
-                    {/if}
-                  </div>
+        <!-- Week overview — tap to open routine editor (shown on rest days too for schedule context) -->
+        <button
+          type="button"
+          class="w-full max-w-xs rounded-xl border border-transparent p-1 -m-1 transition-all duration-150 hover:border-[#2a2a2a] hover:bg-[#141414]/50 cursor-pointer"
+          onclick={() => enterRoutineBuilder({ fromWeeklyPlan: true })}
+          title="Open routine editor"
+        >
+          <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 mb-2 text-center pointer-events-none">WEEKLY PLAN</div>
+          <div class="grid grid-cols-7 gap-1 pointer-events-none">
+            {#each weekPlan as d, i}
+              <div class="flex flex-col items-center gap-0.5 transition-all duration-150">
+                <div class="text-[10px] font-medium {i === TODAY_WEEKDAY ? 'text-white' : 'text-zinc-400'}">{d.day}</div>
+                <div
+                  class="w-full aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {d.color ? 'border' : 'bg-[#1e1e1e] border border-[#2a2a2a]'}"
+                  style={d.color ? `background-color: color-mix(in srgb, ${d.color} 12%, #141414); border-color: ${d.color};` : ''}
+                >
+                  {#if d.hasTemplate}
+                    <Dumbbell class="size-3" style={d.color ? `color: ${d.color}` : ''} />
+                  {:else}
+                    <Bed class="size-3 text-zinc-500" />
+                  {/if}
                 </div>
-              {/each}
-            </div>
-            <div class="text-center text-[10px] text-zinc-500 mt-2 pointer-events-none">
-              {weekPlan.filter(d => d.hasTemplate).length} training • {weekPlan.filter(d => !d.hasTemplate).length} rest
-            </div>
-          </button>
-        {:else}
+              </div>
+            {/each}
+          </div>
+          <div class="text-center text-[10px] text-zinc-500 mt-2 pointer-events-none">
+            {weekPlan.filter(d => d.hasTemplate).length} training • {weekPlan.filter(d => !d.hasTemplate).length} rest
+          </div>
+        </button>
+
+        {#if isRestLog}
           <div class="text-[10px] text-center text-zinc-500">This day was logged as a rest day. <button class="text-red-400 hover:text-red-500 underline" onclick={() => undoRestLog(selectedDateStr)}>undo</button></div>
         {/if}
       </div>
@@ -5084,7 +5391,7 @@
         ? templates.find((t) => t.id === skippedDisplayLog.template_id)
         : null}
       {@const dispTemplate = useHistorical
-        ? { id: viewedLog.template_id, name: viewedLog.template_name_snapshot || 'Past Workout', exercises: viewedLog.workout_snapshot?.exercises || [] }
+        ? { id: viewedLog.template_id, name: viewedLog.template_name_snapshot || 'Past Workout', color: 0, exercises: viewedLog.workout_snapshot?.exercises || [] }
         : workoutState === 'active' && activeWorkoutTemplate
           ? activeWorkoutTemplate
           : skippedDisplayTemplate ?? activeTemplate}
@@ -5285,12 +5592,9 @@
                       ? elapsed - timeTotal
                       : timeTotal - elapsed
                     : timeTotal}
-                {@const m = Math.floor(displaySecs / 60).toString().padStart(2, '0')}
-                {@const s = (displaySecs % 60).toString().padStart(2, '0')}
-                <div class="time-readout font-timer text-2xl {hasActiveTimerThis && isOvertime ? 'w-fg-green' : exRed ? 'text-current' : 'text-white'}">
+                <div class="time-readout font-7segment text-2xl {hasActiveTimerThis && isOvertime ? 'w-fg-green' : exRed ? 'text-current' : 'text-white'}">
                   {#if hasActiveTimerThis && isOvertime}<span class="ex-time-digit ex-time-digit--plus">+</span>{/if}
-                  <span class="ex-time-digit">{m}</span><span class="unit text-[10px] text-zinc-400 font-sans font-normal ml-1 tracking-[1px]">M</span>
-                  <span class="ex-time-digit ml-1">{s}</span><span class="unit text-[10px] text-zinc-400 font-sans font-normal ml-1 tracking-[1px]">S</span>
+                  <span class="ex-time-digit">{formatTime(displaySecs)}</span>
                 </div>
               {/if}
             </div>
@@ -5367,13 +5671,17 @@
                   {@const s = activeTimerSetIndex}
                   {@const timerCubeCount = 36}
                   {@const timerMet = timeTotal > 0 && countdownSeconds >= timeTotal}
-                  {@const activeCube =
-                    timeTotal > 0
-                      ? Math.min(
-                          timerCubeCount - 1,
-                          Math.floor((countdownSeconds / timeTotal) * timerCubeCount),
-                        )
-                      : 0}
+                  {@const rawDot = visualRawStep}
+                  {@const cycle = timerCubeCount * 2}
+                  {@const displayDot = timerMet
+                    ? (() => {
+                        let p = rawDot % cycle;
+                        if (p >= timerCubeCount) p = cycle - p;
+                        return Math.min(timerCubeCount - 1, p);
+                      })()
+                    : Math.min(timerCubeCount - 1, rawDot)}
+                  {@const inReverse = timerMet && (rawDot % cycle >= timerCubeCount)}
+                  {@const direction = inReverse ? -1 : 1} 
                   <div class="time-active-bar">
                     <span class="time-active-set">S{s + 1}</span>
                     <div class="time-active-progress">
@@ -5382,20 +5690,22 @@
                         class:timer-progress-cubes--running={countdownRunning}
                       >
                         {#each Array(timerCubeCount) as _, i}
-                          {@const d = activeCube - i}
-                          {@const trailGrey = i < activeCube
-                            ? `#${Math.round(68 + (1 - d / Math.max(1, activeCube)) * 68).toString(16).padStart(2, '0')}`
+                          {@const isCurrent = i === displayDot}
+                          {@const isBehind = direction > 0 ? (i < displayDot) : (i > displayDot)}
+                          {@const dist = direction > 0 ? (displayDot - i) : (i - displayDot)}
+                          {@const trailGrey = isBehind && dist > 0
+                            ? `#${Math.round(68 + (1 - dist / Math.max(1, timerCubeCount)) * 68).toString(16).padStart(2, '0')}`
                             : ''}
                           <div
                             class="timer-progress-cube"
-                            class:timer-progress-cube--lit={i === activeCube && !timerMet}
-                            class:timer-progress-cube--met={timerMet && i === activeCube}
-                            style={i < activeCube
-                              ? `background-color: ${trailGrey};`
-                              : i === activeCube
-                                ? timerMet
-                                  ? 'background-color: var(--w-green-fg);'
-                                  : 'background-color: #fff;'
+                            class:timer-progress-cube--lit={isCurrent && !timerMet}
+                            class:timer-progress-cube--met={timerMet && isCurrent}
+                            style={isCurrent
+                              ? timerMet
+                                ? 'background-color: var(--w-green-fg);'
+                                : 'background-color: #fff;'
+                              : isBehind && trailGrey
+                                ? `background-color: ${trailGrey};`
                                 : ''}
                           ></div>
                         {/each}
@@ -5459,7 +5769,7 @@
                             disabled={!workoutExercisesEditable}
                           >
                             <span class="sl text-[8px] tracking-wider opacity-60 block leading-none text-zinc-400">S{s + 1}</span>
-                            <span class="sv font-timer text-[11px] block text-current leading-none tabular-nums">{saved ? saved.result : '—'}</span>
+                            <span class="sv font-7segment text-[11px] block text-current leading-none tabular-nums">{saved ? saved.result : '—'}</span>
                           </button>
                         {/if}
                       </div>
@@ -5490,7 +5800,7 @@
         <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">ROUTINE EDITOR</span>
         <div class="flex-1 min-w-0 flex items-center">
           <span
-            class="w-full h-8 flex items-center justify-center px-2 rounded border bg-black text-xs font-medium truncate leading-none text-center {builderAssignedTemplateId === null ? 'border-[#2a2a2a] text-zinc-400' : 'border-emerald-700 text-emerald-400'}"
+            class="w-full h-8 flex items-center justify-center px-2 rounded border border-[#2a2a2a] bg-black text-xs font-medium truncate leading-none text-center text-white"
           >{builderDayAssignmentLabel}</span>
         </div>
       </div>
@@ -5499,19 +5809,24 @@
       <div class="grid grid-cols-7 gap-1">
         {#each DAYS as d, i}
           {@const hasTemplate = !!effectiveAssignmentTemplateId(builderAssignments[i] ?? null)}
+          {@const dayAssignedId = effectiveAssignmentTemplateId(builderAssignments[i] ?? null)}
+          {@const dayTpl = dayAssignedId ? templates.find((t) => t.id === dayAssignedId) : null}
+          {@const dayColor = dayTpl ? getTemplateColor(dayTpl.color ?? 0) : null}
+          {@const isDaySelected = builderEditingDay === i}
           <button
             type="button"
             class="flex flex-col items-center gap-0.5 transition-all duration-150"
             onclick={() => { builderEditingDay = i; }}
           >
-            <div class="text-[10px] font-medium leading-none {builderEditingDay === i ? 'text-white' : 'text-zinc-400'}">{d}</div>
+            <div class="text-[10px] font-medium leading-none {isDaySelected ? 'text-white' : 'text-zinc-400'}">{d}</div>
             <div
-              class="w-full aspect-square rounded-lg flex items-center justify-center border transition-all duration-150 {builderEditingDay === i ? 'border-white' : hasTemplate ? 'border-emerald-900 hover:border-emerald-700' : 'border-[#2a2a2a] hover:border-[#3a3a3a]'} {hasTemplate ? 'bg-emerald-950/30' : 'bg-[#1e1e1e]'}"
+              class="w-full aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {isDaySelected ? (dayColor ? '' : '') : (dayColor ? 'border' : 'border border-[#2a2a2a] hover:border-[#3a3a3a]')}"
+              style={dayColor ? (isDaySelected ? `background-color: ${dayColor};` : `background-color: color-mix(in srgb, ${dayColor} 12%, #141414); border-color: ${dayColor};`) : ''}
             >
               {#if hasTemplate}
-                <Dumbbell class="size-3 text-emerald-400" />
+                <Dumbbell class="size-3" strokeWidth={2.5} style={dayColor ? (isDaySelected ? 'color: black' : `color: ${dayColor}`) : ''} />
               {:else}
-                <Bed class="size-3 text-zinc-500" />
+                <Bed class="size-3 {isDaySelected ? 'text-white' : 'text-zinc-500'}" />
               {/if}
             </div>
           </button>
@@ -5549,12 +5864,30 @@
             {@const rawSelectedId = builderAssignments[builderEditingDay] ?? null}
             {@const isSelected = rawSelectedId === template.id}
             {@const isRealAssigned = builderAssignedTemplateId === template.id}
-            <div class="flex items-stretch gap-1 h-8">
+            {@const tColor = getTemplateColor(template.color ?? 0)}
+            <div
+              class="flex items-stretch gap-1 h-8"
+              ondragover={handleTemplateDragOver}
+              ondrop={(e) => handleTemplateDrop(e, index)}
+            >
+              <button
+                type="button"
+                draggable="true"
+                class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none cursor-grab active:cursor-grabbing transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
+                style={isSelected ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white;` : ''}
+                title="Drag to reorder — click to select"
+                onclick={() => {
+                  if (templateRowDragged) return;
+                  assignTemplateToBuilderDay(template.id);
+                }}
+                ondragstart={(e) => handleTemplateDragStart(e, index)}
+                ondragend={handleTemplateDragEnd}
+              >
+                {index + 1}
+              </button>
               <div
-                class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isRealAssigned ? 'bg-emerald-950/40 border-emerald-800 text-emerald-400' : isEmpty && isSelected ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-400' : isEmpty ? 'bg-[#141414] border-[#1e1e1e] text-zinc-400' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400'}"
-              >{index + 1}</div>
-              <div
-                class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center transition-colors cursor-pointer {isRealAssigned ? 'bg-emerald-950/10 border-emerald-500 text-emerald-400 hover:bg-emerald-950/20' : isEmpty && isSelected ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-400 hover:bg-[#141414]' : isEmpty ? 'bg-[#0d0d0d] border-[#1e1e1e] text-zinc-400 hover:bg-[#141414] hover:border-[#2a2a2a] hover:text-white' : 'bg-[#0d0d0d] border-[#1e1e1e] text-zinc-400 hover:bg-[#141414] hover:border-[#2a2a2a] hover:text-white'}"
+                class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center transition-colors cursor-pointer hover:bg-[#1a1a1a] {isSelected ? '' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
+                style={isSelected ? `background-color: color-mix(in srgb, white 10%, #0d0d0d); border-color: white; color: white;` : ''}
                 role="button"
                 tabindex="0"
                 onclick={() => assignTemplateToBuilderDay(template.id)}
@@ -5562,7 +5895,7 @@
               >
                 <div class="flex items-center gap-1 min-w-0 flex-1">
                   {#if editingRoutineTemplateNameId === template.id}
-                    <span class="shrink-0 {isRealAssigned ? 'text-emerald-400' : isEmpty ? 'text-zinc-400' : 'text-white'}">[</span>
+                    <span class="shrink-0" style={isSelected ? `color: white` : `color: #aaa`}>[</span>
                     <input
                       type="text"
                       autocomplete="off"
@@ -5580,12 +5913,14 @@
                           (e.currentTarget as HTMLInputElement).blur();
                         }
                       }}
-                      class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isRealAssigned ? 'text-emerald-400' : isEmpty ? 'text-zinc-400' : 'text-white'}"
+                      class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none"
+                      style={isSelected ? `color: white` : `color: #aaa`}
                     />
-                    <span class="shrink-0 {isRealAssigned ? 'text-emerald-400' : isEmpty ? 'text-zinc-400' : 'text-white'}">]</span>
+                    <span class="shrink-0" style={isSelected ? `color: white` : `color: #aaa`}>]</span>
                   {:else}
                     <span
-                      class="font-medium truncate leading-none flex-1 min-w-0 select-none {isRealAssigned ? 'text-emerald-400' : isEmpty ? 'text-zinc-400' : 'text-white'}"
+                      class="font-medium truncate leading-none flex-1 min-w-0 select-none"
+                      style={isSelected ? `color: white` : `color: #aaa`}
                       ondblclick={(e) => {
                         e.stopPropagation();
                         beginRoutineTemplateNameEdit(template.id);
@@ -5594,17 +5929,18 @@
                   {/if}
                   {#if !isEmpty}
                     {@const exCount = template.exercises.length}
-                    <span class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none {isRealAssigned ? 'bg-emerald-950 border-emerald-800 text-emerald-400' : 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-500'}">{exCount} EXERCISE{exCount === 1 ? '' : 'S'}</span>
+                    <span class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none" style={isSelected ? `background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;` : `background-color: #1e1e1e; border-color: #2a2a2a; color: #aaa;`}>{exCount} EXERCISE{exCount === 1 ? '' : 'S'}</span>
                   {/if}
                   {#if isRealAssigned}
-                    <span class="text-[9px] shrink-0 bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800 leading-none">ASSIGNED</span>
+                    <span class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none" style={isSelected ? `background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;` : `background-color: #1e1e1e; border-color: #2a2a2a; color: #aaa;`}>ASSIGNED</span>
                   {:else if isEmpty}
-                    <span class="text-[9px] shrink-0 bg-[#1e1e1e] px-1.5 py-0.5 rounded border border-[#2a2a2a] text-zinc-500 leading-none">EMPTY</span>
+                    <span class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none" style={isSelected ? `background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;` : `background-color: #1e1e1e; border-color: #2a2a2a; color: #aaa;`}>EMPTY</span>
                   {/if}
                   {#if isSelected}
                     <button
                       type="button"
-                      class="w-6 h-6 shrink-0 flex items-center justify-center rounded border {isRealAssigned ? 'border-emerald-800 bg-emerald-950/50 text-emerald-400 hover:text-emerald-300 hover:border-emerald-700' : 'border-[#2a2a2a] bg-[#1e1e1e] text-zinc-400 hover:text-white hover:border-[#3a3a3a]'} transition-colors"
+                      class="w-6 h-6 shrink-0 flex items-center justify-center rounded border transition-colors"
+                      style={`background-color: color-mix(in srgb, white 20%, #1e1e1e); color: white; border-color: white;`}
                       title="Edit template"
                       onclick={(e) => { e.stopPropagation(); openTemplateEditor(template.id); }}
                     >
@@ -5639,6 +5975,7 @@
     </div>
 
   {:else if currentView === 'edit_template'}
+    {@const templateEditorColor = getTemplateColor(draftTemplateColor)}
     <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3">
       <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
         <button
@@ -5653,7 +5990,8 @@
         <div class="flex-1 min-w-0 flex items-center">
           <input
             autocomplete="off"
-            class="w-full h-8 bg-black border text-xs font-medium uppercase text-center px-2 rounded outline-none placeholder:text-zinc-600 {editingTemplate ? 'border-emerald-700 text-emerald-400 focus:border-emerald-600' : 'border-[#1e1e1e] text-white focus:border-[#2a2a2a]'}"
+            class="w-full h-8 bg-black border text-xs font-medium uppercase text-center px-2 rounded outline-none placeholder:text-zinc-600"
+            style={`border-color: ${templateEditorColor}; color: ${templateEditorColor}`}
             placeholder="Template name"
             disabled={!editingTemplate}
             use:clampedTemplateNameProp={{
@@ -5662,6 +6000,15 @@
             }}
           />
         </div>
+        <button
+          type="button"
+          class="w-8 h-8 rounded bg-black border flex items-center justify-center transition-all group"
+          style="border-color: {templateEditorColor}"
+          onclick={() => { draftTemplateColor = (draftTemplateColor + 1) % 5 }}
+          title="Click to cycle template color"
+        >
+          <div class="w-5 h-5 rounded transition-all group-active:scale-95" style="background-color: {templateEditorColor}"></div>
+        </button>
       </div>
       {#if templateSaveError && currentView === 'edit_template'}
         <p class="text-[10px] text-red-300 leading-snug">{templateSaveError}</p>
@@ -5706,7 +6053,8 @@
                   <button
                     type="button"
                     draggable="true"
-                    class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none cursor-grab active:cursor-grabbing transition-colors {isSelected ? 'bg-emerald-950/40 border-emerald-800 text-emerald-400' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
+                    class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none cursor-grab active:cursor-grabbing transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
+                    style={isSelected ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white` : ''}
                     title="Drag to reorder — click to select"
                     onclick={() => {
                       if (exerciseRowDragged) return;
@@ -5718,14 +6066,15 @@
                     {index + 1}
                   </button>
                   <div 
-                    class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center cursor-pointer transition-colors {isSelected ? 'bg-emerald-950/10 border-emerald-500 text-emerald-400' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
+                    class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center cursor-pointer transition-colors {isSelected ? '' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
+                    style={isSelected ? `background-color: color-mix(in srgb, white 8%, #0d0d0d); border-color: white; color: white` : ''}
                     onclick={() => selectExercise(exercise.id)}
                   >
                     <div class="flex items-center gap-1 min-w-0 flex-1">
                       {#if exercise.exercise_type === 'reps'}
-                        <Dumbbell class="size-3 shrink-0 {isSelected ? 'text-emerald-400' : 'text-white'}" />
+                        <Dumbbell class="size-3 shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
                       {:else}
-                        <Timer class="size-3 shrink-0 {isSelected ? 'text-emerald-400' : 'text-white'}" />
+                        <Timer class="size-3 shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
                       {/if}
                       {#if editingExerciseNameId === exercise.id}
                         <input
@@ -5744,12 +6093,12 @@
                               (e.currentTarget as HTMLInputElement).blur();
                             }
                           }}
-                          class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isSelected ? 'text-emerald-400' : 'text-white'}"
+                          class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isSelected ? 'text-white' : 'text-zinc-400'}"
                           placeholder="NAME"
                         />
                       {:else}
                         <span
-                          class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-emerald-400' : 'text-white'}"
+                          class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-white' : 'text-zinc-400'}"
                           ondblclick={(e) => {
                             e.stopPropagation();
                             beginExerciseNameEdit(exercise.id);
@@ -5823,7 +6172,7 @@
                       <div
                         class="w-full h-7 min-w-0 px-1.5 rounded border text-xs transition flex items-center gap-1.5 cursor-pointer {isSelectedLib 
                           ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-200' 
-                          : 'bg-[#141414] border-[#1e1e1e] text-zinc-300 hover:bg-[#1a1a1a] hover:border-[#2a2a2a] hover:text-white'}"
+                          : 'bg-[#141414] border-[#1e1e1e] text-zinc-500 hover:bg-[#1a1a1a] hover:border-[#2a2a2a] hover:text-zinc-400'}"
                         onclick={() => selectLibraryExercise(libraryEx.id)}
                         title={isSelectedLib ? '' : 'Select to move or delete'}
                       >

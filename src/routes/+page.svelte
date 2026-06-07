@@ -727,7 +727,7 @@
   let timerStartTimestamp = $state<number | null>(null);
   let currentVisualDot = $state(0);
   let visualMsPerDot = $state(0);
-  let visualDotCount = $state(36);
+  let visualDotCount = $state(42);
   let visualRawStep = $state(0);
   let visualUpdateTimer: any = null;
   let activeTimerExerciseId = $state<string | null>(null);
@@ -967,6 +967,14 @@
   let isViewingToday = $derived(selectedDateStr === REAL_TODAY_STR);
   let isFuture = $derived(selectedDateStr > REAL_TODAY_STR);
   let isPastSelected = $derived(selectedDateStr < REAL_TODAY_STR && !isViewingToday);
+  let accountCreatedDateStr = $derived.by(() => {
+    const raw = currentUser?.created_at;
+    if (!raw) return null;
+    return toDateStr(new Date(raw));
+  });
+  let isBeforeAccountCreation = $derived(
+    accountCreatedDateStr != null && selectedDateStr < accountCreatedDateStr,
+  );
   /** No template on this weekday in the current routine. */
   let isScheduledRestDay = $derived(!activeTemplate && templates.length > 0);
   /** Real workout log for the selected day (completed, skipped, or in progress — not rest). */
@@ -974,13 +982,17 @@
   /** Past day log fetch finished (null = confirmed no log). */
   let isSelectedDayLogResolved = $derived(isViewingToday || weekLogs[selectedDateStr] !== undefined);
   let isSelectedDayLogLoading = $derived(!isViewingToday && !!currentUser && !isSelectedDayLogResolved);
-  /** Past weekday had a template assigned but no log was ever saved. */
+  /** Past day with no log — includes every day before the account existed. */
   let isPastUnloggedWorkoutDay = $derived(
-    isPastSelected && !!activeTemplate && isSelectedDayLogResolved && weekLogs[selectedDateStr] === null,
+    isPastSelected &&
+      isSelectedDayLogResolved &&
+      weekLogs[selectedDateStr] === null &&
+      (isBeforeAccountCreation || !!activeTemplate),
   );
   /** Rest day screen: logged rest or scheduled rest with no workout log to show. */
   let isRestDayView = $derived(
-    !!viewedLog?.workout_snapshot?.is_rest || (isScheduledRestDay && !hasViewedWorkoutLog),
+    !!viewedLog?.workout_snapshot?.is_rest ||
+      (isScheduledRestDay && !hasViewedWorkoutLog && !isBeforeAccountCreation),
   );
   let isPastUnloggedView = $derived(isPastUnloggedWorkoutDay);
   /** Rest / unlogged days: dotted side slots + go-to-today when not on today. */
@@ -1099,17 +1111,25 @@
       };
     }),
   );
-  let workoutLabel = $derived.by(() => {
-    if (isViewingToday) return "TODAY'S WORKOUT";
-    // Check for real tomorrow
+  let selectedDayLabel = $derived.by(() => {
+    if (isViewingToday) return 'TODAY';
     const realTomorrow = new Date(REAL_TODAY);
     realTomorrow.setDate(REAL_TODAY.getDate() + 1);
-    if (selectedDateStr === toDateStr(realTomorrow)) return "TOMORROW'S WORKOUT";
-    // Check for real yesterday
+    if (selectedDateStr === toDateStr(realTomorrow)) return 'TOMORROW';
     const realYesterday = new Date(REAL_TODAY);
     realYesterday.setDate(REAL_TODAY.getDate() - 1);
-    if (selectedDateStr === toDateStr(realYesterday)) return "YESTERDAY'S WORKOUT";
-    return `${DAY_NAMES[selectedWeekday].toUpperCase()}'S WORKOUT`;
+    if (selectedDateStr === toDateStr(realYesterday)) return 'YESTERDAY';
+    if (isFuture) return selectedDateDisplay.nice;
+    return DAY_NAMES[selectedWeekday].toUpperCase();
+  });
+  let workoutLabel = $derived(`${selectedDayLabel}'S WORKOUT`);
+  let unloggedHeroLine = $derived.by(() => {
+    const realYesterday = new Date(REAL_TODAY);
+    realYesterday.setDate(REAL_TODAY.getDate() - 1);
+    if (selectedDateStr === toDateStr(realYesterday)) {
+      return 'NO WORKOUT WAS LOGGED YESTERDAY';
+    }
+    return `NO WORKOUT WAS LOGGED ON ${selectedDateDisplay.nice}`;
   });
 
   let viewedCompletionStatus = $derived.by(() =>
@@ -1541,22 +1561,27 @@
     return touchedSetsCount === exercise.target_sets && allRepsMetTarget;
   }
 
+  function timeExerciseMeetsTarget(exercise: Exercise): boolean {
+    if (exercise.target_sets <= 0) return false;
+    const targetSeconds = (exercise.target_minutes || 0) * 60 + (exercise.target_seconds || 0);
+    const timers = displayCompletedTimers();
+    for (let s = 0; s < exercise.target_sets; s++) {
+      const key = `${exercise.id}-${s}`;
+      const isActiveSet =
+        activeTimerExerciseId === exercise.id && activeTimerSetIndex === s;
+      if (isActiveSet) {
+        if (targetSeconds <= 0 || countdownSeconds < targetSeconds) return false;
+        continue;
+      }
+      const t = timers[key];
+      if (!t?.met) return false;
+    }
+    return true;
+  }
+
   /** Live session: PR = every set logged and at/above target (matches green set bubbles). */
   function exerciseLiveIsPr(exercise: Exercise): boolean {
-    if (exercise.exercise_type === 'time') {
-      let loggedSetsCount = 0;
-      let allMet = true;
-      for (let s = 0; s < exercise.target_sets; s++) {
-        const t = displayCompletedTimers()[`${exercise.id}-${s}`];
-        if (t !== undefined && t !== null) {
-          loggedSetsCount++;
-          if (!t.met) allMet = false;
-        } else {
-          allMet = false;
-        }
-      }
-      return loggedSetsCount === exercise.target_sets && allMet;
-    }
+    if (exercise.exercise_type === 'time') return timeExerciseMeetsTarget(exercise);
     return repsExerciseMeetsTarget(exercise);
   }
 
@@ -1652,11 +1677,19 @@
     return 'neutral';
   }
 
+  function exerciseActiveTimerOvertime(exercise: Exercise): boolean {
+    if (activeTimerExerciseId !== exercise.id || activeTimerSetIndex === null) return false;
+    if (exercise.exercise_type !== 'time') return false;
+    const targetSeconds = (exercise.target_minutes || 0) * 60 + (exercise.target_seconds || 0);
+    return targetSeconds > 0 && countdownSeconds >= targetSeconds;
+  }
+
   function getExerciseStatus(exercise: Exercise): 'green' | 'yellow' | 'neutral' | 'skipped' {
     if (isSkippedWorkoutView()) return 'skipped';
     if (isCompletedWorkoutView() && exerciseIsUntouched(exercise)) return 'skipped';
     if (isViewingToday && useLiveSessionTracking()) {
       if (exercise.exercise_type === 'time') {
+        if (exerciseActiveTimerOvertime(exercise)) return 'green';
         let loggedSetsCount = 0;
         let allMet = true;
         const timers = displayCompletedTimers();
@@ -1866,6 +1899,14 @@
     };
   }
 
+  type OngoingTimerBackup = {
+    exerciseId: string;
+    setIndex: number;
+    countdownSeconds: number;
+    countdownRunning: boolean;
+    timerStartTimestamp: number | null;
+  };
+
   type ActiveSessionBackup = {
     date: string;
     templateId: string | null;
@@ -1873,7 +1914,19 @@
     trackedReps: Record<string, number>;
     completedTimers: Record<string, { result: string; met: boolean }>;
     workoutStartedAt: number;
+    ongoingTimer?: OngoingTimerBackup | null;
   };
+
+  function ongoingTimerBackupFromState(): OngoingTimerBackup | null {
+    if (activeTimerExerciseId == null || activeTimerSetIndex == null) return null;
+    return {
+      exerciseId: activeTimerExerciseId,
+      setIndex: activeTimerSetIndex,
+      countdownSeconds,
+      countdownRunning,
+      timerStartTimestamp: countdownRunning ? timerStartTimestamp : null,
+    };
+  }
 
   function writeActiveSessionBackup() {
     if (typeof sessionStorage === 'undefined') return;
@@ -1889,6 +1942,7 @@
       trackedReps: { ...trackedReps },
       completedTimers: { ...completedTimers },
       workoutStartedAt: workoutStartedAt ?? Date.now(),
+      ongoingTimer: ongoingTimerBackupFromState(),
     };
     sessionStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(payload));
   }
@@ -1941,7 +1995,20 @@
     });
     headerTimerInDom = true;
     headerTimerOpaque = true;
+    if (backup.ongoingTimer) {
+      restoreOngoingExerciseTimer(backup.ongoingTimer, template);
+    }
     return true;
+  }
+
+  function tryRestoreOngoingTimerFromBackup(backup: ActiveSessionBackup | null) {
+    if (!backup?.ongoingTimer) return;
+    const key = `${backup.ongoingTimer.exerciseId}-${backup.ongoingTimer.setIndex}`;
+    if (completedTimers[key]) return;
+    restoreOngoingExerciseTimer(
+      backup.ongoingTimer,
+      activeWorkoutTemplate ?? activeTemplate,
+    );
   }
 
   function tryRestoreActiveSessionFromStorageAndLog(): boolean {
@@ -1956,6 +2023,8 @@
         ) {
           applyActiveSessionBackup(backup);
           void persistWorkoutProgressNow();
+        } else {
+          tryRestoreOngoingTimerFromBackup(backup);
         }
         return true;
       }
@@ -3396,21 +3465,15 @@
     editingSetKey = null;
   }
 
-  function startTimedSet(exerciseId: string, setIndex: number) {
+  function startExerciseCountdownInterval() {
     clearInterval(countdownTimer);
+    countdownTimer = setInterval(() => {
+      countdownSeconds++;
+    }, 1000);
+  }
+
+  function startExerciseVisualInterval() {
     clearInterval(visualUpdateTimer);
-    activeTimerExerciseId = exerciseId;
-    activeTimerSetIndex = setIndex;
-    countdownSeconds = 0;
-    countdownRunning = true;
-    timerStartTimestamp = Date.now();
-    const template = activeWorkoutTemplate ?? activeTemplate;
-    const ex = template?.exercises?.find((e) => e.id === exerciseId);
-    const target = ex ? ((ex.target_minutes || 0) * 60 + (ex.target_seconds || 0)) : 0;
-    visualMsPerDot = target > 0 ? (target * 1000) / visualDotCount : 0;
-    visualRawStep = 0;
-    currentVisualDot = 0;
-    countdownTimer = setInterval(() => { countdownSeconds++; }, 1000);
     visualUpdateTimer = setInterval(() => {
       if (timerStartTimestamp !== null && countdownRunning && visualMsPerDot > 0) {
         const elapsed = Date.now() - timerStartTimestamp;
@@ -3422,6 +3485,64 @@
     }, 30);
   }
 
+  function configureExerciseVisualTimer(exerciseId: string) {
+    const template = activeWorkoutTemplate ?? activeTemplate;
+    const ex = template?.exercises?.find((e) => e.id === exerciseId);
+    const target = ex ? (ex.target_minutes || 0) * 60 + (ex.target_seconds || 0) : 0;
+    visualMsPerDot = target > 0 ? (target * 1000) / visualDotCount : 0;
+  }
+
+  function restoreOngoingExerciseTimer(
+    timer: OngoingTimerBackup,
+    template: Template | null,
+  ) {
+    const ex = template?.exercises?.find((e) => e.id === timer.exerciseId);
+    if (!ex || ex.exercise_type !== 'time') return;
+
+    clearInterval(countdownTimer);
+    clearInterval(visualUpdateTimer);
+
+    activeTimerExerciseId = timer.exerciseId;
+    activeTimerSetIndex = timer.setIndex;
+    countdownRunning = timer.countdownRunning;
+    configureExerciseVisualTimer(timer.exerciseId);
+
+    if (timer.countdownRunning && timer.timerStartTimestamp != null) {
+      timerStartTimestamp = timer.timerStartTimestamp;
+      const elapsedMs = Date.now() - timerStartTimestamp;
+      countdownSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+      visualRawStep =
+        visualMsPerDot > 0 ? Math.floor(elapsedMs / visualMsPerDot) : 0;
+      currentVisualDot = visualRawStep;
+      startExerciseCountdownInterval();
+      startExerciseVisualInterval();
+    } else {
+      timerStartTimestamp = null;
+      countdownSeconds = timer.countdownSeconds;
+      visualRawStep =
+        visualMsPerDot > 0
+          ? Math.floor((countdownSeconds * 1000) / visualMsPerDot)
+          : 0;
+      currentVisualDot = visualRawStep;
+    }
+  }
+
+  function startTimedSet(exerciseId: string, setIndex: number) {
+    clearInterval(countdownTimer);
+    clearInterval(visualUpdateTimer);
+    activeTimerExerciseId = exerciseId;
+    activeTimerSetIndex = setIndex;
+    countdownSeconds = 0;
+    countdownRunning = true;
+    timerStartTimestamp = Date.now();
+    configureExerciseVisualTimer(exerciseId);
+    visualRawStep = 0;
+    currentVisualDot = 0;
+    startExerciseCountdownInterval();
+    startExerciseVisualInterval();
+    writeActiveSessionBackup();
+  }
+
   function toggleExerciseTimer() {
     if (countdownRunning) {
       clearInterval(countdownTimer);
@@ -3429,20 +3550,11 @@
       countdownRunning = false;
     } else {
       countdownRunning = true;
-      // Adjust start timestamp so visual elapsed continues correctly from current countdownSeconds
-      timerStartTimestamp = Date.now() - (countdownSeconds * 1000);
-      countdownTimer = setInterval(() => { countdownSeconds++; }, 1000);
-      clearInterval(visualUpdateTimer);
-      visualUpdateTimer = setInterval(() => {
-        if (timerStartTimestamp !== null && countdownRunning && visualMsPerDot > 0) {
-          const elapsed = Date.now() - timerStartTimestamp;
-          const newStep = Math.floor(elapsed / visualMsPerDot);
-          if (newStep !== visualRawStep) {
-            visualRawStep = newStep;
-          }
-        }
-      }, 30);
+      timerStartTimestamp = Date.now() - countdownSeconds * 1000;
+      startExerciseCountdownInterval();
+      startExerciseVisualInterval();
     }
+    writeActiveSessionBackup();
   }
 
   function stopAndSaveTimedSet(exerciseId: string, setIndex: number, targetSeconds: number) {
@@ -3493,6 +3605,7 @@
     visualMsPerDot = 0;
     visualRawStep = 0;
     visualRawStep = 0;
+    writeActiveSessionBackup();
   }
 
   async function syncSkipWorkout() {
@@ -5912,41 +6025,8 @@
         <RefreshCw class="size-5 animate-spin mb-3 opacity-70" aria-hidden="true" />
         <div class="text-[10px] uppercase tracking-[2px]">Loading day…</div>
       </div>
-    {:else if templates.length === 0}
-      <!-- Onboarding: entire routine is rest (starting out, or last template deleted). Not a tutorial; just a clean create-first page matching rest/unlogged style exactly. -->
-      <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
-        <!-- Hero icon -->
-        <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
-          <Dumbbell class="size-10 text-zinc-400" />
-        </div>
-
-        <div class="text-center">
-          <div class="text-3xl font-semibold tracking-[-0.02em] text-white">START YOUR ROUTINE</div>
-          <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">CREATE YOUR FIRST TEMPLATE</div>
-        </div>
-
-        {#if templateError}
-          <p class="text-[10px] text-red-300 leading-snug">{templateError}</p>
-        {/if}
-        <button 
-          type="button"
-          class="w-full max-w-xs h-[52px] rounded-xl font-sans font-black text-[11px] tracking-[0.15em] bg-white text-black border-2 border-transparent transition-all duration-150 hover:brightness-110 disabled:opacity-50 flex items-center justify-center"
-          disabled={!currentUser}
-          onclick={() => {
-            if (workoutState === 'active') return;
-            currentView = 'swap_template';
-            templateError = null;
-            templateErrorFading = false;
-            editingRoutineTemplateNameId = null;
-            routineTemplateNameEditOriginal = null;
-            builderAssignments = {};
-            builderEditingDay = selectedWeekday;
-          }}>
-          CREATE ROUTINE
-        </button>
-      </div>
     {:else if isPastUnloggedWorkoutDay}
-      <!-- UNLOGGED: past workout day with no saved log -->
+      <!-- UNLOGGED: past day with no saved log (incl. every day before account existed) -->
       <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
         <!-- Hero icon -->
         <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
@@ -5955,7 +6035,7 @@
 
         <div class="text-center">
           <div class="text-3xl font-semibold tracking-[-0.02em] text-white">UNLOGGED</div>
-          <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">NO WORKOUT WAS LOGGED ON {selectedDateDisplay.nice}</div>
+          <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">{unloggedHeroLine}</div>
         </div>
 
         <div class="max-w-[240px] text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200">
@@ -5992,6 +6072,39 @@
           </div>
         </button>
       </div>
+    {:else if templates.length === 0}
+      <!-- Onboarding: entire routine is rest (starting out, or last template deleted). Not a tutorial; just a clean create-first page matching rest/unlogged style exactly. -->
+      <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
+        <!-- Hero icon -->
+        <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
+          <Dumbbell class="size-10 text-zinc-400" />
+        </div>
+
+        <div class="text-center">
+          <div class="text-3xl font-semibold tracking-[-0.02em] text-white">START YOUR ROUTINE</div>
+          <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">CREATE YOUR FIRST TEMPLATE</div>
+        </div>
+
+        {#if templateError}
+          <p class="text-[10px] text-red-300 leading-snug">{templateError}</p>
+        {/if}
+        <button 
+          type="button"
+          class="w-full max-w-xs h-[52px] rounded-xl font-sans font-black text-[11px] tracking-[0.15em] bg-white text-black border-2 border-transparent transition-all duration-150 hover:brightness-110 disabled:opacity-50 flex items-center justify-center"
+          disabled={!currentUser}
+          onclick={() => {
+            if (workoutState === 'active') return;
+            currentView = 'swap_template';
+            templateError = null;
+            templateErrorFading = false;
+            editingRoutineTemplateNameId = null;
+            routineTemplateNameEditOriginal = null;
+            builderAssignments = {};
+            builderEditingDay = selectedWeekday;
+          }}>
+          CREATE ROUTINE
+        </button>
+      </div>
     {:else if (isRestLog || isScheduledRestDay) && !hasViewedWorkoutLog}
       <!-- REST DAY: scheduled rest or logged rest — never when a real workout log exists -->
       <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
@@ -6003,7 +6116,7 @@
         <div class="text-center {isFuture && !isRestLog ? 'opacity-80' : ''}">
           <div class="text-3xl font-semibold tracking-[-0.02em] text-white">REST DAY</div>
           <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">
-            {isRestLog ? `LOGGED FOR ${selectedDateDisplay.nice}` : `NO TEMPLATE ASSIGNED FOR ${selectedDateDisplay.nice}`}
+            {isRestLog ? `LOGGED FOR ${selectedDayLabel}` : `NO TEMPLATE ASSIGNED FOR ${selectedDayLabel}`}
           </div>
         </div>
 
@@ -6263,7 +6376,9 @@
                       : timeTotal - elapsed
                     : timeTotal}
                 <div class="time-readout font-7segment text-2xl {hasActiveTimerThis && isOvertime ? 'w-fg-green' : exRed ? 'text-current' : 'text-white'}">
-                  {#if hasActiveTimerThis && isOvertime}<span class="ex-time-digit ex-time-digit--plus">+</span>{/if}
+                  {#if hasActiveTimerThis && isOvertime}
+                    <Plus class="time-readout-plus fill-current" strokeWidth={2.5} />
+                  {/if}
                   <span class="ex-time-digit">{formatTime(displaySecs)}</span>
                 </div>
               {/if}
@@ -6339,7 +6454,7 @@
               <div class="time-set-lane">
                 {#if hasActiveTimerThis && activeTimerSetIndex !== null}
                   {@const s = activeTimerSetIndex}
-                  {@const timerCubeCount = 36}
+                  {@const timerCubeCount = 42}
                   {@const timerMet = timeTotal > 0 && countdownSeconds >= timeTotal}
                   {@const rawDot = visualRawStep}
                   {@const cycle = timerCubeCount * 2}
@@ -6351,32 +6466,33 @@
                       })()
                     : Math.min(timerCubeCount - 1, rawDot)}
                   {@const inReverse = timerMet && (rawDot % cycle >= timerCubeCount)}
-                  {@const direction = inReverse ? -1 : 1} 
+                  {@const direction = inReverse ? -1 : 1}
                   <div class="time-active-bar">
                     <span class="time-active-set">S{s + 1}</span>
                     <div class="time-active-progress">
                       <div
                         class="timer-progress-cubes"
                         class:timer-progress-cubes--running={countdownRunning}
+                        class:timer-progress-cubes--met={timerMet}
+                        class:timer-progress-cubes--yellow={status === 'yellow' && !timerMet}
                       >
                         {#each Array(timerCubeCount) as _, i}
                           {@const isCurrent = i === displayDot}
-                          {@const isBehind = direction > 0 ? (i < displayDot) : (i > displayDot)}
-                          {@const dist = direction > 0 ? (displayDot - i) : (i - displayDot)}
-                          {@const trailGrey = isBehind && dist > 0
-                            ? `#${Math.round(68 + (1 - dist / Math.max(1, timerCubeCount)) * 68).toString(16).padStart(2, '0')}`
-                            : ''}
+                          {@const isPast = !isCurrent && (
+                            direction > 0
+                              ? i < displayDot
+                              : i > displayDot ||
+                                (displayDot === timerCubeCount - 1 && i < displayDot)
+                          )}
+                          {@const isTrail = i === displayDot - direction}
+                          {@const isFuture = !isCurrent && !isPast && !isTrail}
                           <div
                             class="timer-progress-cube"
+                            class:timer-progress-cube--past={isPast && !isTrail}
+                            class:timer-progress-cube--trail={isTrail}
+                            class:timer-progress-cube--future={isFuture}
                             class:timer-progress-cube--lit={isCurrent && !timerMet}
                             class:timer-progress-cube--met={timerMet && isCurrent}
-                            style={isCurrent
-                              ? timerMet
-                                ? 'background-color: var(--w-green-fg);'
-                                : 'background-color: #fff;'
-                              : isBehind && trailGrey
-                                ? `background-color: ${trailGrey};`
-                                : ''}
                           ></div>
                         {/each}
                       </div>
@@ -7487,8 +7603,8 @@
   {/if}
   </div>
 
-  <div class="app-footer text-center text-[9px] uppercase tracking-[1px] text-zinc-500 shrink-0 leading-none">
-    © 2026 LIFT TRACKER — ALL RIGHTS RESERVED BY ARYA
+  <div class="app-footer text-center text-[9px] tracking-[0.5px] text-zinc-500 shrink-0 leading-none">
+    All rights reserved by Arya.
   </div>
 
 </div>

@@ -413,11 +413,6 @@ input.prop-num-input::-webkit-outer-spin-button {
 	letter-spacing: 0.06em;
 }
 
-.ex-time-digit--plus {
-	min-width: 1ch;
-	text-align: center;
-}
-
 /* Week bar live clock only — monospace keeps chevron from shifting */
 .font-header-clock {
 	font-family: var(--font-header-clock);
@@ -1451,10 +1446,20 @@ input.prop-num-input::-webkit-outer-spin-button {
 }
 
 .time-readout {
+	display: inline-flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 0.125rem;
 	flex-shrink: 0;
 	text-align: right;
 	line-height: 1;
 	white-space: nowrap;
+}
+
+.time-readout-plus {
+	width: 0.62em;
+	height: 0.62em;
+	flex-shrink: 0;
 }
 
 /* Bodyweight panel uses similar look as settings for consistency */
@@ -1506,6 +1511,8 @@ input.prop-num-input::-webkit-outer-spin-button {
 }
 
 .timer-progress-cubes {
+	--timer-present-color: #ffffff;
+	--timer-past-color: #737373;
 	display: flex;
 	flex-wrap: nowrap;
 	align-items: center;
@@ -1513,6 +1520,17 @@ input.prop-num-input::-webkit-outer-spin-button {
 	width: 100%;
 	height: 4px;
 	min-width: 0;
+}
+
+.timer-progress-cubes--yellow {
+	--timer-present-color: var(--w-yellow-fg);
+	--timer-past-color: color-mix(in srgb, var(--w-yellow-fg) 18%, var(--w-yellow-bg));
+	--timer-future-color: color-mix(in srgb, #000 52%, var(--w-yellow-bg));
+}
+
+.timer-progress-cubes--met {
+	--timer-present-color: var(--w-green-fg);
+	--timer-past-color: color-mix(in srgb, #28a05a 32%, var(--w-green-bg));
 }
 
 .time-active-actions {
@@ -1558,29 +1576,70 @@ input.prop-num-input::-webkit-outer-spin-button {
 	background-color: #1a1a1a;
 }
 
+.timer-progress-cube--past {
+	background-color: var(--timer-past-color);
+}
+
+.timer-progress-cubes--yellow .timer-progress-cube--future {
+	background-color: var(--timer-future-color);
+}
+
+.timer-progress-cube--trail {
+	background-color: color-mix(
+		in srgb,
+		var(--timer-present-color) 50%,
+		var(--timer-past-color)
+	);
+}
+
+.timer-progress-cubes--met .timer-progress-cube--trail {
+	background-color: color-mix(
+		in srgb,
+		var(--timer-present-color) 32%,
+		var(--timer-past-color)
+	);
+}
+
 .timer-progress-cube--on {
 	background-color: #666;
 }
 
 .timer-progress-cube--lit {
-	background-color: #ffffff;
+	background-color: var(--timer-present-color);
+	box-shadow: 0 0 3px 0.5px color-mix(in srgb, var(--timer-present-color) 50%, transparent);
 }
 
 .timer-progress-cube--met {
 	background-color: var(--w-green-fg);
+	box-shadow: 0 0 3px 0.5px color-mix(in srgb, var(--w-green-fg) 50%, transparent);
 }
 
-.timer-progress-cubes--running .timer-progress-cube--lit {
-	animation: timer-cube-pulse 3s ease-in-out infinite;
+.timer-progress-cubes--running .timer-progress-cube--lit,
+.timer-progress-cubes--running .timer-progress-cube--met {
+	animation: timer-cube-glow 3s ease-in-out infinite;
 }
 
-@keyframes timer-cube-pulse {
+@keyframes timer-cube-glow {
 	0%,
 	100% {
-		opacity: 1;
+		box-shadow: 0 0 2px 0.5px color-mix(in srgb, var(--timer-present-color) 40%, transparent);
 	}
 	50% {
-		opacity: 0.45;
+		box-shadow: 0 0 5px 1.5px color-mix(in srgb, var(--timer-present-color) 72%, transparent);
+	}
+}
+
+.timer-progress-cubes--running .timer-progress-cube--met {
+	animation-name: timer-cube-glow-met;
+}
+
+@keyframes timer-cube-glow-met {
+	0%,
+	100% {
+		box-shadow: 0 0 2px 0.5px color-mix(in srgb, var(--w-green-fg) 40%, transparent);
+	}
+	50% {
+		box-shadow: 0 0 5px 1.5px color-mix(in srgb, var(--w-green-fg) 72%, transparent);
 	}
 }
 

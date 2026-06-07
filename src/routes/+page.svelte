@@ -300,10 +300,21 @@
   }
 
   let weekCalendarCollapsed = $state(true);
+  let weekCalendarClosing = $state(false);
+  const WEEK_CALENDAR_MS = 220;
 
   function toggleWeekCalendar() {
     if (workoutState === 'active') return;
-    weekCalendarCollapsed = !weekCalendarCollapsed;
+    if (weekCalendarCollapsed) {
+      weekCalendarClosing = false;
+      weekCalendarCollapsed = false;
+      return;
+    }
+    weekCalendarClosing = true;
+    weekCalendarCollapsed = true;
+    setTimeout(() => {
+      weekCalendarClosing = false;
+    }, WEEK_CALENDAR_MS);
   }
 
   // Auth state (powered by new db.ts + Supabase OAuth Google/GitHub)
@@ -494,9 +505,14 @@
   let weekCalendarDisplayCollapsed = $derived(
     weekCalendarLocked || weekCalendarCollapsed,
   );
+  /** Keep strip mounted + styled while the close animation runs. */
+  let weekCalendarAnimating = $derived(
+    !weekCalendarDisplayCollapsed || weekCalendarClosing,
+  );
 
   $effect(() => {
     if (workoutState === 'active') {
+      weekCalendarClosing = false;
       weekCalendarCollapsed = true;
     }
   });
@@ -1029,7 +1045,7 @@
   // This avoids repeating expensive lookups + function calls inside the Svelte {#each},
   // which helps a lot on lower-powered phones when expanding the week calendar.
   let weekDayData = $derived.by(() => {
-    if (weekCalendarDisplayCollapsed) return [];
+    if (!weekCalendarAnimating) return [];
     return currentWeekDates.map((dayInfo) => {
       const isSelected = dayInfo.key === selectedDateStr;
       const isRealToday = dayInfo.isRealToday;
@@ -1232,7 +1248,7 @@
 
   // Fetch logs for week strip only when expanded (avoid work while collapsed)
   $effect(() => {
-    if (!currentUser || weekCalendarDisplayCollapsed) return;
+    if (!currentUser || !weekCalendarAnimating) return;
     const visible = currentWeekDates;
     const missing: string[] = [];
     for (const d of visible) {
@@ -1249,8 +1265,8 @@
     }
     if (missing.length === 0) return;
 
-    // Defer fetch so the panel can paint before network + state updates.
-    const delay = 32;
+    // Defer fetch until the open animation finishes so it does not jank the transition.
+    const delay = WEEK_CALENDAR_MS;
 
     setTimeout(() => {
       // Re-check visibility in case the user navigated away very quickly
@@ -5915,8 +5931,13 @@
         </span>
       </div>
     </div>
-    {#if !weekCalendarDisplayCollapsed}
-      <div class="week-calendar-panel">
+    <div
+      class="week-calendar-panel"
+      class:week-calendar-panel--open={weekCalendarAnimating}
+      class:week-calendar-panel--closing={weekCalendarClosing}
+      aria-hidden={!weekCalendarAnimating}
+    >
+      <div class="week-calendar-panel__inner">
         <div class="flex items-stretch">
           <button 
             class="w-5 shrink-0 flex items-center justify-center bg-[#141414] border-r border-[#1e1e1e] text-zinc-400 hover:text-white active:bg-[#0d0d0d] transition disabled:opacity-40"
@@ -5933,6 +5954,7 @@
                 class="day-btn aspect-square w-full flex flex-col items-center justify-center gap-0 rounded-md text-[10px] font-bold tracking-wide border-none bg-transparent text-zinc-600 hover:text-white relative {data.dynamicClasses}"
                 onclick={() => selectDate(d.date)}
                 disabled={workoutState === 'active'}
+                tabindex={weekCalendarAnimating && !weekCalendarClosing ? undefined : -1}
                 title={DAY_NAMES[d.weekday] + ' ' + d.key}
               >
                 <div class="flex flex-col items-center justify-center leading-none">
@@ -5958,7 +5980,7 @@
           </button>
         </div>
       </div>
-    {/if}
+    </div>
   </div>
 
   {#if ctaBarVisible}

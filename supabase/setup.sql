@@ -2,8 +2,8 @@
 -- Lift Tracker — Database Setup (Full Initialization)
 -- =============================================================================
 -- Run in Supabase Dashboard → SQL Editor → New query → paste entire file → Run
---   or: ./setup-db.fish --yes          (full reset)
---   or: ./setup-db.fish --users-only   (wipe users + data, keep schema)
+--   or: ./scripts/setup-db.fish --yes          (full reset)
+--   or: ./scripts/setup-db.fish --users-only   (wipe users + data, keep schema)
 --
 -- SAFE TO RE-RUN: drops app objects first, then recreates everything.
 --

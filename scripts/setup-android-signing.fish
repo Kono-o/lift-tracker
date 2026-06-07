@@ -2,7 +2,7 @@
 # Generate a release keystore for sideloadable APK builds (one-time setup).
 
 set -l root (realpath (dirname (status filename)))/..
-set -l signing_dir "$root/android-signing"
+set -l signing_dir "$root/scripts/android-signing"
 set -l keystore "$signing_dir/lift-tracker-release.keystore"
 set -l props "$signing_dir/keystore.properties"
 

@@ -1,12 +1,21 @@
 {
 	"name": "lift-tracker",
+	"description": "Workout logging app with templates, timed exercises, stats, and Supabase sync",
 	"private": true,
 	"version": "0.0.1",
+	"homepage": "https://lift-tracker-self.vercel.app",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Kono-o/lift-tracker.git"
+	},
+	"bugs": {
+		"url": "https://github.com/Kono-o/lift-tracker/issues"
+	},
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev --host 0.0.0.0",
-		"dev:phone": "./dev-phone.fish",
-		"dev:tunnel": "./dev-phone.fish --tunnel",
+		"dev:phone": "./scripts/dev-phone.fish",
+		"dev:tunnel": "./scripts/dev-phone.fish --tunnel",
 		"build": "vite build",
 		"build:capacitor": "CAPACITOR=1 vite build",
 		"preview": "vite preview",
@@ -16,6 +25,7 @@
 		"cap:add:android": "npx cap add android",
 		"cap:add:ios": "npx cap add ios",
 		"build:apk:release": "./scripts/build-release-apk.fish",
+		"db:setup": "./scripts/setup-db.fish",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"

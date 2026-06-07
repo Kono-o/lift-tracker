@@ -1,13 +1,15 @@
 #!/usr/bin/env fish
 
-# dev-phone.fish — run the Vite dev server for phone testing
+# scripts/dev-phone.fish — run the Vite dev server for phone testing
 #
 # Usage:
 #   ./dev-phone.fish           # LAN / ZeroTier URLs, then start dev server
 #   ./dev-phone.fish --tunnel  # also expose a public localtunnel URL (AP isolation workaround)
 
-set -l script_name (basename (status -f))
-test -n "$script_name"; or set script_name dev-phone.fish
+set -l root (realpath (dirname (status filename)))/..
+cd $root
+
+set -l script_name scripts/dev-phone.fish
 
 function show_help --description 'Print usage'
     echo "$script_name — dev server reachable from your phone"

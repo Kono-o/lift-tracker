@@ -1,17 +1,17 @@
 // Applied from android/app/build.gradle for release APK signing.
-// Credentials live in android-signing/keystore.properties (not committed).
+// Credentials live in scripts/android-signing/keystore.properties (not committed).
 
-def keystorePropertiesFile = rootProject.file('../android-signing/keystore.properties')
+def keystorePropertiesFile = rootProject.file('../scripts/android-signing/keystore.properties')
 if (!keystorePropertiesFile.exists()) {
     throw new GradleException(
-        'Missing android-signing/keystore.properties. Run: ./scripts/setup-android-signing.fish'
+        'Missing scripts/android-signing/keystore.properties. Run: ./scripts/setup-android-signing.fish'
     )
 }
 
 def keystoreProperties = new Properties()
 keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 
-def keystoreFile = rootProject.file("../android-signing/${keystoreProperties['storeFile']}")
+def keystoreFile = rootProject.file("../scripts/android-signing/${keystoreProperties['storeFile']}")
 if (!keystoreFile.exists()) {
     throw new GradleException(
         "Keystore not found at ${keystoreFile}. Run: ./scripts/setup-android-signing.fish"

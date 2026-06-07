@@ -13,8 +13,8 @@ android
 ios
 
 # Android release signing (generate locally; never commit secrets)
-android-signing/keystore.properties
-android-signing/*.keystore
+scripts/android-signing/keystore.properties
+scripts/android-signing/*.keystore
 
 # Deployment platform metadata (may contain project ids)
 .vercel
@@ -70,8 +70,7 @@ vite.config.ts.timestamp-*
 *.key
 *.p12
 
-# Local helper / personal scripts (not part of the shared project)
-setup-db.fish
+# Local helper scripts (not part of the shared project)
 *.local.fish
 local-*.fish
 reset-db.fish

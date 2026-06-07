@@ -1924,7 +1924,8 @@ input.prop-num-input::-webkit-outer-spin-button {
 	}
 
 	.boot-panel-dot-pulse,
-	.boot-skeleton {
+	.boot-skeleton,
+	.boot-panel-placeholder::after {
 		animation: none;
 		opacity: 0.55;
 	}
@@ -1990,6 +1991,61 @@ input.prop-num-input::-webkit-outer-spin-button {
 
 .boot-panel-dialog {
 	pointer-events: none;
+}
+
+.boot-panel-placeholder {
+	position: relative;
+	overflow: hidden;
+}
+
+.boot-panel-placeholder--avatar {
+	width: 5rem;
+	height: 5rem;
+	border-radius: 9999px;
+	background-color: #141414;
+	flex-shrink: 0;
+}
+
+.boot-panel-placeholder__ghost {
+	color: transparent !important;
+	user-select: none;
+}
+
+.settings-panel-header__identity.boot-panel-placeholder {
+	background: transparent;
+}
+
+.settings-panel-action-btn.boot-panel-placeholder {
+	pointer-events: none;
+	cursor: default;
+}
+
+.boot-panel-placeholder--avatar::after,
+span.boot-panel-placeholder::after,
+td.boot-panel-placeholder::after,
+.settings-panel-action-btn.boot-panel-placeholder::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	background: linear-gradient(
+		110deg,
+		transparent 25%,
+		rgb(255 255 255 / 0.07) 50%,
+		transparent 75%
+	);
+	background-size: 250% 100%;
+	animation: boot-panel-placeholder-shimmer 1.4s ease-in-out infinite;
+	pointer-events: none;
+}
+
+@keyframes boot-panel-placeholder-shimmer {
+	0% {
+		background-position: 100% 0;
+	}
+	100% {
+		background-position: -100% 0;
+	}
 }
 
 .boot-panel-dot-pulse {
@@ -2176,15 +2232,15 @@ input.prop-num-input::-webkit-outer-spin-button {
 
 
 .boot-overlay {
-	position: absolute;
+	position: fixed;
 	inset: 0;
 	z-index: 30;
 	display: flex;
-	flex-direction: column;
 	align-items: center;
 	justify-content: center;
-	min-height: 0;
 	padding: 1rem;
+	overflow: hidden;
+	overscroll-behavior: none;
 	background: #0a0a0a;
 	opacity: 1;
 	pointer-events: auto;

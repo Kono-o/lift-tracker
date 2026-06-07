@@ -5851,27 +5851,48 @@
             </span>
             <span class="settings-panel-header__latency">…</span>
           </div>
+          <button
+            type="button"
+            class="settings-panel-header__close"
+            disabled
+            aria-hidden="true"
+            tabindex="-1"
+          >
+            <X class="size-3.5" />
+          </button>
         </div>
       </div>
 
       <div class="settings-panel-body text-[10px] leading-snug">
         <div class="flex justify-center py-1">
-          <div class="boot-skeleton boot-skeleton--avatar" aria-hidden="true"></div>
+          <div class="boot-panel-placeholder boot-panel-placeholder--avatar" aria-hidden="true"></div>
         </div>
 
         <div class="settings-panel-stats">
-          <div class="settings-panel-header__identity" aria-hidden="true">
-            <div class="boot-skeleton boot-skeleton--line boot-skeleton--name"></div>
-            <div class="boot-skeleton boot-skeleton--line boot-skeleton--meta"></div>
-            <div class="boot-skeleton boot-skeleton--line boot-skeleton--meta"></div>
-            <div class="boot-skeleton boot-skeleton--line boot-skeleton--id"></div>
+          <div class="settings-panel-header__identity boot-panel-placeholder" aria-hidden="true">
+            <span class="settings-panel-header__name boot-panel-placeholder__ghost">account name</span>
+            <span class="text-[10px] boot-panel-placeholder__ghost">joined Jan 2026</span>
+            <span class="text-[10px] boot-panel-placeholder__ghost">Session: 1h 00m</span>
+            <span class="settings-panel-header__user-id boot-panel-placeholder__ghost">00000000-0000-0000-0000-000000000000</span>
           </div>
 
-          <div class="boot-panel-chips" aria-hidden="true">
-            <div class="boot-skeleton boot-skeleton--chip"></div>
-            <div class="boot-skeleton boot-skeleton--chip"></div>
-            <div class="boot-skeleton boot-skeleton--chip"></div>
-            <div class="boot-skeleton boot-skeleton--chip boot-skeleton--chip-wide"></div>
+          <div class="flex justify-center gap-1 text-[9px] text-zinc-400 mt-1 mb-2" aria-hidden="true">
+            <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
+              <List class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+              <span class="leading-none boot-panel-placeholder__ghost">0 tpl</span>
+            </span>
+            <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
+              <Dumbbell class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+              <span class="leading-none boot-panel-placeholder__ghost">0 ex</span>
+            </span>
+            <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
+              <History class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+              <span class="leading-none boot-panel-placeholder__ghost">0 logs</span>
+            </span>
+            <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
+              <HardDrive class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+              <span class="leading-none boot-panel-placeholder__ghost">~0 B</span>
+            </span>
           </div>
 
           <div class="settings-panel-table-wrap" aria-hidden="true">
@@ -5879,11 +5900,15 @@
               <tbody>
                 <tr>
                   <th scope="row">Server</th>
-                  <td><div class="boot-skeleton boot-skeleton--cell"></div></td>
+                  <td class="settings-panel-table__mono settings-panel-table__truncate boot-panel-placeholder">
+                    <span class="boot-panel-placeholder__ghost">https://example.supabase.co</span>
+                  </td>
                 </tr>
                 <tr>
                   <th scope="row">Edge</th>
-                  <td><div class="boot-skeleton boot-skeleton--cell boot-skeleton--cell-short"></div></td>
+                  <td class="settings-panel-table__mono boot-panel-placeholder">
+                    <span class="boot-panel-placeholder__ghost">us-east-1</span>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -5891,10 +5916,34 @@
         </div>
 
         <div class="settings-panel-account" aria-hidden="true">
-          <div class="boot-skeleton boot-skeleton--btn boot-skeleton--full"></div>
-          <div class="settings-panel-actions">
-            <div class="boot-skeleton boot-skeleton--btn"></div>
-            <div class="boot-skeleton boot-skeleton--btn"></div>
+          <div class="settings-panel-password">
+            <div
+              class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--change-password boot-panel-placeholder"
+            >
+              <span class="settings-panel-action-btn__label boot-panel-placeholder__ghost">
+                <LockKeyhole class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                CHANGE PASSWORD
+              </span>
+            </div>
+          </div>
+
+          <div class="settings-panel-actions-reveal settings-panel-actions-reveal--open">
+            <div class="settings-panel-actions-reveal__inner">
+              <div class="settings-panel-actions">
+                <div class="settings-panel-action-btn settings-panel-action-btn--signout boot-panel-placeholder">
+                  <span class="settings-panel-action-btn__label boot-panel-placeholder__ghost">
+                    <LogOut class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                    SIGN OUT
+                  </span>
+                </div>
+                <div class="settings-panel-action-btn settings-panel-action-btn--delete boot-panel-placeholder">
+                  <span class="settings-panel-action-btn__label boot-panel-placeholder__ghost">
+                    <Trash2 class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                    DELETE
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

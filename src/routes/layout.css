@@ -436,7 +436,8 @@ input.prop-num-input::-webkit-outer-spin-button {
 .settings-panel-header {
 	display: flex;
 	align-items: center;
-	gap: var(--sp-gap);
+	justify-content: space-between;
+	gap: 0.5rem;
 	min-height: 1.75rem;
 	padding: var(--sp-pad);
 	border-bottom: 1px solid #1e1e1e;
@@ -448,7 +449,8 @@ input.prop-num-input::-webkit-outer-spin-button {
 	align-items: center;
 	gap: 0.5rem;
 	min-width: 0;
-	flex: 1 1 auto;
+	flex: 0 0 auto;
+	padding-left: 0.5rem;
 }
 
 .settings-panel-header__avatar {
@@ -458,22 +460,20 @@ input.prop-num-input::-webkit-outer-spin-button {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	border-radius: 0.5rem;
+	border-radius: 9999px;
 	border: 1px solid rgb(6 78 59 / 0.8);
 	background-color: rgb(6 78 59 / 0.15);
-	color: #34d399;
-	font-size: 0.625rem;
-	font-weight: 900;
-	line-height: 1;
+	overflow: hidden;
 }
 
 .settings-panel-header__identity {
 	display: flex;
 	flex-direction: column;
 	justify-content: center;
+	align-items: center;
 	gap: 0.125rem;
 	min-width: 0;
-	flex: 1 1 auto;
+	text-align: center;
 }
 
 .settings-panel-header__name {
@@ -504,7 +504,6 @@ input.prop-num-input::-webkit-outer-spin-button {
 	justify-content: flex-start;
 	gap: 0.3125rem;
 	flex-shrink: 0;
-	margin-left: 0.5rem;
 	font-size: 0.5625rem;
 	line-height: 1;
 }
@@ -597,6 +596,10 @@ input.prop-num-input::-webkit-outer-spin-button {
 	margin-top: var(--sp-gap);
 }
 
+.settings-panel-stats > .settings-panel-header__identity {
+	width: 100%;
+}
+
 .settings-panel-account {
 	display: flex;
 	flex-direction: column;
@@ -612,6 +615,20 @@ input.prop-num-input::-webkit-outer-spin-button {
 
 .settings-panel-account > .settings-panel-actions-reveal:not(.settings-panel-actions-reveal--open) {
 	margin-top: 0;
+}
+
+.settings-panel-account--password-open {
+	overflow-y: hidden;
+}
+
+.settings-panel-password--open {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.settings-panel-password--open > .auth-confirm-reveal--open {
+	flex: 1 1 auto;
+	min-height: 0;
 }
 
 .settings-panel-loading {
@@ -631,9 +648,8 @@ input.prop-num-input::-webkit-outer-spin-button {
 .settings-panel-brand {
 	display: flex;
 	align-items: baseline;
-	justify-content: center;
+	justify-content: flex-start;
 	gap: 0.125rem;
-	width: 100%;
 	line-height: 1;
 	user-select: none;
 }
@@ -1642,6 +1658,8 @@ input.prop-num-input::-webkit-outer-spin-button {
 	opacity: 1;
 	pointer-events: auto;
 }
+
+
 
 .boot-overlay {
 	position: absolute;

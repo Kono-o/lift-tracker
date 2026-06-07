@@ -2,6 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { PUBLIC_SUPABASE_URL } from '$env/static/public';
   import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type WorkoutHistory } from '$lib/db';
+  import GeneratedAvatar from '$lib/components/GeneratedAvatar.svelte';
   import { getDbActivitySnapshot, subscribeDbActivity, subscribeDbActivitySnapshot } from '$lib/dbActivity';
   import {
     formatBytes,
@@ -40,6 +41,8 @@
     ChevronUp,
     Dumbbell,
     FileX,
+    HardDrive,
+    History,
     List,
     Lock,
     Minus,
@@ -4561,68 +4564,86 @@
       <div class="settings-panel-dialog w-full rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left">
         <div class="settings-panel-header">
           <div class="settings-panel-header__title">
-            {#if currentUser}
-              <div class="settings-panel-header__avatar">{accountInitial}</div>
-              <div class="settings-panel-header__identity">
-                <span class="settings-panel-header__name">{accountDisplayName}</span>
-                <span class="settings-panel-header__user-id" title={currentUser.id}>{currentUser.id}</span>
-              </div>
-            {:else}
-              <span class="settings-panel-header__name text-zinc-400">Backend</span>
-            {/if}
+            <div class="settings-panel-brand" aria-hidden="true">
+              <span class="settings-panel-brand__lift">LIFT</span>
+              <span class="settings-panel-brand__dash">—</span>
+              <span class="settings-panel-brand__tracker">TRACKER</span>
+            </div>
           </div>
-          <div class="settings-panel-header__supabase" aria-label="Supabase connection">
-            <span class="settings-panel-header__supabase-label">Supabase</span>
-            <span class="settings-panel-header__dot-wrap" aria-hidden="true">
-              <span
-                class="db-io-dot settings-panel-header__dot"
-                class:db-io-dot--active={!!supabasePanel && supabasePanel.health.ok && supabasePanel.sessionOk}
-              ></span>
-            </span>
-            <span class="settings-panel-header__latency">
-              {#if supabasePanelLoading}
-                …
-              {:else if supabasePanel?.health.latencyMs != null}
-                {formatSupabaseLatencyMs(supabasePanel.health.latencyMs)}
-              {:else}
-                —
-              {/if}
-            </span>
+          <div class="flex items-center gap-2">
+            <div class="settings-panel-header__supabase" aria-label="Supabase connection">
+              <span class="settings-panel-header__supabase-label">Supabase</span>
+              <span class="settings-panel-header__dot-wrap" aria-hidden="true">
+                <span
+                  class="db-io-dot settings-panel-header__dot"
+                  class:db-io-dot--active={!!supabasePanel && supabasePanel.health.ok && supabasePanel.sessionOk}
+                ></span>
+              </span>
+              <span class="settings-panel-header__latency">
+                {#if supabasePanelLoading}
+                  …
+                {:else if supabasePanel?.health.latencyMs != null}
+                  {formatSupabaseLatencyMs(supabasePanel.health.latencyMs)}
+                {:else}
+                  —
+                {/if}
+              </span>
+            </div>
+            <button
+              type="button"
+              aria-label="Close"
+              class="settings-panel-header__close"
+              disabled={accountBusy}
+              onclick={closeSettingsPanel}
+            >
+              <X class="size-3.5" />
+            </button>
           </div>
-          <button
-            type="button"
-            aria-label="Close"
-            class="settings-panel-header__close"
-            disabled={accountBusy}
-            onclick={closeSettingsPanel}
-          >
-            <X class="size-3.5" />
-          </button>
         </div>
         <div class="settings-panel-body text-[10px] leading-snug">
+          {#if currentUser}
+            <div class="flex justify-center py-2">
+              <GeneratedAvatar userId={currentUser.id} size={80} />
+            </div>
+          {/if}
           <div class="settings-panel-stats">
             {#if supabasePanelLoading && !supabasePanel}
               <p class="settings-panel-loading">Loading backend…</p>
             {:else if supabasePanel}
               {@const panel = supabasePanel}
-              <div class="settings-panel-brand" aria-hidden="true">
-                <span class="settings-panel-brand__lift">LIFT</span>
-                <span class="settings-panel-brand__dash">—</span>
-                <span class="settings-panel-brand__tracker">TRACKER</span>
-              </div>
+              {#if currentUser}
+                <div class="settings-panel-header__identity">
+                  <span class="settings-panel-header__name">{accountDisplayName}</span>
+                  <span class="text-[10px] text-zinc-500">joined {accountMemberSince}</span>
+                  <span class="text-[10px] text-zinc-500">Session: {formatSessionExpiry(panel.expiresAt)}</span>
+                  <span class="settings-panel-header__user-id" title={currentUser.id}>{currentUser.id}</span>
+                </div>
+              {:else}
+                <span class="settings-panel-header__name text-zinc-400">Backend</span>
+              {/if}
+              {#if panel.usage}
+                <div class="flex justify-center gap-1 text-[9px] text-zinc-400 mt-1 mb-2">
+                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
+                    <List class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="leading-none">{panel.usage.templates} tpl</span>
+                  </span>
+                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
+                    <Dumbbell class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="leading-none">{panel.usage.exercises} ex</span>
+                  </span>
+                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
+                    <History class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="leading-none">{panel.usage.workout_history} logs</span>
+                  </span>
+                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
+                    <HardDrive class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="leading-none">{panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}</span>
+                  </span>
+                </div>
+              {/if}
               <div class="settings-panel-table-wrap">
                 <table class="settings-panel-table">
                   <tbody>
-                    {#if currentUser}
-                      <tr>
-                        <th scope="row">Provider</th>
-                        <td>{accountProvider}</td>
-                      </tr>
-                      <tr>
-                        <th scope="row">Joined</th>
-                        <td>{accountMemberSince}</td>
-                      </tr>
-                    {/if}
                     {#if panel.health.server}
                       <tr>
                         <th scope="row">Server</th>
@@ -4633,38 +4654,6 @@
                       <tr>
                         <th scope="row">Edge</th>
                         <td class="settings-panel-table__mono">{panel.health.region}</td>
-                      </tr>
-                    {/if}
-                    {#if currentUser}
-                      <tr>
-                        <th scope="row">Session</th>
-                        <td>{formatSessionExpiry(panel.expiresAt)}</td>
-                      </tr>
-                    {/if}
-                    <tr>
-                      <th scope="row">Calls</th>
-                      <td>{dbActivitySnapshot.totalPulses}</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">Size</th>
-                      <td class="settings-panel-table__strong">
-                        {#if panel.usage}
-                          {panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}
-                        {:else if currentUser}
-                          —
-                        {:else}
-                          Sign in
-                        {/if}
-                      </td>
-                    </tr>
-                    {#if panel.usage}
-                      <tr>
-                        <th scope="row">Library</th>
-                        <td>{panel.usage.templates} tpl · {panel.usage.exercises} ex</td>
-                      </tr>
-                      <tr>
-                        <th scope="row">Logs</th>
-                        <td>{panel.usage.workout_history}</td>
                       </tr>
                     {/if}
                   </tbody>
@@ -4680,7 +4669,8 @@
           </div>
 
           {#if currentUser}
-            <div class="settings-panel-account no-scrollbar">
+            <div class="settings-panel-account no-scrollbar"
+              class:settings-panel-account--password-open={showChangePasswordForm}>
             {#if accountError && !showChangePasswordForm}
               <p class="settings-panel-alert">
                 {accountError}
@@ -4688,7 +4678,8 @@
             {/if}
 
             {#if accountCanChangePassword}
-              <div class="settings-panel-password">
+              <div class="settings-panel-password"
+                class:settings-panel-password--open={showChangePasswordForm}>
                 <button
                   type="button"
                   class="settings-panel-action-btn settings-panel-action-btn--full
@@ -4922,10 +4913,10 @@
         type="button"
         title="Account and backend"
         aria-label="Account and backend"
-        class="w-7 h-7 shrink-0 rounded-lg border border-emerald-800 bg-emerald-950/40 text-emerald-400 flex items-center justify-center text-[10px] font-black hover:border-emerald-600 hover:text-emerald-300 transition"
+        class="w-7 h-7 shrink-0 rounded bg-emerald-950/40 flex items-center justify-center hover:bg-emerald-900/40 transition"
         onclick={(e) => { e.stopPropagation(); openSettingsPanel(); }}
       >
-        {accountInitial}
+        <GeneratedAvatar userId={currentUser.id} size={26} rounded={2} className="rounded" />
       </button>
       <div class="flex-1 flex items-center gap-2 min-w-0">
         <button

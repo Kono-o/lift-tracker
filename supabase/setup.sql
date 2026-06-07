@@ -13,8 +13,7 @@
 --   - schedule
 --   - workout_history
 --   - usernames
---
--- It does NOT delete auth.users accounts.
+--   - AND ALL auth.users accounts (every single account is deleted, no admins preserved)
 --
 -- After running, you may want to run:
 --   NOTIFY pgrst, 'reload schema';
@@ -41,6 +40,9 @@ drop table if exists public.bodyweight_logs cascade;
 drop table if exists public.schedule cascade;
 drop table if exists public.templates cascade;
 drop table if exists public.usernames cascade;
+
+-- Delete ALL auth users (full wipe, no admin accounts preserved)
+DELETE FROM auth.users;
 
 -- -----------------------------------------------------------------------------
 -- 2. Core tables
@@ -486,6 +488,33 @@ $$;
 
 revoke all on function public.get_own_data_usage() from public;
 grant execute on function public.get_own_data_usage() to authenticated;
+
+-- -----------------------------------------------------------------------------
+-- 9. Helper to delete ALL accounts (for the --delete-all mode in setup-db.fish)
+--    This is a blanket wipe with no admin preserved. Use with extreme caution.
+-- -----------------------------------------------------------------------------
+create or replace function public.delete_all_accounts()
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+begin
+  delete from public.exercises;
+  delete from public.workout_history;
+  delete from public.bodyweight_logs;
+  delete from public.templates;
+  delete from public.schedule;
+  delete from public.usernames;
+  delete from public.template_exercises;
+
+  delete from auth.users;
+end;
+$$;
+
+revoke all on function public.delete_all_accounts() from public;
+grant execute on function public.delete_all_accounts() to service_role;
+grant execute on function public.delete_all_accounts() to postgres;
 
 commit;
 

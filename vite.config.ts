@@ -2,6 +2,7 @@ import { networkInterfaces } from 'node:os';
 import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
+import pkg from './package.json' with { type: 'json' };
 
 /** First private IPv4 (e.g. 192.168.x.x) for HMR when opening the app from a phone. */
 function lanIpv4(): string | undefined {
@@ -26,6 +27,9 @@ const lanHost = lanIpv4();
 
 export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
+	define: {
+		__APP_VERSION__: JSON.stringify(pkg.version),
+	},
 	server: {
 		host: '0.0.0.0',
 		port: 5173,

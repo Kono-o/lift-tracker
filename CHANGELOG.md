@@ -2,6 +2,18 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.1] - 2026-06-08
+
+### Added
+
+- **Auto-updating for sideloaded APK** — On app startup (Android native only), the app checks GitHub Releases for a newer version.
+- Centered update prompt with blur backdrop, matching the style and UX of the existing account/settings menu.
+- "Later" (X) dismisses the prompt for the current launch only — it will reappear on the next fresh cold start.
+- "Install" makes the dialog unclosable, shows real-time download progress, then hands off to the standard Android package installer.
+- Proper handling of `REQUEST_INSTALL_PACKAGES` permission + guidance to open "Install unknown apps" settings when needed.
+- Post-update "What's new" / changelog popup (same centered blur style) shown automatically the first time the newly installed version launches.
+- All changes are fully native-plugin based where required (FileProvider + content URIs, conventional `ACTION_VIEW` install intent) for reliable, secure, industry-standard behavior.
+
 ## [1.0.0] - 2026-06-07
 
 ### Added

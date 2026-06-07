@@ -86,6 +86,19 @@
     X
   } from '@lucide/svelte';
   import AuthBrandIcon from '$lib/components/auth-brand-icons.svelte';
+  import {
+    APP_VERSION,
+  } from '$lib/version';
+  import {
+    checkForPostUpdateChangelog,
+    dismissUpdateThisLaunch,
+    downloadApkToCache,
+    openInstallPermissionSettings,
+    promptInstallApk,
+    shouldShowUpdatePrompt,
+    type UpdateInfo,
+  } from '$lib/updater';
+  import { isNativeApp } from '$lib/native';
 
   // Constants
   const DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -129,6 +142,18 @@
   let dbActivitySnapshot = $state(getDbActivitySnapshot());
   let showSettingsPanel = $state(false);
 
+  // Self-update (Android sideload only). Mirrors settings panel UX: centered + blur.
+  let showUpdatePrompt = $state(false);
+  let updateInfo = $state<UpdateInfo | null>(null);
+  let updateDownloadProgress = $state(0);
+  /** Once user taps Install we become unclosable until the OS install prompt or failure. */
+  let updateInstalling = $state(false);
+  let updateError = $state<string | null>(null);
+
+  // Post-update "what's new" shown on first launch of a new binary.
+  let showPostUpdate = $state(false);
+  let postUpdateVersion = $state('');
+  let postUpdateNotes = $state('');
 
   let supabasePanelLoading = $state(false);
   let supabasePanel = $state<SupabasePanelSnapshot | null>(null);
@@ -392,6 +417,45 @@
       if (exitFallbackTimer) clearTimeout(exitFallbackTimer);
     };
   });
+
+  /** One-time startup update checks (Android native only). Non-blocking. */
+  let didRunStartupUpdateCheck = false;
+  $effect(() => {
+    // Run once we have passed the initial boot for an authenticated user, or for guests on native.
+    // Using stageRevealActive + !isLoading gives us "app is interactive".
+    if (didRunStartupUpdateCheck) return;
+    if (!isNativeApp()) return;
+    if (!stageRevealActive && isLoading) return;
+
+    didRunStartupUpdateCheck = true;
+
+    // Fire and forget — we show modals when data arrives.
+    void (async () => {
+      try {
+        // Post-update changelog takes precedence in presentation order (only shows on fresh binary).
+        const post = await checkForPostUpdateChangelog();
+        if (post && !showUpdatePrompt) {
+          postUpdateVersion = post.version;
+          postUpdateNotes = post.notes ?? '';
+          showPostUpdate = true;
+          return; // don't also nag about "update available" on the same launch
+        }
+
+        const info = await shouldShowUpdatePrompt();
+        if (info) {
+          updateInfo = info;
+          updateDownloadProgress = 0;
+          updateInstalling = false;
+          updateError = null;
+          showUpdatePrompt = true;
+        }
+      } catch (e) {
+        // Silent — update is a nice-to-have.
+        console.debug('[updater] startup check failed (non-fatal)', e);
+      }
+    })();
+  });
+
   let signingIn = $state(false);
   let authError = $state<string | null>(null);
   let authSuccess = $state<string | null>(null);
@@ -4614,6 +4678,66 @@
     accountError = null;
   }
 
+  // --- Self-update flow (matches account menu UX: centered dialog + blur backdrop) ---
+
+  function closeUpdatePrompt() {
+    if (updateInstalling) return; // unclosable while downloading/installing
+    if (updateInfo) {
+      dismissUpdateThisLaunch(updateInfo.version);
+    }
+    showUpdatePrompt = false;
+    // keep info around briefly in case of quick re-trigger; cleared on next check
+  }
+
+  function resetUpdateUi() {
+    showUpdatePrompt = false;
+    updateInfo = null;
+    updateDownloadProgress = 0;
+    updateInstalling = false;
+    updateError = null;
+  }
+
+  async function startUpdateInstall() {
+    if (!updateInfo || updateInstalling) return;
+    updateError = null;
+    updateInstalling = true;
+    updateDownloadProgress = 0;
+
+    try {
+      const relPath = await downloadApkToCache(updateInfo, (p) => {
+        updateDownloadProgress = p;
+      });
+
+      // Download done — hand off to native. This will show the standard Android "install this app?" screen.
+      // The modal stays visible (unclosable) until the activity switch; if user cancels the OS prompt they
+      // come back to this still-open unclosable sheet and can retry.
+      await promptInstallApk(relPath);
+
+      // If we reach here without exception, the intent was launched.
+      // We leave the sheet up briefly; the OS installer will cover the screen.
+      // On next fresh launch of the *new* version the post-update changelog will appear.
+    } catch (e: any) {
+      const msg = String(e?.message || e || 'Update failed');
+      if (msg.includes('permission_required')) {
+        updateError = 'Please allow "Install unknown apps" for Lift Tracker.';
+        // Proactively surface the OS settings (plugin already tries to open it).
+        try {
+          await openInstallPermissionSettings();
+        } catch {}
+        // Keep installing=true so the sheet stays; user returns and can tap Install again.
+      } else {
+        updateError = msg;
+        // Allow the user to dismiss on error so they aren't stuck.
+        updateInstalling = false;
+      }
+    }
+  }
+
+  function closePostUpdate() {
+    showPostUpdate = false;
+    // lastSeenVersion was already recorded by the check helper.
+  }
+
   function beginAccountNameEdit() {
     if (!isUsernameAccount(currentUser) || accountBusy || editingAccountName) return;
     accountError = null;
@@ -5966,6 +6090,181 @@
             </div>
             </div>
           {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Update available prompt (Android sideload self-update). Same visual language as account menu. -->
+  {#if showUpdatePrompt && updateInfo}
+    <div
+      class="settings-panel-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Update available"
+      tabindex="-1"
+      onclick={(e) => { if (e.target === e.currentTarget && !updateInstalling) closeUpdatePrompt(); }}
+    >
+      <div class="settings-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left">
+        <div class="settings-panel-header">
+          <div class="settings-panel-header__title">
+            <div class="settings-panel-brand" aria-hidden="true">
+              <span class="settings-panel-brand__lift">LIFT</span>
+              <span class="settings-panel-brand__dash">—</span>
+              <span class="settings-panel-brand__tracker">TRACKER</span>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              aria-label="Close"
+              class="settings-panel-header__close"
+              disabled={updateInstalling}
+              onclick={closeUpdatePrompt}
+            >
+              <X class="size-3.5" />
+            </button>
+          </div>
+        </div>
+
+        <div class="settings-panel-body text-[10px] leading-snug">
+          <div class="settings-panel-stats">
+            <div class="settings-panel-header__identity">
+              <span class="settings-panel-header__name">Update available</span>
+              <span class="text-[10px] text-zinc-400">v{updateInfo.version} · you have v{APP_VERSION}</span>
+            </div>
+          </div>
+
+          {#if updateInfo.notes}
+            <div class="mt-2 max-h-40 overflow-auto rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2 text-[10px] leading-snug text-zinc-300 whitespace-pre-wrap">
+              {updateInfo.notes}
+            </div>
+          {:else}
+            <p class="text-zinc-400 mt-1">A new version of Lift Tracker is ready.</p>
+          {/if}
+
+          {#if updateError}
+            <p class="settings-panel-alert mt-2">{updateError}</p>
+          {/if}
+
+          {#if updateInstalling}
+            <div class="mt-3">
+              <div class="flex items-center justify-between text-[10px] text-zinc-400 mb-1">
+                <span>{updateDownloadProgress < 100 ? 'Downloading update…' : 'Ready to install'}</span>
+                <span class="tabular-nums">{updateDownloadProgress}%</span>
+              </div>
+              <div class="h-1.5 w-full rounded bg-[#1e1e1e] overflow-hidden">
+                <div
+                  class="h-1.5 bg-emerald-500 transition-[width] duration-75"
+                  style="width: {updateDownloadProgress}%"
+                ></div>
+              </div>
+              {#if updateError}
+                <p class="mt-1.5 text-[10px] text-amber-400">{updateError} Return here after granting and tap Install again.</p>
+              {:else}
+                <p class="mt-2 text-[10px] text-zinc-500">Keep the app open. The Android installer will appear.</p>
+              {/if}
+            </div>
+          {/if}
+
+          <div class="mt-3 grid grid-cols-1 gap-2">
+            {#if !updateInstalling}
+              <button
+                type="button"
+                class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--update-primary"
+                onclick={startUpdateInstall}
+              >
+                <span class="settings-panel-action-btn__label font-bold tracking-[0.5px]">INSTALL UPDATE</span>
+              </button>
+              <button
+                type="button"
+                class="settings-panel-action-btn settings-panel-action-btn--full"
+                onclick={closeUpdatePrompt}
+              >
+                <span class="settings-panel-action-btn__label">Later</span>
+              </button>
+            {:else}
+              <!-- Unclosable installing state. Show a retry-able Install if we hit a recoverable error (e.g. permission). -->
+              <button
+                type="button"
+                class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--update-primary"
+                onclick={startUpdateInstall}
+              >
+                <span class="settings-panel-action-btn__label font-bold tracking-[0.5px]">INSTALL</span>
+              </button>
+              {#if !updateError}
+                <div class="settings-panel-action-btn settings-panel-action-btn--full pointer-events-none opacity-70 border-[#1e1e1e] text-zinc-400">
+                  <span class="settings-panel-action-btn__label">Installing…</span>
+                </div>
+              {/if}
+            {/if}
+          </div>
+
+          <p class="mt-2 text-center text-[9px] text-zinc-500">Updates are installed from GitHub releases. Same signing key as your current app.</p>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Post-update "what's new" / changelog. Shown once on first launch after installing a new version. -->
+  {#if showPostUpdate}
+    <div
+      class="settings-panel-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="App updated"
+      tabindex="-1"
+      onclick={(e) => { if (e.target === e.currentTarget) closePostUpdate(); }}
+    >
+      <div class="settings-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left">
+        <div class="settings-panel-header">
+          <div class="settings-panel-header__title">
+            <div class="settings-panel-brand" aria-hidden="true">
+              <span class="settings-panel-brand__lift">LIFT</span>
+              <span class="settings-panel-brand__dash">—</span>
+              <span class="settings-panel-brand__tracker">TRACKER</span>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              aria-label="Close"
+              class="settings-panel-header__close"
+              onclick={closePostUpdate}
+            >
+              <X class="size-3.5" />
+            </button>
+          </div>
+        </div>
+
+        <div class="settings-panel-body text-[10px] leading-snug">
+          <div class="settings-panel-stats">
+            <div class="settings-panel-header__identity">
+              <span class="settings-panel-header__name flex items-center gap-1.5">
+                Updated to v{postUpdateVersion}
+                <Check class="size-3.5 text-emerald-400" />
+              </span>
+              <span class="text-[10px] text-zinc-400">Thanks for staying up to date!</span>
+            </div>
+          </div>
+
+          {#if postUpdateNotes}
+            <div class="mt-2 max-h-44 overflow-auto rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2 text-[10px] leading-snug text-zinc-300 whitespace-pre-wrap">
+              {postUpdateNotes}
+            </div>
+          {:else}
+            <p class="text-zinc-400 mt-1">You’re now running the latest version.</p>
+          {/if}
+
+          <div class="mt-3">
+            <button
+              type="button"
+              class="settings-panel-action-btn settings-panel-action-btn--full bg-white border-[#2a2a2a] text-black hover:brightness-95"
+              onclick={closePostUpdate}
+            >
+              <span class="settings-panel-action-btn__label font-bold tracking-[0.5px]">GOT IT</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

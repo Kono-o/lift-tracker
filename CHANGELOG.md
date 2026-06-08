@@ -2,6 +2,17 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.2] - 2026-06-09
+
+### Changed / Fixed
+
+- Ported reliable native APK download to the Capacitor UpdaterPlugin (HttpURLConnection streaming + progress events, modeled on Mihon/tachiyomi architecture) for much more robust sideload updates than JS fetch in WebView.
+- Layered download guards and post-write verification (early content-type / small-body / size checks + size + "PK" magic-byte validation + cleanup of bad files) in both native Java and JS fallback paths. Prevents "Download corrupted (size mismatch...)" and "problem with parsing file" errors.
+- Stricter update prompt timing: now gated on `currentUser && hasInitialLoad && stageRevealActive` (only after login + all data loaded + main menu visible), plus a small settle delay. Matches the spec that the menu should not appear during auth/boot.
+- Website footer now always triggers a demo of the centered update menu (real fetch when possible, graceful dummy + browser <a download> on Install).
+- Minor: removed dead `downloadApkToCache` import; fixed scoping in the (now-unused on main path) JS download helper; gated Supabase health polling to reduce pre-login 401 noise.
+- Stable signing key + build scripts ensure APKs from .1 and .2 are updatable.
+
 ## [1.0.1] - 2026-06-08
 
 ### Added

@@ -92,10 +92,12 @@
   import {
     checkForPostUpdateChangelog,
     dismissUpdateThisLaunch,
-    downloadApkToCache,
+    fetchLatestRelease,
     openInstallPermissionSettings,
     promptInstallApk,
+    releaseToUpdateInfo,
     shouldShowUpdatePrompt,
+    UpdaterNative,
     type UpdateInfo,
   } from '$lib/updater';
   import { isNativeApp } from '$lib/native';
@@ -419,43 +421,52 @@
   });
 
   /** One-time startup update checks (Android native only). Non-blocking.
-   *  Only after auth, boot/loading, account reveal, and main menu is visible.
+   *  ONLY after the user is logged in (currentUser) AND all their data has finished loading (hasInitialLoad)
+   *  AND the main menu is fully visible (post boot, post reveal).
    */
   let didRunStartupUpdateCheck = false;
   $effect(() => {
     if (didRunStartupUpdateCheck) return;
     if (!isNativeApp()) return;
-    // Wait until we're fully past signup, loading screen, boot account reveal, and into main UI.
-    if (!stageRevealActive || isLoading || bootOverlayVisible || showBootScreen) return;
+
+    // Strict guard: must be logged in + data loaded + main UI ready
+    if (!currentUser || !hasInitialLoad || !stageRevealActive || isLoading || bootOverlayVisible || showBootScreen) return;
+
+    // Extra safety: double-check we are past the entire boot sequence for this user
+    if (showBootScreen || bootOverlayVisible) return;
 
     didRunStartupUpdateCheck = true;
 
-    // Fire and forget — we show modals when data arrives.
-    // Errors (e.g. no network, GitHub rate limit) are non-fatal; we just skip the prompt.
-    void (async () => {
-      try {
-        // Post-update changelog takes precedence in presentation order (only shows on fresh binary).
-        const post = await checkForPostUpdateChangelog();
-        if (post && !showUpdatePrompt) {
-          postUpdateVersion = post.version;
-          postUpdateNotes = post.notes ?? '';
-          showPostUpdate = true;
-          return; // don't also nag about "update available" on the same launch
-        }
+    // Small delay so the main menu has time to fully settle and render before the update prompt appears.
+    // This prevents it from feeling like "the first thing" on app open.
+    setTimeout(() => {
+      // Fire and forget — we show modals when data arrives.
+      // Errors (e.g. no network, GitHub rate limit) are non-fatal; we just skip the prompt.
+      void (async () => {
+        try {
+          // Post-update changelog takes precedence in presentation order (only shows on fresh binary).
+          const post = await checkForPostUpdateChangelog();
+          if (post && !showUpdatePrompt) {
+            postUpdateVersion = post.version;
+            postUpdateNotes = post.notes ?? '';
+            showPostUpdate = true;
+            return; // don't also nag about "update available" on the same launch
+          }
 
-        const info = await shouldShowUpdatePrompt();
-        if (info) {
-          updateInfo = info;
-          updateDownloadProgress = 0;
-          updateInstalling = false;
-          updateError = null;
-          showUpdatePrompt = true;
+          const info = await shouldShowUpdatePrompt();
+          if (info) {
+            updateInfo = info;
+            updateDownloadProgress = 0;
+            updateInstalling = false;
+            updateError = null;
+            showUpdatePrompt = true;
+          }
+        } catch (e) {
+          // Silent — update is a nice-to-have. "Failed to fetch" etc. will appear in console only.
+          console.error('[updater] startup check failed (non-fatal)', e);
         }
-      } catch (e) {
-        // Silent — update is a nice-to-have. "Failed to fetch" etc. will appear in console only.
-        console.debug('[updater] startup check failed (non-fatal)', e);
-      }
-    })();
+      })();
+    }, 600);
   });
 
   let signingIn = $state(false);
@@ -2801,8 +2812,10 @@
   function startSupabaseBackgroundSync() {
     if (supabaseHealthPollTimer) return;
     void preloadSupabaseBackend();
+    // Only poll health aggressively after we have a user (avoids 401 spam while unauthenticated).
+    // The initial preload still happens.
     supabaseHealthPollTimer = setInterval(() => {
-      void refreshSupabaseHealth();
+      if (currentUser) void refreshSupabaseHealth();
     }, SUPABASE_HEALTH_POLL_MS);
   }
 
@@ -4705,15 +4718,57 @@
     updateInstalling = true;
     updateDownloadProgress = 0;
 
+    if (!isNativeApp()) {
+      // Website / browser demo path: trigger a real file download using
+      // a temporary <a> element. This avoids CORS problems with fetch()
+      // on GitHub asset URLs. The browser will handle the download.
+      try {
+        const link = document.createElement('a');
+        link.href = updateInfo.downloadUrl;
+        link.download = `lift-tracker-v${updateInfo.version}.apk`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        // Simulate quick progress for the UI
+        updateDownloadProgress = 100;
+
+        setTimeout(() => {
+          updateError = 'Download started in your browser! Check your Downloads folder. On Android, tap the APK to install (you may need to allow "Install unknown apps").';
+          updateInstalling = false;
+        }, 650);
+      } catch (e: any) {
+        updateError = 'Could not start download. Please visit the releases page manually.';
+        updateInstalling = false;
+      }
+      return;
+    }
+
+    // Native Android path (real sideloaded APK flow) - use native downloader for reliability
     try {
-      const relPath = await downloadApkToCache(updateInfo, (p) => {
-        updateDownloadProgress = p;
+      // Listen for progress from the native plugin (emitted during downloadUpdate)
+      const progressListener = (data: { progress?: number }) => {
+        if (data.progress != null) {
+          updateDownloadProgress = Math.min(100, Math.max(0, data.progress));
+        }
+      };
+      UpdaterNative.addListener('downloadProgress', progressListener);
+
+      const result = await UpdaterNative.downloadUpdate({
+        url: updateInfo.downloadUrl,  // use the direct browser download URL for the binary
+        expectedSize: updateInfo.size || 0,
       });
 
-      // Download done — hand off to native. This will show the standard Android "install this app?" screen.
-      // The modal stays visible (unclosable) until the activity switch; if user cancels the OS prompt they
-      // come back to this still-open unclosable sheet and can retry.
-      await promptInstallApk(relPath);
+      // Remove listener (use removeAllListeners for safety if reference issue)
+      try {
+        UpdaterNative.removeListener('downloadProgress', progressListener);
+      } catch {
+        UpdaterNative.removeAllListeners('downloadProgress');
+      }
+
+      // Download done — hand off to native installer.
+      // The modal stays visible (unclosable) until the activity switch.
+      await promptInstallApk(result.path);
 
       // If we reach here without exception, the intent was launched.
       // We leave the sheet up briefly; the OS installer will cover the screen.
@@ -4727,6 +4782,9 @@
           await openInstallPermissionSettings();
         } catch {}
         // Keep installing=true so the sheet stays; user returns and can tap Install again.
+      } else if (msg.toLowerCase().includes('parsing') || msg.toLowerCase().includes('corrupted') || msg.toLowerCase().includes('size mismatch')) {
+        updateError = msg + ' Tap "Download manually from GitHub" below as a fallback.';
+        updateInstalling = false;
       } else {
         updateError = msg;
         // Allow the user to dismiss on error so they aren't stuck.
@@ -4738,6 +4796,59 @@
   function closePostUpdate() {
     showPostUpdate = false;
     // lastSeenVersion was already recorded by the check helper.
+  }
+
+  function openGitHubReleases() {
+    const url = updateInfo?.tag
+      ? `https://github.com/Kono-o/lift-tracker/releases/tag/${updateInfo.tag}`
+      : 'https://github.com/Kono-o/lift-tracker/releases';
+    if (typeof window !== 'undefined') {
+      window.open(url, '_blank');
+    }
+  }
+
+  /** Manually open the update menu (used by footer click on the website for testing/demo).
+   *  On native the real auto-check will handle it at the right time.
+   *  On website, this attempts the real GitHub fetch so you see actual release data (or the failure reason).
+   */
+  async function manuallyOpenUpdateMenu() {
+    try {
+      const release = await fetchLatestRelease();
+      const info = release ? releaseToUpdateInfo(release) : null;
+
+      if (info) {
+        // Use the real direct asset URL from GitHub. The web Install path
+        // will use a <a download> click which works without CORS fetch.
+        updateInfo = info;
+      } else {
+        updateInfo = {
+          version: '1.0.2',
+          notes: 'Demo of the update menu (triggered from the website footer).\n\nIn the real Android app this appears automatically after sign-in + data load when a newer GitHub release is detected.',
+          downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.2/lift-tracker-v1.0.2.apk',
+          apiAssetUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.2/lift-tracker-v1.0.2.apk',
+          size: 3620000,
+          tag: 'v1.0.2'
+        } as any;
+      }
+      updateDownloadProgress = 0;
+      updateInstalling = false;
+      updateError = isNativeApp() ? null : 'Website demo — clicking Install will start a browser download of the APK (real install + prompt only works in the Android app).';
+      showUpdatePrompt = true;
+    } catch (e) {
+      console.error('[updater] manual open failed to fetch:', e);
+      updateInfo = {
+        version: '1.0.2',
+        notes: 'Demo of the update menu (triggered from the website footer). Fetch failed — see console for details.',
+        downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.2/lift-tracker-v1.0.2.apk',
+        apiAssetUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.2/lift-tracker-v1.0.2.apk',
+        size: 3620000,
+        tag: 'v1.0.2'
+      } as any;
+      updateDownloadProgress = 0;
+      updateInstalling = false;
+      updateError = isNativeApp() ? null : 'Website demo — clicking Install will start a browser download of the APK.';
+      showUpdatePrompt = true;
+    }
   }
 
   function beginAccountNameEdit() {
@@ -6097,10 +6208,10 @@
     </div>
   {/if}
 
-  <!-- Update available prompt (Android sideload self-update). Same visual language as account menu.
-       Only shown after reaching the main menu (post auth + boot + loading).
+  <!-- Update available prompt (Android sideload self-update).
+       Only rendered after logged in + data loaded + main menu visible.
   -->
-  {#if showUpdatePrompt && updateInfo && stageRevealActive && !bootOverlayVisible}
+  {#if showUpdatePrompt && updateInfo && currentUser && hasInitialLoad && stageRevealActive && !bootOverlayVisible}
     <div
       class="settings-panel-overlay"
       role="dialog"
@@ -6196,7 +6307,15 @@
               >
                 <span class="settings-panel-action-btn__label font-bold tracking-[0.5px]">INSTALL</span>
               </button>
-              {#if !updateError}
+              {#if updateError}
+                <button
+                  type="button"
+                  class="settings-panel-action-btn settings-panel-action-btn--full"
+                  onclick={openGitHubReleases}
+                >
+                  <span class="settings-panel-action-btn__label">Download manually from GitHub</span>
+                </button>
+              {:else}
                 <div class="settings-panel-action-btn settings-panel-action-btn--full pointer-events-none opacity-70 border-[#1e1e1e] text-zinc-400">
                   <span class="settings-panel-action-btn__label">Installing…</span>
                 </div>
@@ -6211,9 +6330,9 @@
   {/if}
 
   <!-- Post-update "what's new" / changelog. Shown once on first launch after installing a new version.
-       Only shown after reaching the main menu (post auth + boot + loading).
+       Only rendered after logged in + data loaded + main menu visible.
   -->
-  {#if showPostUpdate && stageRevealActive && !bootOverlayVisible}
+  {#if showPostUpdate && currentUser && hasInitialLoad && stageRevealActive && !bootOverlayVisible}
     <div
       class="settings-panel-overlay"
       role="dialog"
@@ -8271,7 +8390,11 @@
   {/if}
   </div>
 
-  <div class="app-footer text-center text-[9px] tracking-[0.5px] text-zinc-500 shrink-0 leading-none">
+  <div 
+    class="app-footer text-center text-[9px] tracking-[0.5px] text-zinc-500 shrink-0 leading-none cursor-pointer hover:text-zinc-300 active:text-white transition-colors"
+    onclick={manuallyOpenUpdateMenu}
+    title="Click to demo the update menu (attempts real GitHub fetch on website)"
+  >
     LIFT-TRACKER — All rights reserved by Arya.
   </div>
 

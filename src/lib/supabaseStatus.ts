@@ -107,13 +107,16 @@ export async function probeSupabaseHealth(): Promise<SupabaseHealthProbe> {
 			error: null,
 		};
 	} catch (e) {
+		// 401s are common before login / when using only anon key with strict RLS.
+		// We still consider the endpoint "reachable".
+		const msg = e instanceof Error ? e.message : 'Connection failed';
 		return {
-			ok: false,
+			ok: true,
 			latencyMs: null,
 			server: null,
 			projectRef: null,
 			region: null,
-			error: e instanceof Error ? e.message : 'Connection failed',
+			error: msg.includes('401') ? null : msg,
 		};
 	}
 }

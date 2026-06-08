@@ -76,7 +76,11 @@ export function isNewerVersion(a: string, b: string): boolean {
 export async function fetchLatestRelease(): Promise<GitHubRelease | null> {
 	try {
 		const res = await fetch(RELEASE_API, {
-			headers: { Accept: 'application/vnd.github+json' },
+			headers: {
+				Accept: 'application/vnd.github+json',
+				'User-Agent': `LiftTracker/${APP_VERSION} (Capacitor; https://github.com/Kono-o/lift-tracker)`,
+				'X-GitHub-Api-Version': '2022-11-28',
+			},
 			cache: 'no-store',
 		});
 		if (!res.ok) {

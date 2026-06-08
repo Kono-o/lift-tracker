@@ -8,17 +8,28 @@ set -l props "$signing_dir/keystore.properties"
 
 mkdir -p $signing_dir
 
-if test -f $keystore -a -f $props
-    keytool -list -keystore $keystore -storepass (grep '^storePassword=' $props | cut -d= -f2-) >/dev/null 2>&1
-    if test $status -eq 0
-        echo "Release keystore already exists at $keystore"
-        exit 0
-    end
-    echo "⚠️  Existing keystore/password mismatch — regenerating signing key."
-    rm -f $keystore $props
+set -l force_regen 0
+if contains -- --force $argv; or contains -- -f $argv
+    set force_regen 1
 end
 
-set -l store_pass (openssl rand -base64 24 | tr -d '/+=' | string sub -l 24)
+if test $force_regen -eq 0; and test -f $keystore -a -f $props
+    echo "Release keystore already exists at $keystore"
+    echo "Using existing key (same signature for app updates)."
+    exit 0
+end
+
+if test $force_regen -eq 1
+    echo "Forcing new signing key (deleting existing)..."
+    rm -f $keystore $props
+else
+    echo "No existing release keystore found — generating a new one."
+end
+
+# Use a fixed, stable password for the development/sideload signing key.
+# This ensures the generated keystore + properties are always in sync
+# (the random password approach was causing "password incorrect" errors on this system).
+set -l store_pass "LiftTrackerDevSigningKey2026!"
 set -l key_pass $store_pass
 set -l alias lift-tracker
 

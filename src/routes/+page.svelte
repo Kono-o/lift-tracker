@@ -418,18 +418,20 @@
     };
   });
 
-  /** One-time startup update checks (Android native only). Non-blocking. */
+  /** One-time startup update checks (Android native only). Non-blocking.
+   *  Only after auth, boot/loading, account reveal, and main menu is visible.
+   */
   let didRunStartupUpdateCheck = false;
   $effect(() => {
-    // Run once we have passed the initial boot for an authenticated user, or for guests on native.
-    // Using stageRevealActive + !isLoading gives us "app is interactive".
     if (didRunStartupUpdateCheck) return;
     if (!isNativeApp()) return;
-    if (!stageRevealActive && isLoading) return;
+    // Wait until we're fully past signup, loading screen, boot account reveal, and into main UI.
+    if (!stageRevealActive || isLoading || bootOverlayVisible || showBootScreen) return;
 
     didRunStartupUpdateCheck = true;
 
     // Fire and forget — we show modals when data arrives.
+    // Errors (e.g. no network, GitHub rate limit) are non-fatal; we just skip the prompt.
     void (async () => {
       try {
         // Post-update changelog takes precedence in presentation order (only shows on fresh binary).
@@ -450,7 +452,7 @@
           showUpdatePrompt = true;
         }
       } catch (e) {
-        // Silent — update is a nice-to-have.
+        // Silent — update is a nice-to-have. "Failed to fetch" etc. will appear in console only.
         console.debug('[updater] startup check failed (non-fatal)', e);
       }
     })();
@@ -6095,8 +6097,10 @@
     </div>
   {/if}
 
-  <!-- Update available prompt (Android sideload self-update). Same visual language as account menu. -->
-  {#if showUpdatePrompt && updateInfo}
+  <!-- Update available prompt (Android sideload self-update). Same visual language as account menu.
+       Only shown after reaching the main menu (post auth + boot + loading).
+  -->
+  {#if showUpdatePrompt && updateInfo && stageRevealActive && !bootOverlayVisible}
     <div
       class="settings-panel-overlay"
       role="dialog"
@@ -6206,8 +6210,10 @@
     </div>
   {/if}
 
-  <!-- Post-update "what's new" / changelog. Shown once on first launch after installing a new version. -->
-  {#if showPostUpdate}
+  <!-- Post-update "what's new" / changelog. Shown once on first launch after installing a new version.
+       Only shown after reaching the main menu (post auth + boot + loading).
+  -->
+  {#if showPostUpdate && stageRevealActive && !bootOverlayVisible}
     <div
       class="settings-panel-overlay"
       role="dialog"

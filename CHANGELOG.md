@@ -2,24 +2,20 @@
 
 All notable changes to Lift Tracker are documented here.
 
-## [1.0.2] - 2026-06-08
-
-### Changed
-
-- Faux test release (functionally identical to 1.0.1) for verifying the in-app auto-update flow.
-
 ## [1.0.1] - 2026-06-08
 
 ### Added
 
 - Full auto-update support for the sideloaded Android APK.
-- On startup (after reaching the main menu), the app checks GitHub Releases.
-- Centered update prompt with blur background (same visual style as the account menu).
-- Dismiss with X only affects the current launch (reappears on next fresh start).
-- "Install" makes the dialog unclosable, shows live download progress, then launches the standard Android system installer.
-- Handles "Install unknown apps" permission properly (opens settings if needed).
-- After installing a new version, the next launch shows a "What's new" changelog popup.
-- Stable release signing key so updates are accepted by Android.
+- Update check only runs after sign-in + data load + main menu is visible (never during auth or boot).
+- Centered blur update prompt (matches account/settings menu style).
+- "Later" (X) only suppresses until next fresh cold start.
+- "Install" makes dialog unclosable, shows real-time download progress.
+- Downloads APK reliably (proper GitHub headers + asset API URL on native; size + magic-byte verification after download to prevent "parsing file" errors).
+- Hands off to standard Android package installer (with unknown-sources permission handling).
+- After successful update, next launch shows "What's new" changelog popup (same centered style).
+- Stable signing key across releases (fixed keystore regeneration in build scripts).
+- Website footer click opens demo of the update menu (with real fetch + browser download for testing).
 
 ## [1.0.0] - 2026-06-07
 

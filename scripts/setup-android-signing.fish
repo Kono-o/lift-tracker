@@ -26,6 +26,10 @@ else
     echo "No existing release keystore found — generating a new one."
 end
 
+# Always clean before generating to avoid "alias already exists" errors
+# if we reached this path due to flaky detection or multiple invocations.
+rm -f $keystore $props
+
 # Use a fixed, stable password for the development/sideload signing key.
 # This ensures the generated keystore + properties are always in sync
 # (the random password approach was causing "password incorrect" errors on this system).
@@ -42,6 +46,11 @@ keytool -genkeypair -v \
     -storepass $store_pass \
     -keypass $key_pass \
     -dname "CN=Lift Tracker, OU=Mobile, O=Lift Tracker, L=Unknown, ST=Unknown, C=XX"
+
+or begin
+    echo "ERROR: keytool failed to generate the keystore."
+    exit 1
+end
 
 printf '%s\n' \
     "storeFile=lift-tracker-release.keystore" \

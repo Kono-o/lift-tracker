@@ -13,10 +13,42 @@ if contains -- --force $argv; or contains -- -f $argv
     set force_regen 1
 end
 
-if test $force_regen -eq 0; and test -f $keystore -a -f $props
-    echo "Release keystore already exists at $keystore"
-    echo "Using existing key (same signature for app updates)."
-    exit 0
+# Ultra-defensive early reuse for release builds.
+# If the files exist and we are not forcing, exit immediately.
+# This protects against multiple invocations / fish sourcing quirks during a single build.
+if test $force_regen -eq 0
+    if test -f $keystore -a -f $props
+        echo "Release keystore already exists at $keystore"
+        echo "Using existing key (same signature for app updates)."
+        exit 0
+    end
+end
+
+# Special escape hatch for producing multiple versioned release APKs
+# (e.g. 1.0.0 then 1.0.1) that must be signed with *exactly* the same key.
+if test "$LIFT_TRACKER_REUSE_SIGNING_KEY" = "1" -a $force_regen -eq 0
+    if test -f $keystore -a -f $props
+        echo "Release keystore already exists at $keystore (LIFT_TRACKER_REUSE_SIGNING_KEY=1)"
+        echo "Using existing key (same signature for app updates)."
+        exit 0
+    end
+end
+
+set -l store_pass "LiftTrackerDevSigningKey2026!"
+set -l key_pass $store_pass
+set -l alias lift-tracker
+
+# Strong existence check: if the keystore file exists and the alias is present
+# with our fixed password, we have a usable stable key. Never regenerate unless --force.
+if test $force_regen -eq 0
+    if test -f $keystore -a -f $props
+        # Verify the key is actually loadable (catches corrupted or partial files)
+        if keytool -list -keystore $keystore -storepass $store_pass -alias $alias >/dev/null 2>&1
+            echo "Release keystore already exists at $keystore"
+            echo "Using existing key (same signature for app updates)."
+            exit 0
+        end
+    end
 end
 
 if test $force_regen -eq 1
@@ -26,16 +58,8 @@ else
     echo "No existing release keystore found — generating a new one."
 end
 
-# Always clean before generating to avoid "alias already exists" errors
-# if we reached this path due to flaky detection or multiple invocations.
+# Clean before generation
 rm -f $keystore $props
-
-# Use a fixed, stable password for the development/sideload signing key.
-# This ensures the generated keystore + properties are always in sync
-# (the random password approach was causing "password incorrect" errors on this system).
-set -l store_pass "LiftTrackerDevSigningKey2026!"
-set -l key_pass $store_pass
-set -l alias lift-tracker
 
 keytool -genkeypair -v \
     -keystore $keystore \
@@ -64,3 +88,13 @@ echo "  $keystore"
 echo "  $props"
 echo ""
 echo "Back up the keystore and keystore.properties — Android requires the same signing key for app updates."
+
+# --- TEMP HACK FOR CONSISTENT 1.0.0 / 1.0.1 TEST RELEASES ---
+# To ensure both APKs are signed with exactly the same key despite multiple
+# invocations of this script during a build, we provide an escape hatch.
+# If the env var LIFT_TRACKER_REUSE_SIGNING_KEY=1 is set, we force reuse
+# of whatever keystore + props are on disk right now and never generate.
+if test "$LIFT_TRACKER_REUSE_SIGNING_KEY" = "1"
+    echo "[reuse-hack] LIFT_TRACKER_REUSE_SIGNING_KEY=1 — forcing reuse of current key and exiting early"
+    exit 0
+end

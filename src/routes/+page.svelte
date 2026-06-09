@@ -102,6 +102,7 @@
   } from '$lib/updater';
   import { isNativeApp } from '$lib/native';
   import { App } from '@capacitor/app';
+  import confetti from 'canvas-confetti';
 
   // Constants
   const DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -170,6 +171,42 @@
   let showPostUpdate = $state(false);
   let postUpdateVersion = $state('');
   let postUpdateNotes = $state('');
+
+  // Confetti spray when the updated menu opens (for nice celebration)
+  $effect(() => {
+    if (showPostUpdate) {
+      // Radiate out from center, a little bit, not too long
+      confetti({
+        particleCount: 100,
+        spread: 70,
+        origin: { y: 0.6 }
+      });
+      confetti({
+        particleCount: 50,
+        angle: 90,
+        spread: 50,
+        origin: { y: 0.6 }
+      });
+    }
+  });
+
+  // Same confetti spray on website when the (pre) update menu opens via footer demo
+  $effect(() => {
+    if (showUpdatePrompt && !isNativeApp()) {
+      // Radiate out from center, a little bit, not too long
+      confetti({
+        particleCount: 100,
+        spread: 70,
+        origin: { y: 0.6 }
+      });
+      confetti({
+        particleCount: 50,
+        angle: 90,
+        spread: 50,
+        origin: { y: 0.6 }
+      });
+    }
+  });
 
   let supabasePanelLoading = $state(false);
   let supabasePanel = $state<SupabasePanelSnapshot | null>(null);

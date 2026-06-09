@@ -62,6 +62,7 @@
 		"@capacitor/status-bar": "^8.0.2",
 		"@fontsource/dseg7-classic": "^5.2.5",
 		"@fontsource/space-mono": "^5.2.9",
-		"@supabase/supabase-js": "^2.107.0"
+		"@supabase/supabase-js": "^2.107.0",
+		"canvas-confetti": "^1.9.4"
 	}
 }

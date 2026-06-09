@@ -4981,7 +4981,7 @@
     }
   }
 
-  /** Manually open the update menu (used by footer click on the website for testing/demo).
+  /** Manually open the update menu (Ctrl+click the left side of the website footer for testing/demo).
    *  On native the real auto-check will handle it at the right time.
    *  On website, this attempts the real GitHub fetch so you see actual release data (or the failure reason).
    */
@@ -5027,7 +5027,7 @@
     }
   }
 
-  /** Manually open the post-update "what's new" menu (used by footer click on the website for testing/demo).
+  /** Manually open the post-update "what's new" menu (Ctrl+click the right side of the website footer for testing/demo).
    *  On native the real post-update check will handle it on first launch after an update.
    */
   function manuallyOpenPostUpdateMenu() {
@@ -6398,7 +6398,7 @@
 
   <!-- Update available prompt (Android sideload self-update).
        Only rendered after logged in + data loaded + main menu visible.
-       On website the footer can manually trigger it for demo.
+       On website: Ctrl+click the left footer text to manually trigger the demo.
   -->
   {#if showUpdatePrompt && updateInfo && !bootOverlayVisible && (currentUser || !isNativeApp())}
     <div
@@ -6522,7 +6522,7 @@
 
   <!-- Post-update "what's new" / changelog. Shown once on first launch after installing a new version.
        Only rendered after logged in + data loaded + main menu visible.
-       On website the footer can manually trigger it for demo.
+       On website: Ctrl+click the right footer text to manually trigger the demo.
   -->
   {#if showPostUpdate && !bootOverlayVisible && (currentUser || !isNativeApp())}
     <div
@@ -8606,21 +8606,27 @@
   </div>
 
   <div class="app-footer flex items-baseline justify-center gap-x-1 text-center text-[9px] tracking-[0.5px] text-zinc-500 shrink-0 leading-none">
-    <span
-      class="cursor-pointer hover:text-zinc-300 active:text-white transition-colors"
-      onclick={manuallyOpenUpdateMenu}
-      title="Click left side to demo the update menu (new version available)"
+    <a
+      href="https://github.com/Kono-o/lift-tracker"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="hover:text-zinc-300 active:text-white transition-colors"
+      title="Click to visit the Lift Tracker GitHub repo. Ctrl+click (or Cmd+click) the left side for the update demo, right side for the post-update demo."
     >
-      LIFT-TRACKER v{APP_VERSION}
-    </span>
-    <span class="text-zinc-500 select-none">—</span>
-    <span
-      class="cursor-pointer hover:text-zinc-300 active:text-white transition-colors"
-      onclick={manuallyOpenPostUpdateMenu}
-      title="Click right side to demo the updated menu (what's new after an update)"
-    >
-      All rights reserved by Arya.
-    </span>
+      <span
+        class="cursor-pointer hover:text-zinc-300 active:text-white transition-colors"
+        onclick={(e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); e.stopPropagation(); manuallyOpenUpdateMenu(); } }}
+      >
+        LIFT-TRACKER v{APP_VERSION}
+      </span>
+      <span class="text-zinc-500 select-none">—</span>
+      <span
+        class="cursor-pointer hover:text-zinc-300 active:text-white transition-colors"
+        onclick={(e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); e.stopPropagation(); manuallyOpenPostUpdateMenu(); } }}
+      >
+        All rights reserved by Arya.
+      </span>
+    </a>
   </div>
 
 </div>

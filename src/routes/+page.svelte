@@ -4996,12 +4996,12 @@
         updateInfo = info;
       } else {
         updateInfo = {
-          version: '1.0.2',
+          version: '1.0.3',
           notes: 'Demo of the update menu (triggered from the website footer).\n\nIn the real Android app this appears automatically after sign-in + data load when a newer GitHub release is detected.',
-          downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.2/lift-tracker-v1.0.2.apk',
-          apiAssetUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.2/lift-tracker-v1.0.2.apk',
+          downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.3/lift-tracker-v1.0.3.apk',
+          apiAssetUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.3/lift-tracker-v1.0.3.apk',
           size: 3620000,
-          tag: 'v1.0.2'
+          tag: 'v1.0.3'
         } as any;
       }
       updateDownloadProgress = 0;
@@ -5012,12 +5012,12 @@
     } catch (e) {
       console.error('[updater] manual open failed to fetch:', e);
       updateInfo = {
-        version: '1.0.2',
+        version: '1.0.3',
         notes: 'Demo of the update menu (triggered from the website footer). Fetch failed — see console for details.',
-        downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.2/lift-tracker-v1.0.2.apk',
-        apiAssetUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.2/lift-tracker-v1.0.2.apk',
+        downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.3/lift-tracker-v1.0.3.apk',
+        apiAssetUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.3/lift-tracker-v1.0.3.apk',
         size: 3620000,
-        tag: 'v1.0.2'
+        tag: 'v1.0.3'
       } as any;
       updateDownloadProgress = 0;
       updateInstalling = false;

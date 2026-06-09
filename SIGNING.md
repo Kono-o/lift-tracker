@@ -40,3 +40,17 @@ The in-app auto-updater (and Android itself) requires the **exact same signing c
 
 This key (and this document) must be treated as the single source of truth for the project's release identity.
 
+
+## Current Stable Key Fingerprint (as of latest lock-in)
+Owner: CN=Lift Tracker, OU=Mobile, O=Lift Tracker, L=Unknown, ST=Unknown, C=XX
+SHA256: (run `keytool -list -v -keystore scripts/android-signing/lift-tracker-release.keystore -storepass LiftTrackerDevSigningKey2026! -alias lift-tracker` after any build to get the exact current value)
+
+This fingerprint (and the .keystore file) is the one that must be used for *all* releases from this point forward for auto-updates to succeed without uninstall.
+
+## Historical Note (per user report)
+Auto-update (download + seamless install) worked correctly on-device during the initial implementation period (around the commits titled "Auto-update support for sideloaded APK" and the early faux test releases like the first v1.0.1 / v1.0.2). 
+
+It stopped working after the period of repeated release redos, key forces, and the 1.1.0 UI polish work (confetti, loading screen matching, etc.). During that time the signing script was invoked in ways that caused repeated regeneration of the key (visible in build logs as "No existing release keystore found — generating a new one" even when files existed). Each regeneration produced a new certificate.
+
+The current key (after the final lock-in) is the new baseline. Existing installs from the "working" era will need a one-time uninstall + fresh install of an APK built with this key. After that, updates should work again as long as we never regenerate.
+

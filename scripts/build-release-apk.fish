@@ -4,6 +4,9 @@
 set -l root (builtin realpath (dirname (status filename))/..)
 cd $root || exit 1
 
+# Always request reuse of the stable key (see SIGNING.md). The setup script
+# will now refuse to generate unless --force is passed.
+set -x LIFT_TRACKER_REUSE_SIGNING_KEY 1
 ./scripts/setup-android-signing.fish
 or exit 1
 

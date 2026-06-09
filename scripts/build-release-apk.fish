@@ -1,5 +1,11 @@
 #!/usr/bin/env fish
 # Build a signed release APK for sideloading (not Play Store).
+#
+# See RELEASE.md (in the repo root) for the full documented process,
+# why the stable key must never be rotated, how to do real vs. faux
+# test releases, the exact gh CLI commands, verification steps, etc.
+# This script is deliberately kept simple and always calls setup
+# without --force so the reuse guard can protect the signing key.
 
 set -l root (builtin realpath (dirname (status filename))/..)
 cd $root || exit 1

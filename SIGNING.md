@@ -1,56 +1,51 @@
-# Stable Release Signing Key for Lift Tracker
+# Lift Tracker Stable Release Signing Key
 
-**This document is critical for all future release builds and AI/agent sessions.**
+**This is the single most important thing for Android releases.**
 
-## Location of the Canonical Key
-- Keystore: `scripts/android-signing/lift-tracker-release.keystore`
-- Properties: `scripts/android-signing/keystore.properties`
+**For the full release workflow, build commands, GitHub release creation, faux-test-release strategy, verification steps, historical pitfalls, and how the in-app updater consumes releases, read `RELEASE.md` first.**
 
-These files are **gitignored** (see `.gitignore`) because they contain the private signing key.
+## The Key
+All release APKs (starting with the v1.0.0 first stable baseline and forever after) must be signed with the **exact same certificate**.
 
-## Password
-Hardcoded in `scripts/setup-android-signing.fish` as `LiftTrackerDevSigningKey2026!` (for build reproducibility across environments while keeping the key material stable).
+The files live in the project at:
+- `scripts/android-signing/lift-tracker-release.keystore`
+- `scripts/android-signing/keystore.properties`
 
-## How the Key Was Established
-- The key was (re)generated with `--force` during the clean v1.0.0 "first stable release" build.
-- This key is used for **ALL** release APKs going forward.
-- The `build-release-apk.fish` script calls `setup-android-signing.fish` (without `--force` by default), which has defensive checks to **always reuse** an existing key.
+These are gitignored on purpose.
 
-## Rules for Future Builds (MUST FOLLOW)
-1. **Never run `setup-android-signing.fish --force`** (or with `-f`) unless you are intentionally rotating the signing key. Rotating the key will cause "package conflict" / install failures for all existing users when they try to auto-update.
-2. If the key files are missing in a new environment/session (e.g. fresh clone, new dev machine, or agent workspace):
-   - **Restore the exact files from a secure backup** of `lift-tracker-release.keystore` and `keystore.properties`.
-   - Do **not** regenerate with --force.
-3. For extra safety when producing multiple versions in one session (e.g. base 1.0.0 then faux 1.0.1):
-   - Set the environment variable: `LIFT_TRACKER_REUSE_SIGNING_KEY=1`
-   - Then run `./scripts/build-release-apk.fish`
-   - The setup script will honor this and force-reuse the current on-disk key.
-4. After every release build, verify the APK was signed with this key (check fingerprint if needed).
-5. Always back up the two key files after the initial creation. Store the backup securely (e.g. password manager, encrypted volume, or team secret store). Loss of the key means users must reinstall manually.
+## Master Backup Location (STORE THIS SECURELY)
+The authoritative backup is here on this machine:
 
-## Verification
-Run this after a build to confirm the key in use:
-```fish
-keytool -list -v -keystore scripts/android-signing/lift-tracker-release.keystore \
-  -storepass LiftTrackerDevSigningKey2026! -alias lift-tracker | grep -E 'Owner|SHA256'
-```
+**~/lift-tracker-stable-signing/**
+
+It contains:
+- The two key files
+- README.txt with the password and full instructions
+
+**Password:** LT-Tracker-StableReleaseKey-v3-2026-!DoNotLose
+
+**Fingerprint (SHA256):** 37:04:C3:16:01:76:C0:20:E5:2B:91:B9:4D:B7:1D:E0:EA:87:2C:8F:5A:8C:C3:1D:AB:2A:05:F3:D8:F7:34:96
+
+## How to Restore in a New Session / Machine / After Git Clone
+1. Copy the two files from your master backup into the project:
+   ```
+   cp ~/lift-tracker-stable-signing/lift-tracker-release.keystore scripts/android-signing/
+   cp ~/lift-tracker-stable-signing/keystore.properties scripts/android-signing/
+   ```
+2. Run your normal release build. The setup script will see the files and reuse the key.
+
+## Rules (Non-Negotiable)
+- Never run `scripts/setup-android-signing.fish --force` (or `-f`) again. It will create a brand new key and all your existing users will be unable to auto-update (they will get "package conflicts with an existing package").
+- If the files disappear from the project, restore them from the master backup in `~/lift-tracker-stable-signing/`. Do not let the script generate a new one.
+- Back up `~/lift-tracker-stable-signing/` to at least one offline/encrypted location.
+- After every release build, you can verify with the command in the backup README.
 
 ## Why This Matters
-The in-app auto-updater (and Android itself) requires the **exact same signing certificate** for seamless updates. Different keys = "package merge conflict" / "app not installed" errors on update.
+Android (and the in-app updater) will only accept an update if the new APK is signed with the identical certificate as the one the user already has installed.
 
-This key (and this document) must be treated as the single source of truth for the project's release identity.
+This key was freshly generated on 2026-06-09 (after several key-rotation incidents during auto-update feature development). It is the permanent baseline going forward.
 
-
-## Current Stable Key Fingerprint (as of latest lock-in)
-Owner: CN=Lift Tracker, OU=Mobile, O=Lift Tracker, L=Unknown, ST=Unknown, C=XX
-SHA256: (run `keytool -list -v -keystore scripts/android-signing/lift-tracker-release.keystore -storepass LiftTrackerDevSigningKey2026! -alias lift-tracker` after any build to get the exact current value)
-
-This fingerprint (and the .keystore file) is the one that must be used for *all* releases from this point forward for auto-updates to succeed without uninstall.
-
-## Historical Note (per user report)
-Auto-update (download + seamless install) worked correctly on-device during the initial implementation period (around the commits titled "Auto-update support for sideloaded APK" and the early faux test releases like the first v1.0.1 / v1.0.2). 
-
-It stopped working after the period of repeated release redos, key forces, and the 1.1.0 UI polish work (confetti, loading screen matching, etc.). During that time the signing script was invoked in ways that caused repeated regeneration of the key (visible in build logs as "No existing release keystore found — generating a new one" even when files existed). Each regeneration produced a new certificate.
-
-The current key (after the final lock-in) is the new baseline. Existing installs from the "working" era will need a one-time uninstall + fresh install of an APK built with this key. After that, updates should work again as long as we never regenerate.
-
+See:
+- `RELEASE.md` — the complete, detailed release process and "what we did" record.
+- `~/lift-tracker-stable-signing/README.txt` — master backup instructions + verification command.
+- The home backup directory itself for the actual keystore files.

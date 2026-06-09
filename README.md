@@ -90,19 +90,23 @@ Use the printed `http://<your-lan-ip>:5173` URL on your phone (same Wi‑Fi). If
 
 ## Android
 
-Pre-built APKs are on the [Releases](https://github.com/Kono-o/lift-tracker/releases) page. To build locally:
+Pre-built APKs are on the [Releases](https://github.com/Kono-o/lift-tracker/releases) page.
+
+**For the complete, safe release process (including how to avoid ever rotating the signing key, the exact commands used for v1.0.0 + v1.0.1, faux test releases, GitHub CLI usage, verification, and all the gotchas), read `RELEASE.md`.**
+
+Quick build command (after the first-time setup):
 
 ```sh
-npm run cap:add:android          # first time only
-./scripts/setup-android-signing.fish   # one-time release keystore
-npm run build:apk:release      # signed release APK
+npm run build:apk:release
 ```
 
 Output: `android/app/build/outputs/apk/release/lift-tracker-v<version>.apk`
 
+The build script automatically calls the hardened setup script (which reuses the stable key if the files are present) and injects the version from `package.json`.
+
 For native OAuth, add `com.lifttracker.app://auth/callback` in Supabase Auth → URL configuration.
 
-> Back up `scripts/android-signing/lift-tracker-release.keystore` and `keystore.properties` — Android requires the same signing key for updates.
+> **Never lose or rotate the signing key.** See `SIGNING.md` and `RELEASE.md`. The two files in `scripts/android-signing/` (gitignored) plus the master copy in `~/lift-tracker-stable-signing/` are what make in-app updates work for existing users.
 
 ## Project structure
 

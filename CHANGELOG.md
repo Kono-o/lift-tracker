@@ -2,6 +2,22 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.1] - 2026-06-09
+
+### UI Polish for Update Experience
+
+- The update available prompt and post-update ("what's new") screen now share a consistent, polished design: green pill headings ("UPDATE AVAILABLE" / "UPDATED"), clear version comparison, "WHAT'S NEW" changelog boxes with matching styling, and primary action buttons in emerald.
+- Added a fun confetti spray animation (small, centered bursts radiating outward, short duration) when the updated menu opens after installing a new version.
+- Loading/boot screen placeholders now exactly match the user menu format and dimensions: boxed identity fields (name, joined, session, UID) and the Data usage grid (with "Data usage" header, consistent chip styling, updated abbreviations like "wrk logs", "sts", "sts logs", and swapped total size / sts logs order). This ensures seamless height/width matching during the reveal animation with no layout shift.
+- Progress bar in the install flow is now a proper standalone bar (with percentage displayed on the right) shown in a reserved space so the dialog doesn't grow taller on click; the main button text updates in place to "Installing…".
+- Added fake delays to the progress animation for a more satisfying feel: starts a bit late after tapping install, and after the real download completes it holds at 100% briefly before proceeding (no weird backtracking).
+- Removed the "Later" button and the old GitHub footer message from the update prompt for a cleaner, more focused UI.
+- Removed demo-specific error bubbles from the website version of the update menu.
+- Identity texts (name, joined, session, UID) are now plain (no backgrounds or boxes); only the data usage chips use the boxed style.
+- Updated website demo data to point to the correct existing release.
+
+This release focuses on making the in-app update flow (and its website demo) feel polished, consistent, and delightful.
+
 ## [1.0.0] - 2026-06-09
 
 **Lift Tracker v1.0.0** is the first stable release of a focused workout logging app.

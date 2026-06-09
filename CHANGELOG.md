@@ -2,6 +2,13 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.2] - 2026-06-09
+
+**Faux test release** (for auto-update verification only).
+
+- Small bump used exclusively to test chained in-app updates (e.g. from a clean 1.0.1 install to 1.0.2).
+- No user-facing changes.
+
 ## [1.0.0] - 2026-06-09
 
 **Lift Tracker v1.0.0** is the first stable release of a focused workout logging app.

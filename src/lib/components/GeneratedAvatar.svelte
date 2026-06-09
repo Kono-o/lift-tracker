@@ -1,9 +1,10 @@
 <script lang="ts">
-  let { userId, size = 32, className = '', rounded = 8 } = $props<{
+  let { userId, size = 32, className = '', rounded = 8, seed } = $props<{
     userId: string;
     size?: number;
     className?: string;
     rounded?: number;
+    seed?: string; // temporary: influences identicon along with userId
   }>();
 
   const borderRadius = $derived(`${(rounded / 100) * size}px`);
@@ -18,36 +19,31 @@
     return Math.abs(hash);
   }
 
-  const hash = $derived(hashCode(userId));
+  const effectiveId = $derived(seed ? `${userId}:${seed}` : userId);
+  const hash = $derived(hashCode(effectiveId));
 
   const GRID_SIZE = 5;
   const cellSize = 100 / GRID_SIZE;
 
-  // Per-user hue from hash; second cube color is its HSL complement (+180°)
-  const avatarColors = $derived.by(() => {
-    const hue = hash % 360;
+  // Compute everything in one derived so the template updates reliably when seed changes
+  const avatarData = $derived.by(() => {
+    const h = hash;
+    const hue = h % 360;
     const complement = (hue + 180) % 360;
-    return {
+
+    const colors = {
       bg: `hsl(${hue}, 22%, 14%)`,
       cubeA: `hsl(${hue}, 68%, 62%)`,
       cubeB: `hsl(${complement}, 68%, 62%)`,
     };
-  });
 
-  function cubeFill(x: number, y: number): string {
-    const symX = Math.min(x, GRID_SIZE - 1 - x);
-    const bit = (hash >> ((y * GRID_SIZE + symX) % 31)) & 1;
-    return bit ? avatarColors.cubeA : avatarColors.cubeB;
-  }
-
-  // Generate left-right symmetric 5x5 grid
-  const grid = $derived.by(() => {
+    // left-right symmetric 5x5 grid
     const g: boolean[][] = [];
     for (let y = 0; y < GRID_SIZE; y++) {
       const row: boolean[] = [];
       for (let x = 0; x < Math.ceil(GRID_SIZE / 2); x++) {
         const bitPos = (y * 5 + x * 2) % 31;
-        const on = ((hash >> bitPos) & 1) === 1;
+        const on = ((h >> bitPos) & 1) === 1;
         row.push(on);
       }
       const mirrored = [...row];
@@ -57,7 +53,21 @@
       }
       g.push(mirrored);
     }
-    return g;
+
+    // precompute the fills for each cell (using symmetric bit for color)
+    const cells: { x: number; y: number; fill: string }[] = [];
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        if (g[y][x]) {
+          const symX = Math.min(x, GRID_SIZE - 1 - x);
+          const bit = (h >> ((y * GRID_SIZE + symX) % 31)) & 1;
+          const fill = bit ? colors.cubeA : colors.cubeB;
+          cells.push({ x, y, fill });
+        }
+      }
+    }
+
+    return { colors, cells };
   });
 </script>
 
@@ -70,21 +80,17 @@
   aria-hidden="true"
 >
   <!-- Background cube -->
-  <rect x="0" y="0" width="100" height="100" fill={avatarColors.bg} rx={rounded} />
+  <rect x="0" y="0" width="100" height="100" fill={avatarData.colors.bg} rx={rounded} />
 
-  <!-- Unique pattern (symmetric permutation based on user ID) as nested inner cubes -->
-  {#each grid as row, y}
-    {#each row as filled, x}
-      {#if filled}
-        <rect
-          x={x * cellSize + 2}
-          y={y * cellSize + 2}
-          width={cellSize - 4}
-          height={cellSize - 4}
-          fill={cubeFill(x, y)}
-          rx="2"
-        />
-      {/if}
-    {/each}
+  <!-- Unique pattern (symmetric permutation based on user ID + seed) as nested inner cubes -->
+  {#each avatarData.cells as cell (cell.x + '-' + cell.y)}
+    <rect
+      x={cell.x * cellSize + 2}
+      y={cell.y * cellSize + 2}
+      width={cellSize - 4}
+      height={cellSize - 4}
+      fill={cell.fill}
+      rx="2"
+    />
   {/each}
 </svg>

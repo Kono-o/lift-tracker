@@ -3,9 +3,13 @@
 create table if not exists public.usernames (
   username text primary key,
   user_id uuid not null unique references auth.users (id) on delete cascade,
+  avatar_seed text,
   created_at timestamptz not null default now(),
   constraint usernames_format check (username ~ '^[a-z0-9_-]{3,20}$')
 );
+
+-- Add seed column if the table already existed from older migration
+alter table public.usernames add column if not exists avatar_seed text;
 
 alter table public.usernames enable row level security;
 
@@ -117,3 +121,48 @@ $$;
 
 revoke all on function public.delete_own_account() from public;
 grant execute on function public.delete_own_account() to authenticated;
+
+create or replace function public.get_avatar_seed()
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  uid uuid := auth.uid();
+  seed text;
+begin
+  if uid is null then
+    return null;
+  end if;
+  select avatar_seed into seed
+  from public.usernames
+  where user_id = uid
+  limit 1;
+  return seed;
+end;
+$$;
+
+revoke all on function public.get_avatar_seed() from public;
+grant execute on function public.get_avatar_seed() to authenticated;
+
+create or replace function public.save_avatar_seed(p_seed text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  uid uuid := auth.uid();
+begin
+  if uid is null then
+    raise exception 'Not authenticated';
+  end if;
+  update public.usernames
+  set avatar_seed = p_seed
+  where user_id = uid;
+end;
+$$;
+
+revoke all on function public.save_avatar_seed(text) from public;
+grant execute on function public.save_avatar_seed(text) to authenticated;

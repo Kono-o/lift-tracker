@@ -874,6 +874,17 @@ export const db = {
 		return user;
 	},
 
+	async getAvatarSeed(): Promise<string | null> {
+		const { data, error } = await supabase.rpc("get_avatar_seed");
+		if (error) throw error;
+		return data ?? null;
+	},
+
+	async saveAvatarSeed(seed: string | null): Promise<void> {
+		const { error } = await supabase.rpc("save_avatar_seed", { p_seed: seed });
+		if (error) throw error;
+	},
+
 	async signUpWithUsername(username: string, password: string) {
 		const validationError = validateUsername(username);
 		if (validationError) throw new Error(validationError);

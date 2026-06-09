@@ -238,6 +238,10 @@
   let currentView = $state<'track' | 'swap_template' | 'edit_template' | 'stats' | 'edit_stats'>('track');
   let templateEditorReturnView = $state<'track' | 'swap_template'>('track');
 
+  // Persisted avatar seed from usernames table. Click the identicon in the user menu to shuffle to a new one.
+  let avatarSeed = $state<string | null>(null);
+  let avatarShuffleCooldown = $state(false);
+
   let selectedDateDisplay = $derived.by(() => {
     const ud = selectedDate;
     const umons = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
@@ -249,6 +253,15 @@
   let weekBarLabel = $derived.by(() => {
     const week = getISOWeekNumber(selectedDate);
     return `${selectedDateDisplay.nice} · ${DAY_NAMES[selectedWeekday].toUpperCase()} · W${week}`;
+  });
+
+  // Load persisted avatar seed whenever we have a logged in user.
+  $effect(() => {
+    if (currentUser) {
+      void loadAvatarSeed();
+    } else {
+      avatarSeed = null;
+    }
   });
 
   function selectDate(newD: Date) {
@@ -1106,6 +1119,16 @@
   let isViewingToday = $derived(selectedDateStr === REAL_TODAY_STR);
   let isFuture = $derived(selectedDateStr > REAL_TODAY_STR);
   let isPastSelected = $derived(selectedDateStr < REAL_TODAY_STR && !isViewingToday);
+  /** Past day with a logged workout (done or skipped) — enables erase button for previous logs. */
+  let isViewingPastDoneLog = $derived(
+    !isViewingToday &&
+      viewedLog != null &&
+      !viewedLog.workout_snapshot?.is_rest &&
+      !logIsSkipped(viewedLog)
+  );
+  let isViewingPastSkippedLog = $derived(
+    !isViewingToday && viewedLog != null && logIsSkipped(viewedLog)
+  );
   let accountCreatedDateStr = $derived.by(() => {
     const raw = currentUser?.created_at;
     if (!raw) return null;
@@ -1262,6 +1285,14 @@
     return DAY_NAMES[selectedWeekday].toUpperCase();
   });
   let workoutLabel = $derived(`${selectedDayLabel}'S WORKOUT`);
+
+  /** Past-tense label for logged rest days in the rest day hero (avoids "LOGGED FOR" or "NO TEMPLATE ASSIGNED" for historical logged rests). */
+  let pastRestSubLabel = $derived.by(() => {
+    const realYesterday = new Date(REAL_TODAY);
+    realYesterday.setDate(REAL_TODAY.getDate() - 1);
+    if (selectedDateStr === toDateStr(realYesterday)) return 'YESTERDAY WAS A REST DAY';
+    return `${selectedDateDisplay.nice} WAS A REST DAY`;
+  });
   let unloggedHeroLine = $derived.by(() => {
     const realYesterday = new Date(REAL_TODAY);
     realYesterday.setDate(REAL_TODAY.getDate() - 1);
@@ -1397,9 +1428,12 @@
       });
   });
 
-  // Fetch logs for week strip only when expanded (avoid work while collapsed)
+  // Preload logs for the current visible week eagerly (even when the week dropdown/calendar is collapsed).
+  // This ensures the week strip shows correct per-day status immediately, and selecting any day
+  // in the week (via strip or arrows) shows the log without "Loading day…" delay or on-demand fetch.
+  // The week dropdown will feel instant because data is already there before opening.
   $effect(() => {
-    if (!currentUser || weekCalendarDisplayCollapsed) return;
+    if (!currentUser) return;
     const visible = currentWeekDates;
     const missing: string[] = [];
     for (const d of visible) {
@@ -1416,8 +1450,8 @@
     }
     if (missing.length === 0) return;
 
-    // Defer fetch until the open animation finishes so it does not jank the transition.
-    const delay = WEEK_CALENDAR_MS;
+    // Small or zero delay for eager preload; was previously deferred only for open animation.
+    const delay = 0;
 
     setTimeout(() => {
       // Re-check visibility in case the user navigated away very quickly
@@ -3951,7 +3985,11 @@
   }
 
   function beginEraseRevert() {
-    if (workoutState !== 'done' && workoutState !== 'skipped') return;
+    // Support erasing previous (past) workout logs in addition to today's.
+    const canErase = isViewingToday
+      ? (workoutState === 'done' || workoutState === 'skipped')
+      : !!viewedLog;
+    if (!canErase) return;
     stopEraseHold();
     resetHeaderTimerDisplay();
     const dateKey = selectedDateStr;
@@ -3963,7 +4001,9 @@
       completedTimers,
     };
     applyEraseLocalReset();
-    workoutState = 'idle';
+    if (isViewingToday) {
+      workoutState = 'idle';
+    }
     void eraseWorkoutLog({ localAlreadyApplied: true, rollback });
   }
 
@@ -4093,7 +4133,11 @@
 
   function startEraseHold(e: Event) {
     if (e.cancelable) e.preventDefault();
-    if (workoutState !== 'done' && workoutState !== 'skipped') {
+    // Support erase for previous logs: allow if today is done/skipped or we are viewing a past log.
+    const canErase = isViewingToday
+      ? (workoutState === 'done' || workoutState === 'skipped')
+      : !!viewedLog;
+    if (!canErase) {
       return;
     }
     pulseEraseTapFlash();
@@ -5079,6 +5123,40 @@
     }
   }
 
+  async function loadAvatarSeed() {
+    if (!currentUser) {
+      avatarSeed = null;
+      return;
+    }
+    try {
+      avatarSeed = await db.getAvatarSeed();
+    } catch (e) {
+      console.error("load avatar seed failed", e);
+      avatarSeed = null;
+    }
+  }
+
+  async function saveAvatarSeed(seed: string | null) {
+    try {
+      await db.saveAvatarSeed(seed);
+      avatarSeed = seed;
+    } catch (e) {
+      console.error("save avatar seed failed", e);
+    }
+  }
+
+  // Shuffle the avatar seed (random) and persist it. Called on click of the avatar in user menu.
+  function shuffleAvatarSeed() {
+    if (avatarShuffleCooldown) return;
+    avatarShuffleCooldown = true;
+    const newSeed = Math.random().toString(36).slice(2, 10);
+    avatarSeed = newSeed;
+    void saveAvatarSeed(newSeed);
+    setTimeout(() => {
+      avatarShuffleCooldown = false;
+    }, 50);
+  }
+
   async function handleChangePassword() {
     if (
       accountBusy ||
@@ -5897,7 +5975,7 @@
 
             {@render ctaEmptySlot()}
           {:else}
-          {#if !isViewingToday}
+          {#if !isViewingToday && !isViewingPastDoneLog && !isViewingPastSkippedLog}
               {@render ctaEmptySlot()}
               <button
                 type="button"
@@ -5908,7 +5986,7 @@
               </button>
               {@render ctaEmptySlot()}
           {:else}
-          <!-- STATS (left, narrow) — opens stats menu -->
+          <!-- STATS (left, narrow) — opens stats menu. Shown for today and for past logged workouts (so erase is available alongside). -->
           <button
             type="button"
             class="{workoutSideBtnClass} border bg-[#0d0d0d] border-[#1e1e1e] text-white hover:border-white/40"
@@ -5980,8 +6058,10 @@
                   <span class={workoutSideLabelClass} style={ctaChStyle(SKIP_CTA_TARGET, SIDE_CTA_MAX_CH)}>{SKIP_CTA_TARGET}</span>
                 </span>
               </button>
-          {:else if workoutState === 'done'}
-            {@const effectiveStatus = justFinishedStatus ?? todayCompletionStatus}
+          {:else if (isViewingToday && workoutState === 'done') || isViewingPastDoneLog}
+            {@const effectiveStatus = isViewingPastDoneLog
+              ? (completionStatusForLog(viewedLog) ?? 'neutral')
+              : (justFinishedStatus ?? todayCompletionStatus)}
             {@const isUntouchedComplete = effectiveStatus === 'untouched'}
             {@const isYellowComplete = !isUntouchedComplete && (effectiveStatus === 'yellow' || effectiveStatus === 'neutral')}
               <button
@@ -6008,7 +6088,7 @@
                   <span class={workoutSideLabelClass} style={ctaChStyle(ERASE_CTA_SOURCE, SIDE_CTA_MAX_CH)}>{ERASE_CTA_SOURCE}</span>
                 </span>
               </button>
-          {:else if workoutState === 'skipped'}
+          {:else if (isViewingToday && workoutState === 'skipped') || isViewingPastSkippedLog}
               <button
                 class="{workoutCenterBtnClass} w-cta-skipped cursor-default"
               >
@@ -6092,7 +6172,17 @@
         <div class="settings-panel-body text-[10px] leading-snug">
           {#if currentUser}
             <div class="flex justify-center py-1">
-              <GeneratedAvatar userId={currentUser.id} size={80} />
+              <button
+                type="button"
+                onclick={shuffleAvatarSeed}
+                disabled={avatarShuffleCooldown}
+                class="cursor-pointer hover:opacity-90 active:scale-[0.96] transition-all focus:outline-none {avatarShuffleCooldown ? 'opacity-60 cursor-default' : ''}"
+                title="Click to shuffle to a new random identicon seed (saved)"
+              >
+                {#key avatarSeed}
+                  <GeneratedAvatar userId={currentUser.id} seed={avatarSeed} size={80} />
+                {/key}
+              </button>
             </div>
           {/if}
           <div class="settings-panel-stats">
@@ -6653,7 +6743,9 @@
       <div class="settings-panel-body text-[10px] leading-snug">
         {#if bootAccountReveal && currentUser && panel}
           <div class="flex justify-center py-1 boot-panel-reveal-item boot-panel-reveal-item--avatar">
-            <GeneratedAvatar userId={currentUser.id} size={80} />
+            {#key avatarSeed}
+              <GeneratedAvatar userId={currentUser.id} seed={avatarSeed} size={80} />
+            {/key}
           </div>
 
           <div class="settings-panel-stats">
@@ -6841,7 +6933,9 @@
         class="w-7 h-7 shrink-0 rounded bg-emerald-950/40 flex items-center justify-center hover:bg-emerald-900/40 transition"
         onclick={(e) => { e.stopPropagation(); openSettingsPanel(); }}
       >
-        <GeneratedAvatar userId={currentUser.id} size={26} rounded={2} className="rounded" />
+        {#key avatarSeed}
+          <GeneratedAvatar userId={currentUser.id} seed={avatarSeed} size={26} rounded={2} className="rounded" />
+        {/key}
       </button>
       <div class="flex-1 flex items-center gap-2 min-w-0">
         <button
@@ -6949,6 +7043,10 @@
     {@const isPast = selectedDateStr < REAL_TODAY_STR && !isViewingToday}
     {@const hasLog = !!viewedLog}
     {@const isRestLog = hasLog && viewedLog.workout_snapshot?.is_rest}
+    {@const isLoggedRest = !!viewedLog && viewedLog.workout_snapshot?.is_rest}
+    {@const restSubText = isLoggedRest 
+      ? (isPast ? pastRestSubLabel : `LOGGED FOR ${selectedDayLabel}`) 
+      : `NO TEMPLATE ASSIGNED FOR ${selectedDayLabel}`}
 
     <div class="track-view flex flex-col flex-1 min-h-0 overflow-hidden min-w-0">
     {#if isSelectedDayLogLoading}
@@ -7036,7 +7134,7 @@
           CREATE ROUTINE
         </button>
       </div>
-    {:else if (isRestLog || isScheduledRestDay) && !hasViewedWorkoutLog}
+    {:else if ((isRestLog || isLoggedRest) || isScheduledRestDay) && !hasViewedWorkoutLog}
       <!-- REST DAY: scheduled rest or logged rest — never when a real workout log exists -->
       <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
         <!-- Hero icon -->
@@ -7047,7 +7145,7 @@
         <div class="text-center {isFuture && !isRestLog ? 'opacity-80' : ''}">
           <div class="text-3xl font-semibold tracking-[-0.02em] text-white">REST DAY</div>
           <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">
-            {isRestLog ? `LOGGED FOR ${selectedDayLabel}` : `NO TEMPLATE ASSIGNED FOR ${selectedDayLabel}`}
+            {restSubText}
           </div>
         </div>
 
@@ -7085,7 +7183,7 @@
           </div>
         </button>
 
-        {#if isRestLog}
+        {#if isLoggedRest}
           <div class="text-[10px] text-center text-zinc-500">This day was logged as a rest day. <button class="text-red-400 hover:text-red-500 underline" onclick={() => undoRestLog(selectedDateStr)}>undo</button></div>
         {/if}
       </div>

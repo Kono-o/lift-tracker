@@ -2,7 +2,7 @@
 
 All notable changes to Lift Tracker are documented here.
 
-## [1.0.1] - 2026-06-09
+## [1.1.0] - 2026-06-09
 
 ### UI Polish for Update Experience
 

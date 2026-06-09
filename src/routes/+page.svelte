@@ -101,6 +101,7 @@
     type UpdateInfo,
   } from '$lib/updater';
   import { isNativeApp } from '$lib/native';
+  import { App } from '@capacitor/app';
 
   // Constants
   const DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -151,6 +152,19 @@
   /** Once user taps Install we become unclosable until the OS install prompt or failure. */
   let updateInstalling = $state(false);
   let updateError = $state<string | null>(null);
+  /** Path returned by native downloadUpdate (e.g. "updates/lift-tracker-update.apk").
+   *  Lets us re-attempt *only* the install step after the user grants unknown-sources permission
+   *  and returns to the app, without re-downloading or hitting the updateInstalling guard.
+   */
+  let downloadedApkPath = $state<string | null>(null);
+
+  /** Reactive flag for the pre-download permission gate UI state. */
+  let isWaitingForUpdatePermission = $derived(
+    updateInstalling &&
+    updateDownloadProgress === 0 &&
+    !!updateError &&
+    /unknown|permission|Install unknown apps/i.test(updateError)
+  );
 
   // Post-update "what's new" shown on first launch of a new binary.
   let showPostUpdate = $state(false);
@@ -459,6 +473,7 @@
             updateDownloadProgress = 0;
             updateInstalling = false;
             updateError = null;
+            downloadedApkPath = null;
             showUpdatePrompt = true;
           }
         } catch (e) {
@@ -4710,13 +4725,21 @@
     updateDownloadProgress = 0;
     updateInstalling = false;
     updateError = null;
+    downloadedApkPath = null;
   }
 
   async function startUpdateInstall() {
-    if (!updateInfo || updateInstalling) return;
+    if (!updateInfo) return;
+    // Block only while a non-error "in progress" (e.g. actively downloading).
+    // If we have a permission error (updateError set) we *want* to allow re-tapping INSTALL
+    // to retry just the installApk step (after user returns from settings).
+    if (updateInstalling && !updateError) return;
+
     updateError = null;
     updateInstalling = true;
-    updateDownloadProgress = 0;
+    if (!downloadedApkPath) {
+      updateDownloadProgress = 0;
+    }
 
     if (!isNativeApp()) {
       // Website / browser demo path: trigger a real file download using
@@ -4730,21 +4753,93 @@
         link.click();
         document.body.removeChild(link);
 
-        // Simulate quick progress for the UI
+        // fake cool delay to start the "download" a bit late
+        await new Promise(r => setTimeout(r, 750));
+
+        updateDownloadProgress = 0;
+
+        // play the progress
+        for (let p = 0; p <= 100; p += 5) {
+          updateDownloadProgress = p;
+          await new Promise(r => setTimeout(r, 70));
+        }
+
+        // stop instantly at 100%
         updateDownloadProgress = 100;
 
         setTimeout(() => {
-          updateError = 'Download started in your browser! Check your Downloads folder. On Android, tap the APK to install (you may need to allow "Install unknown apps").';
           updateInstalling = false;
-        }, 650);
+          downloadedApkPath = null;
+        }, 150);  // tiny pause so UI shows 100% briefly before hiding
       } catch (e: any) {
         updateError = 'Could not start download. Please visit the releases page manually.';
         updateInstalling = false;
+        downloadedApkPath = null;
       }
       return;
     }
 
-    // Native Android path (real sideloaded APK flow) - use native downloader for reliability
+    // === Pre-flight permission check (the key improvement) ===
+    // We check *before* downloading so the user never wastes bandwidth on an APK
+    // they can't install yet. If the permission is missing we send them to settings
+    // immediately and keep the dialog in the "installing" (unclosable) state with
+    // guidance. When they return and tap INSTALL again we re-check and only then
+    // start the real download.
+    try {
+      // The method may not exist if running against an old native plugin build.
+      // Guard + try/catch so we degrade gracefully (the final installApk still enforces).
+      const canInstallFn = (UpdaterNative as any).canInstallFromUnknownSources;
+      let canInstall = true;
+      if (typeof canInstallFn === 'function') {
+        const res = await canInstallFn();
+        canInstall = !!res?.canInstall;
+      }
+      if (!canInstall) {
+        updateError = 'Lift Tracker needs permission to install updates from unknown sources.';
+        updateInstalling = true;
+        updateDownloadProgress = 0;
+        downloadedApkPath = null;
+        try {
+          await openInstallPermissionSettings();
+        } catch {}
+        return;
+      }
+    } catch (permErr) {
+      // If the check call itself fails (very old plugin, etc.) we fall through.
+      // The final installApk still enforces the permission as a safety net.
+      console.warn('[updater] permission pre-check failed, will let installApk enforce it', permErr);
+    }
+
+    // Permission OK at this moment.
+
+    // If we already successfully downloaded on a previous attempt in this prompt
+    // (edge case), just re-try the *install* handoff.
+    if (downloadedApkPath) {
+      try {
+        await promptInstallApk(downloadedApkPath);
+        // On success the OS package installer activity should appear and cover us.
+        // Leave the dialog in the installing state (unclosable) briefly.
+      } catch (e: any) {
+        const msg = String(e?.message || e || 'Install failed');
+        if (msg.includes('permission_required')) {
+          // Should be rare now that we pre-check, but handle gracefully.
+          updateError = 'Please allow "Install unknown apps" for Lift Tracker in the settings screen, then return here and tap INSTALL.';
+          try {
+            await openInstallPermissionSettings();
+          } catch {}
+        } else {
+          updateError = msg;
+          updateInstalling = false;
+          downloadedApkPath = null;
+        }
+      }
+      return;
+    }
+
+    // fake cool delay to start the download a bit late (for nice UX)
+    await new Promise(r => setTimeout(r, 750));
+
+    // Native Android path (real sideloaded APK flow) - full download + install.
     try {
       // Listen for progress from the native plugin (emitted during downloadUpdate)
       const progressListener = (data: { progress?: number }) => {
@@ -4759,6 +4854,9 @@
         expectedSize: updateInfo.size || 0,
       });
 
+      // Remember the path so that a later (very unexpected) permission error can be recovered.
+      downloadedApkPath = result.path;
+
       // Remove listener (use removeAllListeners for safety if reference issue)
       try {
         UpdaterNative.removeListener('downloadProgress', progressListener);
@@ -4766,7 +4864,10 @@
         UpdaterNative.removeAllListeners('downloadProgress');
       }
 
-      // Download done — hand off to native installer.
+      // Download done — stop instantly at 100%
+      updateDownloadProgress = 100;
+
+      // now really hand off to native installer.
       // The modal stays visible (unclosable) until the activity switch.
       await promptInstallApk(result.path);
 
@@ -4776,20 +4877,56 @@
     } catch (e: any) {
       const msg = String(e?.message || e || 'Update failed');
       if (msg.includes('permission_required')) {
-        updateError = 'Please allow "Install unknown apps" for Lift Tracker.';
-        // Proactively surface the OS settings (plugin already tries to open it).
+        // This can still happen in rare races (permission revoked between check and install).
+        updateError = 'Please allow "Install unknown apps" for Lift Tracker in the settings screen, then return here and tap INSTALL.';
+        // Proactively surface the OS settings.
         try {
           await openInstallPermissionSettings();
         } catch {}
-        // Keep installing=true so the sheet stays; user returns and can tap Install again.
+        // Keep installing=true + downloadedApkPath (we may have partially downloaded) so user can retry.
       } else if (msg.toLowerCase().includes('parsing') || msg.toLowerCase().includes('corrupted') || msg.toLowerCase().includes('size mismatch')) {
         updateError = msg + ' Tap "Download manually from GitHub" below as a fallback.';
         updateInstalling = false;
+        downloadedApkPath = null;
       } else {
         updateError = msg;
         // Allow the user to dismiss on error so they aren't stuck.
         updateInstalling = false;
+        downloadedApkPath = null;
       }
+    }
+  }
+
+  // One-time resume listener for a smoother permission flow:
+  // After the user grants "Install unknown apps" in settings and returns to the app,
+  // we automatically re-invoke startUpdateInstall(). Because we now do the permission
+  // pre-check *before* downloading, this will start the download (and later the real
+  // package installer) without the user having to tap the button a second time.
+  if (isNativeApp()) {
+    // Guard so we don't attach multiple listeners across HMR / re-renders.
+    const w = (typeof window !== 'undefined' ? (window as any) : {}) as any;
+    if (!w.__LIFT_UPDATER_RESUME_LISTENER) {
+      w.__LIFT_UPDATER_RESUME_LISTENER = true;
+      App.addListener('resume', () => {
+        // Only auto-advance if we are visibly waiting for the unknown-sources permission
+        // for the current update prompt (no download has started yet).
+        if (
+          showUpdatePrompt &&
+          updateInstalling &&
+          updateError &&
+          /unknown|permission|Install unknown apps/i.test(updateError) &&
+          !downloadedApkPath
+        ) {
+          // Small delay lets the activity / view settle after returning from settings.
+          setTimeout(() => {
+            if (showUpdatePrompt && updateInstalling && !downloadedApkPath) {
+              void startUpdateInstall();
+            }
+          }, 220);
+        }
+      }).catch(() => {
+        /* non-fatal */
+      });
     }
   }
 
@@ -4822,33 +4959,44 @@
         updateInfo = info;
       } else {
         updateInfo = {
-          version: '1.0.2',
+          version: '1.0.1',
           notes: 'Demo of the update menu (triggered from the website footer).\n\nIn the real Android app this appears automatically after sign-in + data load when a newer GitHub release is detected.',
-          downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.2/lift-tracker-v1.0.2.apk',
-          apiAssetUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.2/lift-tracker-v1.0.2.apk',
+          downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.1/lift-tracker-v1.0.1.apk',
+          apiAssetUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.1/lift-tracker-v1.0.1.apk',
           size: 3620000,
-          tag: 'v1.0.2'
+          tag: 'v1.0.1'
         } as any;
       }
       updateDownloadProgress = 0;
       updateInstalling = false;
-      updateError = isNativeApp() ? null : 'Website demo — clicking Install will start a browser download of the APK (real install + prompt only works in the Android app).';
+      updateError = null;
+      downloadedApkPath = null;
       showUpdatePrompt = true;
     } catch (e) {
       console.error('[updater] manual open failed to fetch:', e);
       updateInfo = {
-        version: '1.0.2',
+        version: '1.0.1',
         notes: 'Demo of the update menu (triggered from the website footer). Fetch failed — see console for details.',
-        downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.2/lift-tracker-v1.0.2.apk',
-        apiAssetUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.2/lift-tracker-v1.0.2.apk',
+        downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.1/lift-tracker-v1.0.1.apk',
+        apiAssetUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.1/lift-tracker-v1.0.1.apk',
         size: 3620000,
-        tag: 'v1.0.2'
+        tag: 'v1.0.1'
       } as any;
       updateDownloadProgress = 0;
       updateInstalling = false;
-      updateError = isNativeApp() ? null : 'Website demo — clicking Install will start a browser download of the APK.';
+      updateError = null;
+      downloadedApkPath = null;
       showUpdatePrompt = true;
     }
+  }
+
+  /** Manually open the post-update "what's new" menu (used by footer click on the website for testing/demo).
+   *  On native the real post-update check will handle it on first launch after an update.
+   */
+  function manuallyOpenPostUpdateMenu() {
+    postUpdateVersion = APP_VERSION;
+    postUpdateNotes = '- Full auto-update support for the sideloaded Android APK\n- Update check only after sign-in + data load + main menu visible\n- Centered blur update prompt (matches account/settings style)\n- "Install" is unclosable during download + shows real-time progress\n- Permission check for unknown sources happens *before* downloading\n- Reliable native download (HttpURLConnection + verification)\n- Post-update "what\'s new" changelog popup on first launch\n- Stable signing key across releases';
+    showPostUpdate = true;
   }
 
   function beginAccountNameEdit() {
@@ -5962,31 +6110,34 @@
                 <span class="settings-panel-header__name text-zinc-400">Backend</span>
               {/if}
               {#if panel.usage}
-                <div class="flex justify-center gap-1 text-[9px] text-zinc-400 mt-1 mb-2">
-                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
-                    <List class="size-3 shrink-0" aria-hidden="true" />
-                    <span class="leading-none">{panel.usage.templates} tpl</span>
-                  </span>
-                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
-                    <Dumbbell class="size-3 shrink-0" aria-hidden="true" />
-                    <span class="leading-none">{panel.usage.exercises} ex</span>
-                  </span>
-                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
-                    <History class="size-3 shrink-0" aria-hidden="true" />
-                    <span class="leading-none">{panel.usage.workout_history} logs</span>
-                  </span>
-                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
-                    <BarChart3 class="size-3 shrink-0" aria-hidden="true" />
-                    <span class="leading-none">{panel.usage.tracked_stats ?? 0} stats</span>
-                  </span>
-                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
-                    <Pencil class="size-3 shrink-0" aria-hidden="true" />
-                    <span class="leading-none">{panel.usage.stat_logs ?? 0} stat logs</span>
-                  </span>
-                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
-                    <HardDrive class="size-3 shrink-0" aria-hidden="true" />
-                    <span class="leading-none">{panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}</span>
-                  </span>
+                <div class="mt-1 mb-2">
+                  <div class="text-[8px] uppercase tracking-[1px] text-zinc-500 text-center mb-1">Data usage</div>
+                  <div class="grid grid-cols-3 gap-1 text-[9px] text-zinc-400">
+                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
+                      <List class="size-3 shrink-0" aria-hidden="true" />
+                      <span class="leading-none">{panel.usage.templates} tpl</span>
+                    </span>
+                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
+                      <Dumbbell class="size-3 shrink-0" aria-hidden="true" />
+                      <span class="leading-none">{panel.usage.exercises} ex</span>
+                    </span>
+                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
+                      <History class="size-3 shrink-0" aria-hidden="true" />
+                      <span class="leading-none">{panel.usage.workout_history} wrk logs</span>
+                    </span>
+                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
+                      <BarChart3 class="size-3 shrink-0" aria-hidden="true" />
+                      <span class="leading-none">{panel.usage.tracked_stats ?? 0} sts</span>
+                    </span>
+                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
+                      <HardDrive class="size-3 shrink-0" aria-hidden="true" />
+                      <span class="leading-none">{panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}</span>
+                    </span>
+                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
+                      <Pencil class="size-3 shrink-0" aria-hidden="true" />
+                      <span class="leading-none">{panel.usage.stat_logs ?? 0} sts logs</span>
+                    </span>
+                  </div>
                 </div>
               {/if}
 
@@ -6210,8 +6361,9 @@
 
   <!-- Update available prompt (Android sideload self-update).
        Only rendered after logged in + data loaded + main menu visible.
+       On website the footer can manually trigger it for demo.
   -->
-  {#if showUpdatePrompt && updateInfo && currentUser && hasInitialLoad && stageRevealActive && !bootOverlayVisible}
+  {#if showUpdatePrompt && updateInfo && !bootOverlayVisible && (currentUser || !isNativeApp())}
     <div
       class="settings-panel-overlay"
       role="dialog"
@@ -6243,87 +6395,89 @@
         </div>
 
         <div class="settings-panel-body text-[10px] leading-snug">
-          <div class="settings-panel-stats">
-            <div class="settings-panel-header__identity">
-              <span class="settings-panel-header__name">Update available</span>
-              <span class="text-[10px] text-zinc-400">v{updateInfo.version} · you have v{APP_VERSION}</span>
+          <!-- Version comparison -->
+          <div class="flex flex-col items-center text-center">
+            <div class="inline-flex items-center gap-1.5 rounded-full bg-emerald-950/60 px-3 py-0.5 text-emerald-400 text-[10px] font-medium tracking-[1.5px]">
+              UPDATE AVAILABLE
+              {#if updateInfo.size}
+                · {(updateInfo.size / 1024 / 1024).toFixed(1)} MB
+              {/if}
+            </div>
+
+            <div class="mt-2 flex items-center gap-3">
+              <!-- Current version -->
+              <div class="flex flex-col items-center">
+                <div class="font-mono text-base text-zinc-400 tabular-nums">v{APP_VERSION}</div>
+              </div>
+
+              <div class="text-emerald-500 text-2xl leading-none">→</div>
+
+              <!-- New version -->
+              <div class="flex flex-col items-center">
+                <div class="font-mono text-base font-semibold text-emerald-400 tabular-nums">v{updateInfo.version}</div>
+              </div>
             </div>
           </div>
 
           {#if updateInfo.notes}
-            <div class="mt-2 max-h-40 overflow-auto rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2 text-[10px] leading-snug text-zinc-300 whitespace-pre-wrap">
-              {updateInfo.notes}
+            <div class="mt-3">
+              <div class="mb-1 text-[9px] font-medium tracking-[1px] text-zinc-500">WHAT'S NEW</div>
+              <div class="max-h-40 overflow-auto rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2.5 text-[10px] leading-snug text-zinc-300 whitespace-pre-wrap no-scrollbar">
+                {updateInfo.notes}
+              </div>
             </div>
           {:else}
-            <p class="text-zinc-400 mt-1">A new version of Lift Tracker is ready.</p>
+            <p class="mt-3 text-center text-zinc-400">A new version of Lift Tracker is ready.</p>
           {/if}
 
-          {#if updateError}
+          {#if updateError && !updateInstalling}
             <p class="settings-panel-alert mt-2">{updateError}</p>
           {/if}
 
-          {#if updateInstalling}
-            <div class="mt-3">
-              <div class="flex items-center justify-between text-[10px] text-zinc-400 mb-1">
-                <span>{updateDownloadProgress < 100 ? 'Downloading update…' : 'Ready to install'}</span>
-                <span class="tabular-nums">{updateDownloadProgress}%</span>
-              </div>
-              <div class="h-1.5 w-full rounded bg-[#1e1e1e] overflow-hidden">
-                <div
-                  class="h-1.5 bg-emerald-500 transition-[width] duration-75"
-                  style="width: {updateDownloadProgress}%"
-                ></div>
-              </div>
-              {#if updateError}
-                <p class="mt-1.5 text-[10px] text-amber-400">{updateError} Return here after granting and tap Install again.</p>
-              {:else}
-                <p class="mt-2 text-[10px] text-zinc-500">Keep the app open. The Android installer will appear.</p>
-              {/if}
-            </div>
-          {/if}
-
-          <div class="mt-3 grid grid-cols-1 gap-2">
+          <div class="mt-3 min-h-[1.75rem] flex items-center">
             {#if !updateInstalling}
-              <button
-                type="button"
-                class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--update-primary"
-                onclick={startUpdateInstall}
-              >
-                <span class="settings-panel-action-btn__label font-bold tracking-[0.5px]">INSTALL UPDATE</span>
-              </button>
-              <button
-                type="button"
-                class="settings-panel-action-btn settings-panel-action-btn--full"
-                onclick={closeUpdatePrompt}
-              >
-                <span class="settings-panel-action-btn__label">Later</span>
-              </button>
-            {:else}
-              <!-- Unclosable installing state. Show a retry-able Install if we hit a recoverable error (e.g. permission). -->
-              <button
-                type="button"
-                class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--update-primary"
-                onclick={startUpdateInstall}
-              >
-                <span class="settings-panel-action-btn__label font-bold tracking-[0.5px]">INSTALL</span>
-              </button>
-              {#if updateError}
-                <button
-                  type="button"
-                  class="settings-panel-action-btn settings-panel-action-btn--full"
-                  onclick={openGitHubReleases}
-                >
-                  <span class="settings-panel-action-btn__label">Download manually from GitHub</span>
-                </button>
-              {:else}
-                <div class="settings-panel-action-btn settings-panel-action-btn--full pointer-events-none opacity-70 border-[#1e1e1e] text-zinc-400">
-                  <span class="settings-panel-action-btn__label">Installing…</span>
+              <span class="block text-center text-[10px] text-zinc-400">Install to receive the latest features and fixes.</span>
+            {:else if updateInstalling}
+              {#if !isWaitingForUpdatePermission}
+                <div class="flex items-center gap-2 w-full">
+                  <div class="flex-1 h-1.5 rounded bg-[#1e1e1e] overflow-hidden">
+                    <div
+                      class="h-1.5 bg-emerald-500 transition-[width] duration-75"
+                      style="width: {updateDownloadProgress}%"
+                    ></div>
+                  </div>
+                  <span class="text-[10px] text-zinc-400 tabular-nums w-8 text-right">{updateDownloadProgress}%</span>
                 </div>
+              {/if}
+              {#if updateError}
+                <p class="mt-1.5 text-[10px] text-amber-400">{updateError}</p>
               {/if}
             {/if}
           </div>
 
-          <p class="mt-2 text-center text-[9px] text-zinc-500">Updates are installed from GitHub releases. Same signing key as your current app.</p>
+          <div class="mt-3 grid grid-cols-1 gap-2">
+            <button
+              type="button"
+              class={updateInstalling && !updateError 
+                ? "settings-panel-action-btn settings-panel-action-btn--full pointer-events-none opacity-70 border-[#1e1e1e] text-zinc-400"
+                : "settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--update-primary"}
+              disabled={updateInstalling && !updateError}
+              onclick={startUpdateInstall}
+            >
+              <span class="settings-panel-action-btn__label font-bold tracking-[0.5px]">
+                {!updateInstalling ? "INSTALL UPDATE" : (updateError ? "INSTALL" : "Installing…")}
+              </span>
+            </button>
+            {#if updateInstalling && updateError}
+              <button
+                type="button"
+                class="settings-panel-action-btn settings-panel-action-btn--full"
+                onclick={openGitHubReleases}
+              >
+                <span class="settings-panel-action-btn__label">Download manually from GitHub</span>
+              </button>
+            {/if}
+          </div>
         </div>
       </div>
     </div>
@@ -6331,8 +6485,9 @@
 
   <!-- Post-update "what's new" / changelog. Shown once on first launch after installing a new version.
        Only rendered after logged in + data loaded + main menu visible.
+       On website the footer can manually trigger it for demo.
   -->
-  {#if showPostUpdate && currentUser && hasInitialLoad && stageRevealActive && !bootOverlayVisible}
+  {#if showPostUpdate && !bootOverlayVisible && (currentUser || !isNativeApp())}
     <div
       class="settings-panel-overlay"
       role="dialog"
@@ -6363,28 +6518,37 @@
         </div>
 
         <div class="settings-panel-body text-[10px] leading-snug">
-          <div class="settings-panel-stats">
-            <div class="settings-panel-header__identity">
-              <span class="settings-panel-header__name flex items-center gap-1.5">
-                Updated to v{postUpdateVersion}
-                <Check class="size-3.5 text-emerald-400" />
-              </span>
-              <span class="text-[10px] text-zinc-400">Thanks for staying up to date!</span>
+          <!-- Version / heading -->
+          <div class="flex flex-col items-center text-center">
+            <div class="inline-flex items-center gap-1.5 rounded-full bg-emerald-950/60 px-3 py-0.5 text-emerald-400 text-[10px] font-medium tracking-[1.5px]">
+              UPDATED
+              <Check class="size-3.5" />
+            </div>
+
+            <div class="mt-2 flex items-center gap-3">
+              <!-- Updated version -->
+              <div class="flex flex-col items-center">
+                <div class="font-mono text-base font-semibold text-emerald-400 tabular-nums">v{postUpdateVersion}</div>
+              </div>
             </div>
           </div>
 
           {#if postUpdateNotes}
-            <div class="mt-2 max-h-44 overflow-auto rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2 text-[10px] leading-snug text-zinc-300 whitespace-pre-wrap">
-              {postUpdateNotes}
+            <div class="mt-3">
+              <div class="mb-1 text-[9px] font-medium tracking-[1px] text-zinc-500">WHAT'S NEW</div>
+              <div class="max-h-44 overflow-auto rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2 text-[10px] leading-snug text-zinc-300 whitespace-pre-wrap no-scrollbar">
+                {postUpdateNotes}
+              </div>
+              <span class="mt-2 block text-center text-[10px] text-zinc-400">Thanks for staying up to date!</span>
             </div>
           {:else}
-            <p class="text-zinc-400 mt-1">You’re now running the latest version.</p>
+            <p class="mt-3 text-center text-zinc-400">You’re now running the latest version.</p>
           {/if}
 
-          <div class="mt-3">
+          <div class="mt-3 grid grid-cols-1 gap-2">
             <button
               type="button"
-              class="settings-panel-action-btn settings-panel-action-btn--full bg-white border-[#2a2a2a] text-black hover:brightness-95"
+              class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--update-primary"
               onclick={closePostUpdate}
             >
               <span class="settings-panel-action-btn__label font-bold tracking-[0.5px]">GOT IT</span>
@@ -6464,31 +6628,34 @@
             </div>
 
             {#if panel.usage}
-              <div class="flex justify-center gap-1 text-[9px] text-zinc-400 mt-1 mb-2 boot-panel-reveal-item boot-panel-reveal-item--chips">
-                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
-                  <List class="size-3 shrink-0" aria-hidden="true" />
-                  <span class="leading-none">{panel.usage.templates} tpl</span>
-                </span>
-                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
-                  <Dumbbell class="size-3 shrink-0" aria-hidden="true" />
-                  <span class="leading-none">{panel.usage.exercises} ex</span>
-                </span>
-                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
-                  <History class="size-3 shrink-0" aria-hidden="true" />
-                  <span class="leading-none">{panel.usage.workout_history} logs</span>
-                </span>
-                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
-                  <BarChart3 class="size-3 shrink-0" aria-hidden="true" />
-                  <span class="leading-none">{panel.usage.tracked_stats ?? 0} stats</span>
-                </span>
-                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
-                  <Pencil class="size-3 shrink-0" aria-hidden="true" />
-                  <span class="leading-none">{panel.usage.stat_logs ?? 0} stat logs</span>
-                </span>
-                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a]">
-                  <HardDrive class="size-3 shrink-0" aria-hidden="true" />
-                  <span class="leading-none">{panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}</span>
-                </span>
+              <div class="mt-1 mb-2 boot-panel-reveal-item boot-panel-reveal-item--chips">
+                <div class="text-[8px] uppercase tracking-[1px] text-zinc-500 text-center mb-1">Data usage</div>
+                <div class="grid grid-cols-3 gap-1 text-[9px] text-zinc-400">
+                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
+                    <List class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="leading-none">{panel.usage.templates} tpl</span>
+                  </span>
+                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
+                    <Dumbbell class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="leading-none">{panel.usage.exercises} ex</span>
+                  </span>
+                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
+                    <History class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="leading-none">{panel.usage.workout_history} wrk logs</span>
+                  </span>
+                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
+                    <BarChart3 class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="leading-none">{panel.usage.tracked_stats ?? 0} sts</span>
+                  </span>
+                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
+                    <HardDrive class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="leading-none">{panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}</span>
+                  </span>
+                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
+                    <Pencil class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="leading-none">{panel.usage.stat_logs ?? 0} sts logs</span>
+                  </span>
+                </div>
               </div>
             {/if}
 
@@ -6543,23 +6710,34 @@
               <span class="settings-panel-header__user-id boot-panel-placeholder__ghost">00000000-0000-0000-0000-000000000000</span>
             </div>
 
-            <div class="flex justify-center gap-1 text-[9px] text-zinc-400 mt-1 mb-2" aria-hidden="true">
-              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
-                <List class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-                <span class="leading-none boot-panel-placeholder__ghost">0 tpl</span>
-              </span>
-              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
-                <Dumbbell class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-                <span class="leading-none boot-panel-placeholder__ghost">0 ex</span>
-              </span>
-              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
-                <History class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-                <span class="leading-none boot-panel-placeholder__ghost">0 logs</span>
-              </span>
-              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] boot-panel-placeholder">
-                <HardDrive class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-                <span class="leading-none boot-panel-placeholder__ghost">~0 B</span>
-              </span>
+            <div class="mt-1 mb-2 boot-panel-reveal-item boot-panel-reveal-item--chips" aria-hidden="true">
+              <div class="text-[8px] uppercase tracking-[1px] text-zinc-500 text-center mb-1 boot-panel-placeholder__ghost">Data usage</div>
+              <div class="grid grid-cols-3 gap-1 text-[9px] text-zinc-400">
+                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
+                  <List class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+                  <span class="leading-none boot-panel-placeholder__ghost">0 tpl</span>
+                </span>
+                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
+                  <Dumbbell class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+                  <span class="leading-none boot-panel-placeholder__ghost">0 ex</span>
+                </span>
+                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
+                  <History class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+                  <span class="leading-none boot-panel-placeholder__ghost">0 wrk logs</span>
+                </span>
+                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
+                  <BarChart3 class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+                  <span class="leading-none boot-panel-placeholder__ghost">0 sts</span>
+                </span>
+                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
+                  <HardDrive class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+                  <span class="leading-none boot-panel-placeholder__ghost">~0 B</span>
+                </span>
+                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
+                  <Pencil class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+                  <span class="leading-none boot-panel-placeholder__ghost">0 sts logs</span>
+                </span>
+              </div>
             </div>
           </div>
 
@@ -8174,7 +8352,7 @@
       <div class="text-center">
         <div class="text-6xl font-black tracking-[8px] text-white">LIFT</div>
         <div class="text-2xl font-light tracking-[6px] text-zinc-300 -mt-3">TRACKER</div>
-        <div class="text-[10px] tracking-[2px] text-emerald-400/70 mt-1">v0.0.1</div>
+        <div class="text-[10px] tracking-[2px] text-emerald-400/70 mt-1">v{APP_VERSION}</div>
       </div>
 
       <div class="auth-panel-card rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden">
@@ -8390,12 +8568,22 @@
   {/if}
   </div>
 
-  <div 
-    class="app-footer text-center text-[9px] tracking-[0.5px] text-zinc-500 shrink-0 leading-none cursor-pointer hover:text-zinc-300 active:text-white transition-colors"
-    onclick={manuallyOpenUpdateMenu}
-    title="Click to demo the update menu (attempts real GitHub fetch on website)"
-  >
-    LIFT-TRACKER — All rights reserved by Arya.
+  <div class="app-footer flex items-baseline justify-center gap-x-1 text-center text-[9px] tracking-[0.5px] text-zinc-500 shrink-0 leading-none">
+    <span
+      class="cursor-pointer hover:text-zinc-300 active:text-white transition-colors"
+      onclick={manuallyOpenUpdateMenu}
+      title="Click left side to demo the update menu (new version available)"
+    >
+      LIFT-TRACKER v{APP_VERSION}
+    </span>
+    <span class="text-zinc-500 select-none">—</span>
+    <span
+      class="cursor-pointer hover:text-zinc-300 active:text-white transition-colors"
+      onclick={manuallyOpenPostUpdateMenu}
+      title="Click right side to demo the updated menu (what's new after an update)"
+    >
+      All rights reserved by Arya.
+    </span>
   </div>
 
 </div>

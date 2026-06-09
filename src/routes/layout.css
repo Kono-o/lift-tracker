@@ -2283,6 +2283,15 @@ span.boot-panel-placeholder::after,
 	display: none;
 }
 
+.no-scrollbar {
+	scrollbar-width: none; /* Firefox */
+	-ms-overflow-style: none; /* IE and Edge */
+}
+
+.no-scrollbar::-webkit-scrollbar {
+	display: none; /* Chrome, Safari, Opera */
+}
+
 .app-stage-cta {
 	flex-shrink: 0;
 	padding-top: 0.25rem;

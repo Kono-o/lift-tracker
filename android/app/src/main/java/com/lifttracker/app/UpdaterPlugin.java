@@ -74,6 +74,22 @@ public class UpdaterPlugin extends Plugin {
         call.resolve();
     }
 
+    /**
+     * Check whether the app currently has permission to request installs from unknown sources.
+     * On Android 8+ (API 26+) this is the runtime "Install unknown apps" toggle.
+     * Returns { canInstall: boolean }.
+     */
+    @PluginMethod
+    public void canInstallFromUnknownSources(PluginCall call) {
+        boolean canInstall = true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            canInstall = getContext().getPackageManager().canRequestPackageInstalls();
+        }
+        JSObject ret = new JSObject();
+        ret.put("canInstall", canInstall);
+        call.resolve(ret);
+    }
+
     private void openUnknownSourcesSettings() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {

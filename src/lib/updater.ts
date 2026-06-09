@@ -39,6 +39,16 @@ export interface UpdaterPlugin {
 	 * Resolves with { path: string } (relative cache path) on success.
 	 */
 	downloadUpdate(options: { url: string; expectedSize?: number }): Promise<{ path: string }>;
+	/**
+	 * Returns whether the app currently has the "Install unknown apps" permission (Android 8+).
+	 * On web / older Android this will typically return true (irrelevant).
+	 */
+	canInstallFromUnknownSources(): Promise<{ canInstall: boolean }>;
+
+	// Capacitor plugin listener methods (available on the registered plugin at runtime)
+	addListener(eventName: string, listenerFunc: (data?: any) => void): Promise<any>;
+	removeListener(eventName: string, listenerFunc: (data?: any) => void): Promise<any>;
+	removeAllListeners(eventName?: string): Promise<any>;
 }
 
 // Register only once to avoid "already registered" warnings during HMR / dev reloads.
@@ -52,6 +62,11 @@ export const UpdaterNative: UpdaterPlugin = ((): UpdaterPlugin => {
 		_updaterNative = {
 			async installApk() { throw new Error('Updater plugin not available (web stub)'); },
 			async openInstallSettings() {},
+			async downloadUpdate() { throw new Error('Updater plugin not available (web stub)'); },
+			async canInstallFromUnknownSources() { return { canInstall: true }; },
+			async addListener() { return { remove: async () => {} }; },
+			async removeListener() {},
+			async removeAllListeners() {},
 		};
 		return _updaterNative;
 	}
@@ -66,6 +81,11 @@ export const UpdaterNative: UpdaterPlugin = ((): UpdaterPlugin => {
 		_updaterNative = {
 			async installApk() { throw new Error('Updater plugin is only available on Android'); },
 			async openInstallSettings() {},
+			async downloadUpdate() { throw new Error('Updater plugin is only available on Android'); },
+			async canInstallFromUnknownSources() { return { canInstall: true }; },
+			async addListener() { return { remove: async () => {} }; },
+			async removeListener() {},
+			async removeAllListeners() {},
 		};
 	}
 	return _updaterNative;

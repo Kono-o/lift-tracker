@@ -87,7 +87,7 @@ begin
       v_target_reps := null;
       v_target_minutes := least(99, greatest(0, coalesce((ex->>'target_minutes')::int, 0)));
       v_target_seconds := least(59, greatest(0, coalesce((ex->>'target_seconds')::int, 0)));
-      v_increment := least(1000::real, greatest(1::real, coalesce((ex->>'increment')::real, 5)));
+      v_increment := least(1000::real, greatest(0::real, coalesce((ex->>'increment')::real, 0)));
       v_current_weight := null;
     end if;
 

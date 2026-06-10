@@ -22,6 +22,12 @@
   import {
     clampTrackedRepsFieldInput,
     clampBaseKgFieldInput,
+    clampSetsFieldInput,
+    clampRepsFieldInput,
+    clampMinsFieldInput,
+    clampSecsFieldInput,
+    clampIncrementKgFieldInput,
+    clampIncrementSecFieldInput,
     clampRestMinsFieldInput,
     clampRestSecsFieldInput,
     formatOneDecimal,
@@ -2761,6 +2767,44 @@
 
   function countTemplateSets(tpl: Template): number {
     return tpl.exercises.reduce((sum, ex) => sum + (ex.target_sets || 0), 0);
+  }
+
+  /** Estimate total session time in seconds.
+   *  - Reps sets: assume 1 min work each
+   *  - Timed sets: use the exercise's target time
+   *  - Rests: one rest after each set (N sets = N rests per exercise)
+   */
+  function estimateSessionDuration(exercises: any[]): number {
+    let total = 0;
+    for (const ex of exercises || []) {
+      const sets = Math.max(0, ex.target_sets || 0);
+      if (sets === 0) continue;
+
+      const rest = ((ex.rest_minutes || 0) * 60) + (ex.rest_seconds || 0);
+
+      let workPerSet = 60; // 1 min assumption for reps
+      if (ex.exercise_type === 'time') {
+        workPerSet = ((ex.target_minutes || 0) * 60) + (ex.target_seconds || 0);
+      }
+
+      total += workPerSet * sets;
+
+      if (rest > 0) {
+        total += rest * sets;
+      }
+    }
+    return total;
+  }
+
+  function formatDurationHrsMins(totalSeconds: number): string {
+    if (!totalSeconds || totalSeconds <= 0) return '';
+    const totalMins = Math.round(totalSeconds / 60);
+    const h = Math.floor(totalMins / 60);
+    const m = totalMins % 60;
+    if (h > 0) {
+      return m > 0 ? `${h}h ${m}m` : `${h}h`;
+    }
+    return `${m}m`;
   }
 
   function countPerfLoggedSets(log: any): number {
@@ -7829,6 +7873,8 @@
             : skippedDisplayTemplate ?? activeTemplate}
       {@const exCount = (dispTemplate?.exercises || []).length}
       {@const setCount = (dispTemplate?.exercises || []).reduce((sum: number, ex: any) => sum + (ex.target_sets || 0), 0)}
+      {@const estSecs = estimateSessionDuration(dispTemplate?.exercises || [])}
+      {@const estTime = formatDurationHrsMins(estSecs)}
       {@const tickStatus = headerOutcomeCompletion()}
       {@const workoutTickVisible =
         showWorkoutHeaderOutcomeIcon() && (tickStatus === 'green' || tickStatus === 'yellow')}
@@ -7918,7 +7964,7 @@
               <span class="perfect-day-badge">PERFECT DAY</span>
             {:else}
               <div class="tpl-header-meta text-xs uppercase tracking-wide leading-none {headerSkipped ? 'w-fg-skipped-muted' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-zinc-500'}">
-                {exCount} EXERCISES • {setCount} SETS
+                {exCount} EXERCISES • {setCount} SETS{estTime ? ` • ~${estTime}` : ''}
               </div>
             {/if}
           </div>
@@ -8003,7 +8049,7 @@
                   {#if exercise.exercise_type === 'reps'}
                     {exercise.target_sets}×{exercise.target_reps} @{displayCurrentWeight}kg +{displayIncrementKg}kg
                   {:else}
-                    {exercise.target_sets}× {exercise.target_minutes}m {exercise.target_seconds.toString().padStart(2, '0')}s +{exercise.increment}s
+                    {exercise.target_sets}× {exercise.target_minutes}m {exercise.target_seconds.toString().padStart(2, '0')}s{exercise.increment ? ` +${exercise.increment}s` : ''}
                   {/if}
                 </div>
               </div>
@@ -9157,38 +9203,150 @@
                     <div class="grid grid-cols-2 gap-1 text-[9px]">
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Sets</span>
-                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'sets', getValue: () => ex.target_sets, setValue: (v) => { ex.target_sets = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
+                        <input 
+                          type="text" 
+                          inputmode="numeric" 
+                          autocomplete="off" 
+                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
+                          value={ex.target_sets > 0 ? ex.target_sets : ''}
+                          oninput={(e) => {
+                            const raw = (e.currentTarget as HTMLInputElement).value;
+                            const { value, display } = clampSetsFieldInput(raw);
+                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_sets: value } : ee);
+                            const input = e.currentTarget as HTMLInputElement;
+                            if (input.value !== display) input.value = display;
+                          }}
+                          onblur={() => void persistTemplateExercisesNow()} 
+                        />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Reps</span>
-                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'reps', getValue: () => ex.target_reps, setValue: (v) => { ex.target_reps = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
+                        <input 
+                          type="text" 
+                          inputmode="numeric" 
+                          autocomplete="off" 
+                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
+                          value={ex.target_reps > 0 ? ex.target_reps : ''}
+                          oninput={(e) => {
+                            const raw = (e.currentTarget as HTMLInputElement).value;
+                            const { value, display } = clampRepsFieldInput(raw);
+                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_reps: value } : ee);
+                            const input = e.currentTarget as HTMLInputElement;
+                            if (input.value !== display) input.value = display;
+                          }}
+                          onblur={() => void persistTemplateExercisesNow()} 
+                        />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Base kg</span>
-                        <input type="text" inputmode="decimal" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'baseKg', getValue: () => ex.current_weight ?? 0, setValue: (v) => { ex.current_weight = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
+                        <input 
+                          type="text" 
+                          inputmode="decimal" 
+                          autocomplete="off" 
+                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
+                          value={ex.current_weight ?? 0}
+                          oninput={(e) => {
+                            const raw = (e.currentTarget as HTMLInputElement).value;
+                            const { value, display } = clampBaseKgFieldInput(raw);
+                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, current_weight: value } : ee);
+                            const input = e.currentTarget as HTMLInputElement;
+                            if (input.value !== display) input.value = display;
+                          }}
+                          onblur={() => void persistTemplateExercisesNow()} 
+                        />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">+ kg</span>
-                        <input type="text" inputmode="decimal" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'incKg', getValue: () => ex.increment, setValue: (v) => { ex.increment = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
+                        <input 
+                          type="text" 
+                          inputmode="decimal" 
+                          autocomplete="off" 
+                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
+                          value={ex.increment ?? 0}
+                          oninput={(e) => {
+                            const raw = (e.currentTarget as HTMLInputElement).value;
+                            const { value, display } = clampIncrementKgFieldInput(raw);
+                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, increment: value } : ee);
+                            const input = e.currentTarget as HTMLInputElement;
+                            if (input.value !== display) input.value = display;
+                          }}
+                          onblur={() => void persistTemplateExercisesNow()} 
+                        />
                       </div>
                     </div>
                   {:else}
                     <div class="grid grid-cols-2 gap-1 text-[9px]">
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Sets</span>
-                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'sets', getValue: () => ex.target_sets, setValue: (v) => { ex.target_sets = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
+                        <input 
+                          type="text" 
+                          inputmode="numeric" 
+                          autocomplete="off" 
+                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
+                          value={ex.target_sets > 0 ? ex.target_sets : ''}
+                          oninput={(e) => {
+                            const raw = (e.currentTarget as HTMLInputElement).value;
+                            const { value, display } = clampSetsFieldInput(raw);
+                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_sets: value } : ee);
+                            const input = e.currentTarget as HTMLInputElement;
+                            if (input.value !== display) input.value = display;
+                          }}
+                          onblur={() => void persistTemplateExercisesNow()} 
+                        />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Min</span>
-                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'mins', getValue: () => ex.target_minutes, setValue: (v) => { ex.target_minutes = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
+                        <input 
+                          type="text" 
+                          inputmode="numeric" 
+                          autocomplete="off" 
+                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
+                          value={ex.target_minutes ?? 0}
+                          oninput={(e) => {
+                            const raw = (e.currentTarget as HTMLInputElement).value;
+                            const { value, display } = clampMinsFieldInput(raw);
+                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_minutes: value } : ee);
+                            const input = e.currentTarget as HTMLInputElement;
+                            if (input.value !== display) input.value = display;
+                          }}
+                          onblur={() => void persistTemplateExercisesNow()} 
+                        />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Sec</span>
-                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'secs', getValue: () => ex.target_seconds, setValue: (v) => { ex.target_seconds = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
+                        <input 
+                          type="text" 
+                          inputmode="numeric" 
+                          autocomplete="off" 
+                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
+                          value={ex.target_seconds ?? 0}
+                          oninput={(e) => {
+                            const raw = (e.currentTarget as HTMLInputElement).value;
+                            const { value, display } = clampSecsFieldInput(raw);
+                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_seconds: value } : ee);
+                            const input = e.currentTarget as HTMLInputElement;
+                            if (input.value !== display) input.value = display;
+                          }}
+                          onblur={() => void persistTemplateExercisesNow()} 
+                        />
                       </div>
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">+ s</span>
-                        <input type="text" inputmode="numeric" autocomplete="off" class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" use:clampedNumericProp={{ kind: 'incSec', getValue: () => ex.increment, setValue: (v) => { ex.increment = v; markDraftTouched(); } }} onblur={() => void persistTemplateExercisesNow()} />
+                        <input 
+                          type="text" 
+                          inputmode="numeric" 
+                          autocomplete="off" 
+                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
+                          value={ex.increment ?? 0}
+                          oninput={(e) => {
+                            const raw = (e.currentTarget as HTMLInputElement).value;
+                            const { value, display } = clampIncrementSecFieldInput(raw);
+                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, increment: value } : ee);
+                            const input = e.currentTarget as HTMLInputElement;
+                            if (input.value !== display) input.value = display;
+                          }}
+                          onblur={() => void persistTemplateExercisesNow()} 
+                        />
                       </div>
                     </div>
                   {/if}

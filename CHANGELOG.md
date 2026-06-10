@@ -2,6 +2,38 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.4] - 2026-06-09
+
+**Feature release** — focused on better workflow enforcement, phone-native UX, auth onboarding, and polish for the update experience. Built and signed with the **exact same long-lived release key** (fingerprint 37:04:C3:...) as all prior 1.0.x releases so in-app updates continue to install cleanly.
+
+### New Features & Improvements
+- **Strict per-exercise set ordering**: You can only log sets in sequence. 
+  - Only the "next" unlogged set for an exercise is unlocked and interactive (hold-to-log, manual edit, or timer activate).
+  - Future sets are locked: Lock icon centered, dimmed (opacity-60), disabled interactions, plus runtime guards in all start/edit/activate functions.
+  - Already-logged previous sets show their values/colors but are closed to new actions.
+  - Applies live on "today"; historical views unaffected.
+- **Phone back button support**: Hardware back (and iOS swipe in some cases) now closes open editors/menus exactly like the on-screen back arrows:
+  - Template editor (`exitEditTemplate` — saves + cleans).
+  - Routine editor (`exitRoutineEditor` — saves draft + cleans).
+  - Account/settings panel (`closeSettingsPanel`).
+  - Stats view/editor (`exitStatsView` / `exitStatsEditor` — saves tracked stats).
+  - Guards ensure saves happen the same way.
+- **Update and post-update modals**: Touching/clicking outside the dialog no longer closes them (prevents accidental dismiss). Only the X (close) button or "GOT IT" button works. (Update prompt remains unclosable during install.)
+- **Auth first-use UX**: 
+  - Brand new install on a device defaults to **Sign Up** tab first.
+  - After any successful authentication (sign up or sign in), subsequent launches default to **Sign In** tab first.
+  - Preference persisted via Capacitor Preferences (survives restarts, but automatically resets on app uninstall/reinstall so fresh installs always start with Sign Up).
+  - Social preview icons hidden (code kept for future implementation when OAuth is wired).
+- **Remove menu fade-in on reload**: Main app content (`app-stage-reveal`) now reveals immediately (`stageRevealActive` set true right away in boot flow) instead of fading in after a hold. Boot overlay and account reveal timing preserved for loading experience.
+- **Faster update experience**: Settle delay before showing the update prompt or post-update "UPDATED" screen reduced from 600ms to **250ms** (after main menu is ready and boot overlay gone). Comment updated to cover both.
+- **Markdown support in changelog boxes**: Both the update prompt ("Update available") and post-update ("UPDATED") "WHAT'S NEW" sections now render GitHub release notes as proper markdown (lists, **bold**, *italic*, links, etc.) instead of raw pre-wrapped text. Uses `marked` + `DOMPurify` for safe HTML rendering. Basic styles added for readability in the small dark boxes.
+- **Button styling consistency**: The ERASE (past logs) and CANCEL (active workout) side buttons now use bright white text + hover (like STATS and SKIP) instead of dim `text-zinc-500`. Progress/hold states (red) unchanged.
+- **Future workouts**: Routine editor and "Edit Exercises" (template) buttons now appear in the header when viewing a future scheduled day (relaxed `showHeaderEditActions`; still no live logging on future).
+
+All changes preserve the existing stable signing key, auto-update flow, and no-breaking-changes promise.
+
+See v1.0.0 notes for the full original feature list and sideloading story.
+
 ## [1.0.3] - 2026-06-09
 
 **Feature release** — major quality-of-life and polish additions on top of the stable 1.0.x baseline. Built and signed with the **exact same long-lived release key** (fingerprint 37:04:C3:...) as v1.0.0/v1.0.1/v1.0.2 so in-app updates continue to install cleanly with no uninstall or data loss for existing users.

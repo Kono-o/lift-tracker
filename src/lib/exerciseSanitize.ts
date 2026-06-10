@@ -10,9 +10,9 @@ export const MAX_TEMPLATE_NAME_LEN = 18;
 export const MAX_MINS = 99;
 export const MAX_SECS = 59;
 export const MAX_INCREMENT_SEC = 1000;
-export const MIN_INCREMENT_SEC = 1;
+export const MIN_INCREMENT_SEC = 0;
 /** Default +s for new / normalized time exercises. */
-export const DEFAULT_INCREMENT_SEC = 5;
+export const DEFAULT_INCREMENT_SEC = 0;
 export const DEFAULT_TARGET_MINUTES = 0;
 export const DEFAULT_TARGET_REPS = 12;
 export const DEFAULT_BASE_KG = 15;
@@ -325,8 +325,8 @@ export function validateDraftExercise(ex: DraftExerciseLike): string | null {
 		return `"${name}" needs a target time (minutes or seconds).`;
 	}
 	const inc = ex.increment ?? 0;
-	if (inc <= 0 || inc > MAX_INCREMENT_SEC) {
-		return `"${name}" +s must be between 1 and ${MAX_INCREMENT_SEC}.`;
+	if (inc < 0 || inc > MAX_INCREMENT_SEC) {
+		return `"${name}" +s must be between 0 and ${MAX_INCREMENT_SEC}.`;
 	}
 	return null;
 }

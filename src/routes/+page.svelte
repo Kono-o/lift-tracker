@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
+  import { fade } from 'svelte/transition';
   import { PUBLIC_SUPABASE_URL } from '$env/static/public';
   import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type TrackedStat, type StatLogSnapshotRow, type WorkoutHistory } from '$lib/db';
   import GeneratedAvatar from '$lib/components/GeneratedAvatar.svelte';
@@ -21,6 +22,8 @@
   import {
     clampTrackedRepsFieldInput,
     clampBaseKgFieldInput,
+    clampRestMinsFieldInput,
+    clampRestSecsFieldInput,
     formatOneDecimal,
     sanitizeTemplateName,
     validateDraftExercises,
@@ -33,6 +36,8 @@
     DEFAULT_BASE_KG,
     DEFAULT_INCREMENT_KG,
     DEFAULT_TARGET_SECONDS,
+    DEFAULT_REST_MINUTES,
+    DEFAULT_REST_SECONDS,
     type ExerciseTypeFieldStash,
     syncClampedInput,
   } from '$lib/exerciseSanitize';
@@ -60,6 +65,7 @@
     ChevronRight,
     ChevronUp,
     Dumbbell,
+    Download,
     FileX,
     HardDrive,
     History,
@@ -275,6 +281,9 @@
       clearInterval(countdownTimer);
       clearInterval(visualUpdateTimer);
       timerStartTimestamp = null;
+      wasMet = false;
+      metPhaseShift = 0;
+      activeTimerTargetSeconds = 0;
       currentVisualDot = 0;
       visualMsPerDot = 0;
       visualRawStep = 0;
@@ -337,6 +346,166 @@
     const tpl = templates.find((t) => t.id === tid);
     return `${day} - [ ${tpl?.name ?? 'Workout'} ]`;
   });
+
+  // --- CSV export for routine (templates + schedule) ---
+  function getAssignedDaysString(templateId: string): string {
+    let assignedDays: number[] = [];
+    // When inside the routine editor, prefer the live builderAssignments so the CSV matches exactly what the user is looking at (including any just-made changes).
+    if (currentView === 'swap_template') {
+      for (let dow = 0; dow < 7; dow++) {
+        const assigned = effectiveAssignmentTemplateId(builderAssignments[dow] ?? null);
+        if (assigned === templateId) assignedDays.push(dow);
+      }
+    } else {
+      assignedDays = schedule
+        .filter((s: any) => s.template_id === templateId)
+        .map((s: any) => s.day_of_week as number);
+    }
+    if (assignedDays.length === 0) return '—';
+    const shortNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    assignedDays.sort((a, b) => a - b);
+    return assignedDays.map((d) => shortNames[d]).join(', ');
+  }
+
+  function escapeCsv(val: unknown): string {
+    const s = val == null ? '' : String(val);
+    if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  }
+
+  async function downloadCsv(filename: string, content: string) {
+    if (isNativeApp()) {
+      try {
+        const { Directory, Filesystem } = await import('@capacitor/filesystem');
+        await Filesystem.writeFile({
+          path: filename,
+          data: content,
+          directory: Directory.Documents,
+          encoding: 'utf8',
+        });
+        // Give the user visible feedback in the routine editor header area.
+        // (The existing templateError styling is red, but the message is clear and actionable.)
+        const successMsg = 'CSV saved to Documents folder';
+        templateError = successMsg;
+        templateErrorFading = false;
+        window.setTimeout(() => {
+          if (templateError === successMsg) {
+            templateError = null;
+            templateErrorFading = false;
+          }
+        }, 2400);
+        return;
+      } catch (err) {
+        console.error('Native CSV export failed, falling back to web download:', err);
+        // Fall through to web method as last resort
+      }
+    }
+
+    // Web / PWA / fallback path (works great in browsers and often in WebView too)
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  async function exportRoutineAsCsv() {
+    if (!templates || templates.length === 0) return;
+
+    // Idiomatic columns for easy routine reading:
+    // The first 5 columns give you a scannable view of the whole program.
+    // "Prescription" is the primary human-friendly column ("4 × 8 @ 82.5kg (+2.5)" or "3 × 1:30").
+    const headers = [
+      'Template',
+      'Assigned Days',
+      'Exercise #',
+      'Exercise',
+      'Prescription',
+      'Type',
+      'Sets',
+      'Reps',
+      'Duration',
+      'Rest (mm:ss)',
+      'Load (kg)',
+      'Progress (+kg)',
+    ];
+
+    const rows: string[][] = [headers];
+
+    for (const tpl of templates) {
+      const daysStr = getAssignedDaysString(tpl.id);
+      for (let i = 0; i < (tpl.exercises?.length ?? 0); i++) {
+        const ex = tpl.exercises[i];
+        const isReps = ex.exercise_type === 'reps';
+        const sets = ex.target_sets || 0;
+
+        // Build a nice, at-a-glance prescription string
+        let prescription = '';
+        if (isReps) {
+          const reps = ex.target_reps || '';
+          if (reps) {
+            let p = sets ? `${sets} × ${reps}` : `${reps}`;
+            if (ex.current_weight != null) {
+              p += ` @ ${ex.current_weight}kg`;
+              if (ex.increment) p += ` (+${ex.increment})`;
+            }
+            prescription = p;
+          }
+        } else {
+          const m = ex.target_minutes || 0;
+          const s = ex.target_seconds || 0;
+          const time = `${m}:${String(s).padStart(2, '0')}`;
+          prescription = sets ? `${sets} × ${time}` : time;
+        }
+
+        // Duration as a single friendly value (only for timed exercises)
+        let duration = '';
+        if (!isReps) {
+          const m = ex.target_minutes || 0;
+          const s = ex.target_seconds || 0;
+          if (m || s) duration = `${m}:${String(s).padStart(2, '0')}`;
+        }
+
+        const restMin = ex.rest_minutes ?? 0;
+        const restSec = ex.rest_seconds ?? 0;
+        const restDisplay = restMin || restSec ? `${restMin}:${String(restSec).padStart(2, '0')}` : '';
+        rows.push([
+          tpl.name ?? '',
+          daysStr,
+          String(i + 1),
+          ex.name ?? '',
+          prescription,
+          ex.exercise_type ?? '',
+          sets ? String(sets) : '',
+          isReps ? String(ex.target_reps ?? '') : '',
+          duration,
+          restDisplay,
+          ex.current_weight != null ? String(ex.current_weight) : '',
+          ex.increment ? String(ex.increment) : '',
+        ]);
+      }
+
+      // Visual separator between templates (blank row in the CSV/spreadsheet)
+      // Makes the routine much easier to scan when opened.
+      const isLastTpl = templates.indexOf(tpl) === templates.length - 1;
+      if (tpl.exercises?.length && !isLastTpl) {
+        rows.push(Array(headers.length).fill(''));
+      }
+    }
+
+    const csv = rows.map((row) => row.map(escapeCsv).join(',')).join('\r\n');
+    const date = new Date().toISOString().slice(0, 10);
+    const filename = `lift-tracker-routine-${date}.csv`;
+    await downloadCsv(filename, csv);
+  }
+
   let isLoading = $state(true);
   let bootMessage = $state('Checking session…');
   type BootSection = { title: string; lines: string[] };
@@ -733,16 +902,18 @@
         }
       } else if (isViewingToday && todayLogForDisplay()) {
         const log = todayLogForDisplay();
+        const loggedEx = getLoggedEx(log, ex.id);
         const targetSecs =
-          ex.exercise_type === 'time'
-            ? (ex.target_minutes || 0) * 60 + (ex.target_seconds || 0)
-            : 0;
+          loggedEx && loggedEx.exercise_type === 'time'
+            ? ((loggedEx.target_minutes || 0) * 60 + (loggedEx.target_seconds || 0))
+            : (ex.exercise_type === 'time' ? (ex.target_minutes || 0) * 60 + (ex.target_seconds || 0) : 0);
+        const targetRepsForLog = (loggedEx?.target_reps ?? ex.target_reps) || 0;
         for (let s = 0; s < (ex.target_sets || 0); s++) {
           if (ex.exercise_type === 'reps') {
             const reps = getHistoricalReps(log, ex.id, s);
             if (repsSetIsRecorded(reps)) {
               done++;
-              if (repsSetMeetsTarget(reps, ex.target_reps || 0)) green++;
+              if (repsSetMeetsTarget(reps, targetRepsForLog)) green++;
             }
           } else {
             const t = getHistoricalTime(log, ex.id, s, targetSecs);
@@ -757,7 +928,7 @@
         if (loggedEx) {
           const sets = ex.target_sets || 0;
           if (ex.exercise_type === 'reps' || loggedEx.performed_sets || loggedEx.sets) {
-            const target = ex.target_reps || 0;
+            const target = (loggedEx.target_reps ?? ex.target_reps) || 0;
             let performed: (number | null)[] = [];
             if (loggedEx.sets && Array.isArray(loggedEx.sets)) {
               performed = loggedEx.sets.map((ss: any) => ss.reps_completed ?? null);
@@ -772,8 +943,8 @@
               }
             }
           } else if (loggedEx.performed_times || loggedEx.sets) {
-            const tMin = ex.target_minutes || 0;
-            const tSec = ex.target_seconds || 0;
+            const tMin = (loggedEx.target_minutes ?? ex.target_minutes) || 0;
+            const tSec = (loggedEx.target_seconds ?? ex.target_seconds) || 0;
             const target = tMin * 60 + tSec;
             let performedSecs: (number | null)[] = [];
             if (loggedEx.sets && Array.isArray(loggedEx.sets)) {
@@ -880,14 +1051,46 @@
   let currentVisualDot = $state(0);
   let visualMsPerDot = $state(0);
   let visualDotCount = $state(42);
+
+  // For smooth transition of the lit cube position when crossing from normal progress to overtime/met
+  let wasMet = $state(false);
+  let metPhaseShift = $state(0);
+
+  // Dynamic cube count derived from measured progress width (for square cubes + fill)
+  let activeCubeCount = $derived(Math.max(8, Math.floor((timerBarProgressWidth || 200) / 8)));
+
+  // Target for the currently active timed set (to compute met in JS for phase capture)
+  let activeTimerTargetSeconds = $state(0);
   let visualRawStep = $state(0);
   let visualUpdateTimer: any = null;
   let activeTimerExerciseId = $state<string | null>(null);
   let activeTimerSetIndex = $state<number | null>(null);
 
+  // Rest timer state (post-set rest countdown, orange themed, per exercise)
+  let activeRestExerciseId = $state<string | null>(null);
+  let activeRestSetIndex = $state<number | null>(null);
+  let restCountdownSeconds = $state(0);
+  let restCountdownRunning = $state(false);
+  let restTimerStartTimestamp = $state<number | null>(null);
+  let restCurrentTargetSeconds = $state(0);
+  let restVisualMsPerDot = $state(0);
+  let restVisualRawStep = $state(0);
+  let restVisualDotCount = $state(42);
+  let restCountdownTimer: any = null;
+  let restVisualUpdateTimer: any = null;
+
+  // Measured widths for dynamic cube count: the whole bar and its fixed parts (label, actions)
+  // so we can compute exact available for the progress after label+buttons take their intrinsic size.
+  let timerBarProgressWidth = $state(200);
+
+  // Post-log fade-to-rest state (1s visual fade to orange before rest timer UI/countdown starts)
+  let restFadeExerciseId = $state<string | null>(null);
+  let restFadeSetIndex = $state<number | null>(null);
+  let restFadeTimer: any = null;
+
   // Tracking data maps
   let trackedReps = $state<Record<string, number>>({});
-  let completedTimers = $state<Record<string, { result: string; met: boolean }>>({});
+  let completedTimers = $state<Record<string, { result: string; met: boolean; target?: number }>>({});
   let editingSetKey = $state<string | null>(null);
   let repSetHoldTimer: ReturnType<typeof setInterval> | null = null;
   let repSetHoldKey = $state<string | null>(null);
@@ -933,7 +1136,8 @@
   );
   const HOLD_CONFIRM_MS = 1000;
 
-  const REP_SET_HOLD_MS = 250;
+  const REP_SET_HOLD_MS = 500;
+  const REST_START_DELAY_MS = 1000;
   const ACTIVE_SESSION_STORAGE_KEY = 'lift-tracker:active-session';
 
   const HEADER_TIMER_FADE_MS = 450;
@@ -1676,10 +1880,11 @@
 
   function countExerciseTouchedSetsFromLog(log: any, exercise: Exercise): number {
     let count = 0;
+    const logEx = getLoggedEx(log, exercise.id);
     const targetSecs =
-      exercise.exercise_type === 'time'
-        ? (exercise.target_minutes || 0) * 60 + (exercise.target_seconds || 0)
-        : 0;
+      logEx && logEx.exercise_type === 'time'
+        ? ((logEx.target_minutes || 0) * 60 + (logEx.target_seconds || 0))
+        : (exercise.exercise_type === 'time' ? (exercise.target_minutes || 0) * 60 + (exercise.target_seconds || 0) : 0);
     for (let s = 0; s < exercise.target_sets; s++) {
       if (exercise.exercise_type === 'reps') {
         if (repsSetIsRecorded(getHistoricalReps(log, exercise.id, s))) count++;
@@ -1791,11 +1996,12 @@
   ): { loggedCount: number; allSetsMet: boolean } {
     let loggedCount = 0;
     let allMet = true;
-    const targetSecs =
-      exercise.exercise_type === 'time'
-        ? (exercise.target_minutes || 0) * 60 + (exercise.target_seconds || 0)
-        : 0;
-    const targetReps = exercise.target_reps || 0;
+    const logEx = getLoggedEx(log, exercise.id);
+    const targetReps = (logEx?.target_reps ?? exercise.target_reps) || 0;
+    // Prefer frozen target from the log snapshot for this exercise; only fallback to passed exercise if no logEx.
+    const targetSecs = logEx
+      ? ((logEx.target_minutes || 0) * 60 + (logEx.target_seconds || 0))
+      : ((exercise.target_minutes || 0) * 60 + (exercise.target_seconds || 0));
 
     for (let s = 0; s < exercise.target_sets; s++) {
       if (exercise.exercise_type === 'reps') {
@@ -1923,15 +2129,61 @@
     if (!log) return 'empty';
 
     if (targetReps !== undefined) {
-      return repsSetBubbleStatus(getHistoricalReps(log, exerciseId, setIndex), targetReps);
+      const histReps = getHistoricalReps(log, exerciseId, setIndex);
+      const logEx = getLoggedEx(log, exerciseId);
+      const frozenTarget = (logEx?.target_reps ?? targetReps) || 0;
+      return repsSetBubbleStatus(histReps, frozenTarget);
     }
 
-    const targetSecs = timeExercise
-      ? (timeExercise.target_minutes || 0) * 60 + (timeExercise.target_seconds || 0)
-      : undefined;
-    const t = getHistoricalTime(log, exerciseId, setIndex, targetSecs);
+    const logEx = getLoggedEx(log, exerciseId);
+    let frozenTargetSecs: number | undefined;
+    if (logEx) {
+      // Use the snapshot's target for this exercise (frozen at log/finish time). Even 0 is valid.
+      frozenTargetSecs = ((logEx.target_minutes || 0) * 60 + (logEx.target_seconds || 0));
+    }
+    if (frozenTargetSecs == null && timeExercise) {
+      frozenTargetSecs = (timeExercise.target_minutes || 0) * 60 + (timeExercise.target_seconds || 0);
+    }
+    if (frozenTargetSecs == null) frozenTargetSecs = 0;
+    const t = getHistoricalTime(log, exerciseId, setIndex, frozenTargetSecs);
     if (!t) return 'empty';
     return t.met ? 'green' : 'yellow';
+  }
+
+  /** For live session only: has this specific set already been logged (has a value)? */
+  function isSetLoggedInLive(exerciseId: string, setIndex: number, isTimeEx: boolean): boolean {
+    const key = `${exerciseId}-${setIndex}`;
+    if (isTimeEx) {
+      return !!displayCompletedTimers()[key];
+    }
+    return repsSetIsRecorded(displayTrackedReps()[key]);
+  }
+
+  /**
+   * In live today workout: a set can be logged (hold/activate) only if:
+   * - it itself is not yet logged, AND
+   * - every set before it has already been logged.
+   * This enforces strict sequential logging within an exercise.
+   */
+  function isSetUnlockedForLogging(exerciseId: string, setIndex: number, isTimeEx: boolean): boolean {
+    if (!isViewingToday || !useLiveSessionTracking()) return true;
+    if (isSetLoggedInLive(exerciseId, setIndex, isTimeEx)) return false;
+    for (let prev = 0; prev < setIndex; prev++) {
+      if (!isSetLoggedInLive(exerciseId, prev, isTimeEx)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Future sets (beyond the current next unlogged one) should show as locked.
+   * (Previous logged sets are also not "unlocked for new logging" but we show their values.)
+   */
+  function isFutureSetLockedByOrder(exerciseId: string, setIndex: number, isTimeEx: boolean): boolean {
+    if (!isViewingToday || !useLiveSessionTracking()) return false;
+    for (let prev = 0; prev < setIndex; prev++) {
+      if (!isSetLoggedInLive(exerciseId, prev, isTimeEx)) return true;
+    }
+    return false;
   }
 
   // ============================================================
@@ -1975,8 +2227,17 @@
       }
     }
     if (secs == null) return undefined;
+    // Prefer target frozen in this log's snapshot for the exercise (stable yellow/green even if template edited later)
+    let effectiveTarget = targetSecs;
+    if (ex && ex.exercise_type === 'time') {
+      const snapTarget = ((ex.target_minutes || 0) * 60 + (ex.target_seconds || 0));
+      if (snapTarget != null) {
+        // Always prefer the snapshotted target for this historical log (even 0); only fall back if snap gave nothing useful and caller provided one
+        if (snapTarget > 0 || effectiveTarget == null) effectiveTarget = snapTarget;
+      }
+    }
     const met =
-      targetSecs != null && targetSecs > 0 ? secs >= targetSecs : secs > 0;
+      effectiveTarget != null && effectiveTarget > 0 ? secs >= effectiveTarget : secs > 0;
     return { result: formatTime(secs), met };
   }
 
@@ -1993,27 +2254,36 @@
     }
     if (perf?.times) {
       for (const [key, entry] of Object.entries(perf.times)) {
-        const e = entry as { result: string };
+        const e = entry as { result: string; target?: number };
         const exId = key.split('-')[0];
-        const ex = template?.exercises?.find((x) => x.id === exId);
-        const targetSecs =
-          ex && ex.exercise_type === 'time'
-            ? (ex.target_minutes || 0) * 60 + (ex.target_seconds || 0)
-            : 0;
+        let targetSecs = 0;
+        if (e && typeof e === 'object' && e.target != null) {
+          // Prefer the exact target that was in effect when this set was logged (frozen in perf for in-progress stability across refresh/template edits)
+          targetSecs = e.target;
+        } else {
+          // Fallback: Prefer targets frozen in the log's snapshot at the time of logging
+          const logEx = (log?.workout_snapshot?.exercises ?? []).find((ee: any) => (ee.exercise_id || ee.id) === exId);
+          const ex = logEx || template?.exercises?.find((x) => x.id === exId);
+          targetSecs =
+            ex && ex.exercise_type === 'time'
+              ? (ex.target_minutes || 0) * 60 + (ex.target_seconds || 0)
+              : 0;
+        }
         const secs = parseSecondsFromTimeResult(e.result);
         times[key] = {
           result: e.result,
           met: targetSecs > 0 ? secs >= targetSecs : secs > 0,
+          ...(e && typeof e === 'object' && e.target != null ? { target: e.target } : {}),
         };
       }
     }
 
     for (const ex of log?.workout_snapshot?.exercises ?? []) {
       const exId = ex.exercise_id || ex.id;
-      const templateEx = template?.exercises?.find((x) => x.id === exId);
+      // Use the snapshot ex's own targets (frozen at log time) for met computation
       const targetSecs =
-        templateEx && templateEx.exercise_type === 'time'
-          ? (templateEx.target_minutes || 0) * 60 + (templateEx.target_seconds || 0)
+        ex && ex.exercise_type === 'time'
+          ? (ex.target_minutes || 0) * 60 + (ex.target_seconds || 0)
           : 0;
 
       if (ex.sets && Array.isArray(ex.sets)) {
@@ -2032,6 +2302,7 @@
             times[key] = {
               result: formatTime(secs),
               met: targetSecs > 0 ? secs >= targetSecs : secs > 0,
+              ...(targetSecs > 0 ? { target: targetSecs } : {}),
             };
           }
         }
@@ -2083,9 +2354,16 @@
     templateId: string | null;
     templateName?: string;
     trackedReps: Record<string, number>;
-    completedTimers: Record<string, { result: string; met: boolean }>;
+    completedTimers: Record<string, { result: string; met: boolean; target?: number }>;
     workoutStartedAt: number;
     ongoingTimer?: OngoingTimerBackup | null;
+    activeRest?: {
+      exerciseId: string;
+      setIndex: number;
+      remainingSeconds: number;
+      startTimestamp: number | null;
+      targetSeconds?: number;
+    } | null;
   };
 
   function ongoingTimerBackupFromState(): OngoingTimerBackup | null {
@@ -2114,6 +2392,13 @@
       completedTimers: { ...completedTimers },
       workoutStartedAt: workoutStartedAt ?? Date.now(),
       ongoingTimer: ongoingTimerBackupFromState(),
+      activeRest: activeRestExerciseId && activeRestSetIndex != null ? {
+        exerciseId: activeRestExerciseId,
+        setIndex: activeRestSetIndex,
+        remainingSeconds: restCountdownSeconds,
+        startTimestamp: restCountdownRunning ? restTimerStartTimestamp : null,
+        targetSeconds: restCurrentTargetSeconds,
+      } : null,
     };
     sessionStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(payload));
   }
@@ -2169,6 +2454,9 @@
     if (backup.ongoingTimer) {
       restoreOngoingExerciseTimer(backup.ongoingTimer, template);
     }
+    if (backup.activeRest) {
+      restoreActiveRest(backup.activeRest, template);
+    }
     return true;
   }
 
@@ -2180,6 +2468,39 @@
       backup.ongoingTimer,
       activeWorkoutTemplate ?? activeTemplate,
     );
+  }
+
+  function restoreActiveRest(r: NonNullable<ActiveSessionBackup['activeRest']>, template: Template | null) {
+    if (!r) return;
+    activeRestExerciseId = r.exerciseId;
+    activeRestSetIndex = r.setIndex;
+    const tplRest = (template?.exercises?.find(e => e.id === r.exerciseId)?.rest_minutes || 0) * 60 + (template?.exercises?.find(e => e.id === r.exerciseId)?.rest_seconds || 0);
+    restCurrentTargetSeconds = r.targetSeconds ?? (tplRest || r.remainingSeconds);
+    restCountdownSeconds = r.remainingSeconds;
+    restCountdownRunning = !!r.startTimestamp;
+    restTimerStartTimestamp = r.startTimestamp;
+    if (restCountdownRunning && r.startTimestamp) {
+      // resume tick
+      const elapsed = Math.floor((Date.now() - r.startTimestamp) / 1000);
+      restCountdownSeconds = Math.max(0, restCurrentTargetSeconds - elapsed);
+      if (restCountdownSeconds > 0) {
+        restVisualMsPerDot = restCurrentTargetSeconds > 0 ? (restCurrentTargetSeconds * 1000) / restVisualDotCount : 0;
+        const elapsedMs = Date.now() - r.startTimestamp;
+        restVisualRawStep = restVisualMsPerDot > 0 ? Math.floor(elapsedMs / restVisualMsPerDot) : 0;
+        startRestCountdownInterval();
+        startRestVisualInterval();
+        writeActiveSessionBackup();
+      } else {
+        stopRestTimer();
+      }
+    }
+  }
+
+  function tryRestoreActiveRestFromBackup(backup: ActiveSessionBackup | null) {
+    if (!backup?.activeRest) return;
+    if (activeRestExerciseId) return;
+    const tpl = activeWorkoutTemplate ?? activeTemplate;
+    restoreActiveRest(backup.activeRest, tpl);
   }
 
   function tryRestoreActiveSessionFromStorageAndLog(): boolean {
@@ -2196,6 +2517,7 @@
           void persistWorkoutProgressNow();
         } else {
           tryRestoreOngoingTimerFromBackup(backup);
+          tryRestoreActiveRestFromBackup(backup);
         }
         return true;
       }
@@ -2315,7 +2637,10 @@
     const perf = {
       reps: { ...trackedReps },
       times: Object.fromEntries(
-        Object.entries(completedTimers).map(([k, v]) => [k, { result: v.result }]),
+        Object.entries(completedTimers).map(([k, v]) => [
+          k,
+          v.target != null ? { result: v.result, target: v.target } : { result: v.result },
+        ]),
       ),
     };
     const startedAt = workoutStartedAt ?? Date.now();
@@ -3512,6 +3837,7 @@
     workoutState = 'active';
     trackedReps = {}; 
     completedTimers = {};
+    stopRestTimer();
     workoutDuration = 0;
     workoutStartedAt = Date.now();
     clearInterval(workoutTimer);
@@ -3524,6 +3850,9 @@
     timerStartTimestamp = null;
     currentVisualDot = 0;
     visualMsPerDot = 0;
+    wasMet = false;
+    metPhaseShift = 0;
+    activeTimerTargetSeconds = 0;
     visualRawStep = 0;
     visualRawStep = 0;
     skipProgress = 0;
@@ -3556,6 +3885,7 @@
     workoutActionError = null;
     trackedReps = {};
     completedTimers = {};
+    stopRestTimer();
     if (isViewingToday && todayLog && isWorkoutInProgress(todayLog)) {
       todayLog = null;
       weekLogs = { ...weekLogs, [REAL_TODAY_STR]: null };
@@ -3575,6 +3905,9 @@
     visualMsPerDot = 0;
     visualRawStep = 0;
     visualRawStep = 0;
+    wasMet = false;
+    metPhaseShift = 0;
+    activeTimerTargetSeconds = 0;
     skipProgress = 0;
     cancelProgress = 0;
     deleteTemplateProgress = 0;
@@ -3617,6 +3950,13 @@
       completedTimers: snapshot.times,
       workoutStartedAt: workoutStartedAt ?? Date.now() - elapsed * 1000,
       ongoingTimer: ongoingTimerBackupFromState(),
+      activeRest: activeRestExerciseId && activeRestSetIndex != null ? {
+        exerciseId: activeRestExerciseId,
+        setIndex: activeRestSetIndex,
+        remainingSeconds: restCountdownSeconds,
+        startTimestamp: restCountdownRunning ? restTimerStartTimestamp : null,
+        targetSeconds: restCurrentTargetSeconds,
+      } : null,
     };
 
     justFinishedStatus = justFinished;
@@ -3624,6 +3964,7 @@
     workoutProgressSaveGen++;
     finishSyncPending = true;
     clearActiveSessionBackup();
+    stopRestTimer();
     activeWorkoutTemplate = null;
     workoutState = 'done';
 
@@ -3698,6 +4039,10 @@
   }
 
   function beginRepSetEdit(exerciseId: string, setIndex: number) {
+    const blockingRestId = activeRestExerciseId ?? restFadeExerciseId;
+    if (blockingRestId != null && blockingRestId !== exerciseId) return;
+    if (!isSetUnlockedForLogging(exerciseId, setIndex, false)) return;
+    stopRestTimer();
     if (workoutState !== 'active') return;
     const key = `${exerciseId}-${setIndex}`;
     editingSetKey = key;
@@ -3718,6 +4063,10 @@
   ) {
     if (e.cancelable) e.preventDefault();
     if (workoutState !== 'active' || !isViewingToday) return;
+    const blockingRestId = activeRestExerciseId ?? restFadeExerciseId;
+    if (blockingRestId != null && blockingRestId !== exerciseId) return;
+    if (!isSetUnlockedForLogging(exerciseId, setIndex, false)) return;
+    stopRestTimer();
     cancelRepSetHold();
     const key = `${exerciseId}-${setIndex}`;
     repSetHoldKey = key;
@@ -3736,6 +4085,17 @@
         repSetHoldProgress = 0;
         repSetHoldKey = null;
         scheduleWorkoutProgressSave();
+        // start rest fade (1s to orange) then timer
+        const t = activeWorkoutTemplate ?? activeTemplate;
+        const ex = t?.exercises?.find((e) => e.id === exerciseId);
+        if (ex) {
+          const rMin = ex.rest_minutes || 0;
+          const rSec = ex.rest_seconds || 0;
+          const rTotal = rMin * 60 + rSec;
+          if (rTotal > 0) {
+            startRestFade(exerciseId, setIndex, rTotal);
+          }
+        }
       }
     }, 20);
   }
@@ -3752,6 +4112,9 @@
   }
 
   function saveManualRepEdit(exerciseId: string, setIndex: number) {
+    const blockingRestId = activeRestExerciseId ?? restFadeExerciseId;
+    if (blockingRestId != null && blockingRestId !== exerciseId) return;
+    if (!isSetUnlockedForLogging(exerciseId, setIndex, false)) return;
     const key = `${exerciseId}-${setIndex}`;
     const inputEl = document.getElementById(`input-${key}`) as HTMLInputElement;
     if (inputEl) {
@@ -3765,6 +4128,17 @@
         trackedReps = next;
       }
       scheduleWorkoutProgressSave();
+      // start rest fade (1s to orange) then timer
+      const t = activeWorkoutTemplate ?? activeTemplate;
+      const ex = t?.exercises?.find((e) => e.id === exerciseId);
+      if (ex) {
+        const rMin = ex.rest_minutes || 0;
+        const rSec = ex.rest_seconds || 0;
+        const rTotal = rMin * 60 + rSec;
+        if (rTotal > 0) {
+          startRestFade(exerciseId, setIndex, rTotal);
+        }
+      }
     }
     editingSetKey = null;
   }
@@ -3784,6 +4158,22 @@
         const newStep = Math.floor(elapsed / visualMsPerDot);
         if (newStep !== visualRawStep) {
           visualRawStep = newStep;
+        }
+        // Capture phase shift on entering met/overtime so the bouncing lit cube starts from the end
+        // without jumping from the linear progress head position (N-1).
+        const isMetNow = activeTimerTargetSeconds > 0 && countdownSeconds >= activeTimerTargetSeconds;
+        if (isMetNow && !wasMet) {
+          const N = activeCubeCount;
+          const cycle = N * 2;
+          let p = visualRawStep % cycle;
+          if (p >= N) p = cycle - p;
+          const desiredP = N - 1;
+          metPhaseShift = (desiredP - p + cycle) % cycle;
+          wasMet = true;
+        }
+        if (!isMetNow) {
+          wasMet = false;
+          metPhaseShift = 0;
         }
       }
     }, 30);
@@ -3829,9 +4219,12 @@
           : 0;
       currentVisualDot = visualRawStep;
     }
+    wasMet = false;
+    metPhaseShift = 0;
   }
 
   function startTimedSet(exerciseId: string, setIndex: number) {
+    stopRestTimer();
     clearInterval(countdownTimer);
     clearInterval(visualUpdateTimer);
     activeTimerExerciseId = exerciseId;
@@ -3840,8 +4233,13 @@
     countdownRunning = true;
     timerStartTimestamp = Date.now();
     configureExerciseVisualTimer(exerciseId);
+    const template = activeWorkoutTemplate ?? activeTemplate;
+    const ex = template?.exercises?.find((e) => e.id === exerciseId);
+    activeTimerTargetSeconds = ex ? (ex.target_minutes || 0) * 60 + (ex.target_seconds || 0) : 0;
     visualRawStep = 0;
     currentVisualDot = 0;
+    wasMet = false;
+    metPhaseShift = 0;
     startExerciseCountdownInterval();
     startExerciseVisualInterval();
     writeActiveSessionBackup();
@@ -3866,11 +4264,18 @@
     clearInterval(visualUpdateTimer);
     countdownRunning = false;
     const key = `${exerciseId}-${setIndex}`;
+    // Prefer wall-time elapsed from the start timestamp (more accurate/robust than the 1s count var)
+    // for the logged performed time. Fall back to countdownSeconds if no timestamp.
+    let secs = countdownSeconds;
+    if (timerStartTimestamp != null) {
+      secs = Math.max(0, Math.floor((Date.now() - timerStartTimestamp) / 1000));
+    }
     completedTimers = {
       ...completedTimers,
       [key]: {
-        result: formatTime(countdownSeconds),
-        met: countdownSeconds >= targetSeconds,
+        result: formatTime(secs),
+        met: secs >= targetSeconds,
+        target: targetSeconds,
       },
     };
     activeTimerExerciseId = null;
@@ -3880,9 +4285,26 @@
     currentVisualDot = 0;
     visualMsPerDot = 0;
     visualRawStep = 0;
+    wasMet = false;
+    metPhaseShift = 0;
+    activeTimerTargetSeconds = 0;
     visualRawStep = 0;
     visualRawStep = 0;
+    wasMet = false;
+    metPhaseShift = 0;
+    activeTimerTargetSeconds = 0;
     scheduleWorkoutProgressSave();
+    // start rest fade (1s to orange) then timer
+    const t = activeWorkoutTemplate ?? activeTemplate;
+    const ex = t?.exercises?.find((e) => e.id === exerciseId);
+    if (ex) {
+      const rMin = ex.rest_minutes || 0;
+      const rSec = ex.rest_seconds || 0;
+      const rTotal = rMin * 60 + rSec;
+      if (rTotal > 0) {
+        startRestFade(exerciseId, setIndex, rTotal);
+      }
+    }
   }
 
   function saveActiveTimerIfAny() {
@@ -3908,8 +4330,114 @@
     currentVisualDot = 0;
     visualMsPerDot = 0;
     visualRawStep = 0;
+    wasMet = false;
+    metPhaseShift = 0;
+    activeTimerTargetSeconds = 0;
     visualRawStep = 0;
+    wasMet = false;
+    metPhaseShift = 0;
+    activeTimerTargetSeconds = 0;
+    stopRestTimer();
     writeActiveSessionBackup();
+  }
+
+  function startRestFade(exerciseId: string, setIndex: number, totalSeconds: number) {
+    if (totalSeconds <= 0) return;
+    // clear any in-flight fade
+    if (restFadeTimer) clearTimeout(restFadeTimer);
+    restFadeExerciseId = exerciseId;
+    restFadeSetIndex = setIndex;
+    restFadeTimer = setTimeout(() => {
+      restFadeTimer = null;
+      const stillMatching = restFadeExerciseId === exerciseId && restFadeSetIndex === setIndex;
+      restFadeExerciseId = null;
+      restFadeSetIndex = null;
+      if (stillMatching) {
+        startRestTimer(exerciseId, setIndex, totalSeconds);
+      }
+    }, REST_START_DELAY_MS);
+  }
+
+  // Rest timer functions (orange, same cube layout as timed)
+  function startRestTimer(exerciseId: string, setIndex: number, totalSeconds: number) {
+    if (totalSeconds <= 0) return;
+    cancelActiveTimer();
+    stopRestTimer();
+    activeRestExerciseId = exerciseId;
+    activeRestSetIndex = setIndex;
+    restCurrentTargetSeconds = totalSeconds;
+    restCountdownSeconds = totalSeconds;
+    restCountdownRunning = true;
+    restTimerStartTimestamp = Date.now();
+    restVisualMsPerDot = totalSeconds > 0 ? (totalSeconds * 1000) / restVisualDotCount : 0;
+    restVisualRawStep = 0;
+    startRestCountdownInterval();
+    startRestVisualInterval();
+    writeActiveSessionBackup();
+  }
+
+  function stopRestTimer() {
+    if (restCountdownTimer) clearInterval(restCountdownTimer);
+    if (restVisualUpdateTimer) clearInterval(restVisualUpdateTimer);
+    restCountdownTimer = null;
+    restVisualUpdateTimer = null;
+    restCountdownRunning = false;
+    activeRestExerciseId = null;
+    activeRestSetIndex = null;
+    restCountdownSeconds = 0;
+    restTimerStartTimestamp = null;
+    restCurrentTargetSeconds = 0;
+    restVisualRawStep = 0;
+    restVisualMsPerDot = 0;
+    if (restFadeTimer) clearTimeout(restFadeTimer);
+    restFadeTimer = null;
+    restFadeExerciseId = null;
+    restFadeSetIndex = null;
+    writeActiveSessionBackup();
+  }
+
+  function startRestCountdownInterval() {
+    if (restCountdownTimer) clearInterval(restCountdownTimer);
+    restCountdownTimer = setInterval(() => {
+      if (!restCountdownRunning || restTimerStartTimestamp === null) return;
+      const elapsed = Math.floor((Date.now() - restTimerStartTimestamp) / 1000);
+      restCountdownSeconds = Math.max(0, restCurrentTargetSeconds - elapsed);
+      if (restCountdownSeconds <= 0) {
+        restCountdownSeconds = 0;
+        // Freeze the visual at 100% (last cube in met state) and stop animation,
+        // but keep the bar visible (activeRest not cleared yet) so user sees completed 100% fill.
+        // The bar will be removed when user starts next set on this exercise (via guards calling stopRestTimer).
+        if (restCountdownTimer) clearInterval(restCountdownTimer);
+        restCountdownTimer = null;
+        if (restVisualUpdateTimer) clearInterval(restVisualUpdateTimer);
+        restVisualUpdateTimer = null;
+        restVisualMsPerDot = 0;
+        // Set rawStep to a value that maps to the last cube in the met bounce logic (using the internal visual count 42)
+        restVisualRawStep = restVisualDotCount;
+        restCountdownRunning = false;
+        writeActiveSessionBackup();
+        // Show the 100% filled bar briefly (via the isPast force + effectiveRawDot), then stop the rest UI.
+        // This makes the visual reach 100% at 00:00 and then the rest "completes" (bar disappears, back to sets).
+        setTimeout(() => {
+          stopRestTimer();
+        }, 250);
+      } else {
+        writeActiveSessionBackup();
+      }
+    }, 1000);
+  }
+
+  function startRestVisualInterval() {
+    if (restVisualUpdateTimer) clearInterval(restVisualUpdateTimer);
+    restVisualUpdateTimer = setInterval(() => {
+      if (restTimerStartTimestamp !== null && restCountdownRunning && restVisualMsPerDot > 0) {
+        const elapsed = Date.now() - restTimerStartTimestamp;
+        const newStep = Math.floor(elapsed / restVisualMsPerDot);
+        if (newStep !== restVisualRawStep) {
+          restVisualRawStep = newStep;
+        }
+      }
+    }, 30);
   }
 
   async function syncSkipWorkout() {
@@ -3973,6 +4501,7 @@
     resetHeaderWorkoutTimer();
     trackedReps = {};
     completedTimers = {};
+    stopRestTimer();
     activeWorkoutTemplate = null;
     const dateKey = selectedDateStr;
     weekLogs = { ...weekLogs, [dateKey]: null };
@@ -4235,7 +4764,7 @@
         workoutState: typeof workoutState;
         activeWorkoutTemplate: Template | null;
         trackedReps: Record<string, number>;
-        completedTimers: Record<string, { result: string; met: boolean }>;
+        completedTimers: Record<string, { result: string; met: boolean; target?: number }>;
       };
     } = {},
   ) {
@@ -5501,6 +6030,8 @@
         target_reps: copy.target_reps ?? 0,
         target_minutes: copy.target_minutes ?? 0,
         target_seconds: copy.target_seconds ?? 0,
+        rest_minutes: copy.rest_minutes ?? 0,
+        rest_seconds: copy.rest_seconds ?? 0,
         increment: copy.increment ?? 0,
         current_weight: copy.current_weight ?? null,
         display_order: i,
@@ -5660,6 +6191,9 @@
 
   function activateOrSwitchTimeSet(exId: string, s: number) {
     if (workoutState !== 'active') return;
+    const blockingRestId = activeRestExerciseId ?? restFadeExerciseId;
+    if (blockingRestId != null && blockingRestId !== exId) return;
+    if (!isSetUnlockedForLogging(exId, s, true)) return;
     if (activeTimerExerciseId === exId && activeTimerSetIndex === s) {
       toggleExerciseTimer();
       return;
@@ -5771,6 +6305,8 @@
       target_reps: DEFAULT_TARGET_REPS,
       target_minutes: DEFAULT_TARGET_MINUTES,
       target_seconds: DEFAULT_TARGET_SECONDS,
+      rest_minutes: DEFAULT_REST_MINUTES,
+      rest_seconds: DEFAULT_REST_SECONDS,
       increment: DEFAULT_INCREMENT_KG,
       current_weight: DEFAULT_BASE_KG,
       display_order: draftExercises.length,
@@ -7190,15 +7726,19 @@
     {:else}
       <!-- Template box on main screen (supports historical past logged workouts even if current schedule has no template for the day, for edge cases like deleted templates) -->
       {@const useHistorical = isPast && viewedLog && !viewedLog.workout_snapshot?.is_rest && !logIsSkipped(viewedLog)}
+      {@const logSrcForTemplate = isViewingToday ? todayLog : viewedLog}
       {@const skippedDisplayLog = isSkippedWorkoutView() ? (isViewingToday ? todayLog : viewedLog) : null}
       {@const skippedDisplayTemplate = skippedDisplayLog?.template_id
         ? templates.find((t) => t.id === skippedDisplayLog.template_id)
         : null}
-      {@const dispTemplate = useHistorical
-        ? { id: viewedLog.template_id, name: viewedLog.template_name_snapshot || 'Past Workout', color: 0, exercises: viewedLog.workout_snapshot?.exercises || [] }
-        : workoutState === 'active' && activeWorkoutTemplate
-          ? activeWorkoutTemplate
-          : skippedDisplayTemplate ?? activeTemplate}
+      {@const hasCompletedSnapshot = !!logSrcForTemplate?.workout_snapshot?.exercises?.length && !logIsSkipped(logSrcForTemplate) && !isWorkoutInProgress(logSrcForTemplate)}
+      {@const dispTemplate = hasCompletedSnapshot
+        ? { id: logSrcForTemplate!.template_id, name: logSrcForTemplate!.template_name_snapshot || 'Workout', color: 0, exercises: (logSrcForTemplate!.workout_snapshot!.exercises || []).map(normalizeLoggedExForList) }
+        : useHistorical
+          ? { id: viewedLog.template_id, name: viewedLog.template_name_snapshot || 'Past Workout', color: 0, exercises: (viewedLog.workout_snapshot?.exercises || []).map(normalizeLoggedExForList) }
+          : workoutState === 'active' && activeWorkoutTemplate
+            ? activeWorkoutTemplate
+            : skippedDisplayTemplate ?? activeTemplate}
       {@const exCount = (dispTemplate?.exercises || []).length}
       {@const setCount = (dispTemplate?.exercises || []).reduce((sum: number, ex: any) => sum + (ex.target_sets || 0), 0)}
       {@const tickStatus = headerOutcomeCompletion()}
@@ -7334,6 +7874,10 @@
                 : 'status-surface--neutral'}
           {@const isTimeEx = exercise.exercise_type === 'time'}
           {@const hasActiveTimerThis = isViewingToday && isTimeEx && activeTimerExerciseId === exercise.id && activeTimerSetIndex !== null}
+          {@const hasActiveRestThis = isViewingToday && activeRestExerciseId === exercise.id && activeRestSetIndex !== null}
+          {@const isFadingToRestThis = isViewingToday && restFadeExerciseId === exercise.id && restFadeSetIndex !== null}
+          {@const activeRestOrFadeId = activeRestExerciseId ?? restFadeExerciseId}
+          {@const hasActiveRestElsewhere = isViewingToday && activeRestOrFadeId != null && activeRestOrFadeId !== exercise.id}
           {@const timeTotal = isTimeEx ? (exercise.target_minutes * 60 + exercise.target_seconds) : 0}
           {@const logSrc = isViewingToday ? todayLog : viewedLog}
           {@const isDoneViewed = !!logSrc?.workout_snapshot?.exercises && (isViewingToday ? (workoutState === 'done') : true)}
@@ -7341,31 +7885,33 @@
           {@const displayCurrentWeight = formatOneDecimal(loggedEx?.weight_before ?? exercise.current_weight ?? 0)}
           {@const displayIncrementKg = formatOneDecimal(exercise.increment)}
           <div
-            class="p-3 flex gap-1 status-surface {workoutExercisesEditable ? 'hover:brightness-110' : ''} {index > 0 ? (exRed ? 'border-t border-[color:var(--w-skipped-border)]' : 'border-t border-[#1e1e1e]') : ''} {exSurfaceClass}"
+            class="p-3 flex gap-1 min-w-0 status-surface {exSurfaceClass} {(hasActiveRestThis || isFadingToRestThis) ? '!bg-orange-900 text-orange-200' : ''} {hasActiveRestElsewhere ? 'opacity-70' : ''} {isFadingToRestThis ? 'transition-colors duration-1000' : ''} {workoutExercisesEditable ? 'hover:brightness-110' : ''} {index > 0 ? (exRed ? 'border-t border-[color:var(--w-skipped-border)]' : 'border-t border-[#1e1e1e]') : ''}"
           >
             <!-- list number on left: boxed, vertically centered in strip, slightly larger -->
             <div
-              class="exercise-index status-surface w-6 flex-shrink-0 flex items-center justify-center rounded text-[10px] font-medium {exRed ? 'text-current' : 'text-zinc-400'} {exSurfaceClass}"
+              class={`exercise-index w-6 flex-shrink-0 flex items-center justify-center rounded text-[10px] font-medium status-surface ${exSurfaceClass} ${(hasActiveRestThis || isFadingToRestThis) ? (isFadingToRestThis ? 'transition-colors duration-1000 ' : '') + '!bg-orange-800 text-orange-400' : ''} ${exRed ? 'text-current' : 'text-zinc-400'}`}
             >
               {index + 1}
             </div>
-            <div class="flex-1 flex flex-col gap-1.5">
+            <div class="flex-1 min-w-0 flex flex-col gap-1.5 {hasActiveRestThis ? 'text-orange-200' : ''}">
               <div class="ex-top flex justify-between gap-3 {isTimeEx ? 'ex-top--time items-center' : 'items-start'}">
-              <div class="truncate pr-2 min-w-0">
+              <div class="flex-1 pr-2 min-w-0">
                 <div class="ex-name-row {workoutExercisesEditable ? 'hover:brightness-110' : ''}">
                   {#if exercise.exercise_type === 'reps'}
-                    <Dumbbell class="size-3.5 shrink-0 {exRed ? 'text-current' : 'text-white'}" />
+                    <Dumbbell class="size-3.5 shrink-0 transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-white'}" />
                   {:else}
-                    <Timer class="size-3.5 shrink-0 {exRed ? 'text-current' : 'text-white'}" />
+                    <Timer class="size-3.5 shrink-0 transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-white'}" />
                   {/if}
-                  <span class="ex-name text-sm font-extrabold tracking-wide truncate {exRed ? 'text-current' : 'text-white'}">{exercise.name}</span>
-                  {#if showUntouchedBadge(exercise)}
-                    <span class="untouched-badge">UNTOUCHED</span>
-                  {:else if showPrBadge(exercise, loggedEx)}
-                    <span class="pr-badge">NEW PR</span>
-                  {/if}
+                  <div class="flex items-center min-w-0 flex-1 gap-1">
+                    <span class="ex-name text-sm font-extrabold tracking-wide truncate transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-white'}">{exercise.name}</span>
+                    {#if showUntouchedBadge(exercise)}
+                      <span class="untouched-badge">UNTOUCHED</span>
+                    {:else if showPrBadge(exercise, loggedEx)}
+                      <span class="pr-badge">NEW PR</span>
+                    {/if}
+                  </div>
                 </div>
-                <div class="ex-meta text-xs mt-0.5 tracking-wide {exRed ? 'w-fg-skipped-muted' : 'text-zinc-400'}">
+                <div class="ex-meta text-xs mt-0.5 tracking-wide transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'w-fg-skipped-muted' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-400' : 'text-zinc-400'}">
                   {#if exercise.exercise_type === 'reps'}
                     {exercise.target_sets}×{exercise.target_reps} @{displayCurrentWeight}kg +{displayIncrementKg}kg
                   {:else}
@@ -7374,14 +7920,18 @@
                 </div>
               </div>
 
-              {#if !isTimeEx}
+              {#if hasActiveRestThis}
+                <div class="rest-readout font-7segment text-2xl text-orange-500">
+                  <span class="ex-time-digit">{formatTime(restCountdownSeconds)}</span>
+                </div>
+              {:else if !isTimeEx}
                 {#if displayCurrentWeight !== null}
                   <div class="weight-num font-7segment text-2xl leading-none {exRed ? 'text-current' : 'text-white'}">{displayCurrentWeight}<span class="unit text-[10px] font-sans font-normal ml-1 tracking-[1px] {exRed ? 'w-fg-skipped-muted' : 'text-zinc-400'}">KG</span></div>
                 {:else}
                   <!-- Narrow baseline input (fits ~3 digits) in the KG position, right-aligned -->
                   <div class="flex items-baseline justify-end">
                     <input type="text" inputmode="decimal" autocomplete="off" placeholder="80" class="prop-num-input font-7segment text-2xl leading-none text-white bg-transparent border-none outline-none w-12 text-right"
-                      disabled={!workoutExercisesEditable}
+                      disabled={!workoutExercisesEditable || hasActiveRestElsewhere}
                       use:clampedNumericProp={{
                         kind: 'baseKg',
                         getValue: () => exercise.current_weight ?? 0,
@@ -7413,186 +7963,266 @@
               {/if}
             </div>
 
-            <!-- sets lane: placed right under name lane for "next to the name", packed to reduce empty gap -->
-            {#if exercise.exercise_type === 'reps'}
-              {#if exercise.current_weight !== null}
-                <div class="set-row grid gap-1" style="grid-template-columns: repeat({exercise.target_sets}, minmax(0, 1fr));">
-                  {#each Array(exercise.target_sets) as _, s}
-                    {@const bubbleStatus = getSetBubbleStatus(exercise.id, s, exercise.target_reps)}
-                    {@const repsValue = isViewingToday && useLiveSessionTracking()
-                      ? trackedReps[`${exercise.id}-${s}`]
-                      : getHistoricalReps(isViewingToday ? todayLog : viewedLog, exercise.id, s)}
-                    {@const setKey = `${exercise.id}-${s}`}
-                    {@const isEditingThisSet = editingSetKey === setKey}
-                    {@const isHoldingSet = repSetHoldKey === setKey}
-                    {@const setUnrecorded = setShowsUnrecordedCross(bubbleStatus)}
-                    {@const setBubbleSkipped = exRed || setUnrecorded}
-                    <div
-                      class="set-bubble relative h-7 rounded-lg flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
-                        {setBubbleSkipped
-                          ? 'set-bubble--empty status-surface--skipped'
-                          : bubbleStatus === 'empty'
-                            ? 'set-bubble--empty status-surface--neutral'
-                            : ''}
-                        {!setBubbleSkipped && bubbleStatus === 'green' ? 'set-bubble--logged status-surface--green' : ''}
-                        {!setBubbleSkipped && bubbleStatus === 'yellow' ? 'set-bubble--logged status-surface--yellow' : ''}
-                        {isHoldingSet ? 'set-bubble--holding' : ''}"
-                    >
-                      {#if isHoldingSet && !isEditingThisSet}
-                        <div
-                          class="set-bubble-hold-fill"
-                          style="width: {repSetHoldProgress}%"
-                        ></div>
-                      {/if}
-
-                      {#if setUnrecorded}
-                        <div class="set-bubble-unrecorded relative z-10 w-full h-full flex items-center justify-center" aria-label="Set not recorded">
-                          <X class="size-3.5 shrink-0 opacity-90" strokeWidth={2.5} />
-                        </div>
-                      {:else if isEditingThisSet}
-                        <input type="text" inputmode="numeric" autocomplete="off" id="input-{exercise.id}-{s}" placeholder={exercise.target_reps.toString()}
-                          class="prop-num-input absolute inset-0 z-10 w-full h-full bg-transparent border-none outline-none text-center font-sans text-[10px] font-extrabold text-white"
-                          use:clampedNumericProp={{
-                            kind: 'trackedReps',
-                            getValue: () => repsValue ?? 0,
-                            setValue: () => {},
-                          }}
-                          onblur={() => saveManualRepEdit(exercise.id, s)}
-                          onkeydown={(e) => { if (e.key === 'Enter') saveManualRepEdit(exercise.id, s); }} />
-                      {:else}
-                        <button
-                          type="button"
-                          class="relative z-10 w-full h-full flex flex-col items-center justify-center bg-transparent border-none p-0 text-zinc-400 font-sans hover:brightness-110 select-none touch-none"
-                          onmousedown={(e) => startRepSetHold(e, exercise.id, s, exercise.target_reps)}
-                          onmouseup={() => stopRepSetHold(exercise.id, s)}
-                          onmouseleave={cancelRepSetHold}
-                          ontouchstart={(e) => startRepSetHold(e, exercise.id, s, exercise.target_reps)}
-                          ontouchend={() => stopRepSetHold(exercise.id, s)}
-                          ontouchcancel={cancelRepSetHold}
-                          disabled={!workoutExercisesEditable}
-                        >
-                          <span class="sl text-[8px] tracking-wider opacity-60 block leading-none text-zinc-400">S{s + 1}</span>
-                          <span class="sv text-[11px] font-extrabold block text-current leading-none">{repsValue !== undefined ? repsValue : '—'}</span>
-                        </button>
-                      {/if}
-                    </div>
-                  {/each}
-                </div>
-              {/if}
-            {:else}
-              <div class="time-set-lane">
-                {#if hasActiveTimerThis && activeTimerSetIndex !== null}
-                  {@const s = activeTimerSetIndex}
-                  {@const timerCubeCount = 42}
-                  {@const timerMet = timeTotal > 0 && countdownSeconds >= timeTotal}
-                  {@const rawDot = visualRawStep}
-                  {@const cycle = timerCubeCount * 2}
-                  {@const displayDot = timerMet
-                    ? (() => {
-                        let p = rawDot % cycle;
-                        if (p >= timerCubeCount) p = cycle - p;
-                        return Math.min(timerCubeCount - 1, p);
-                      })()
-                    : Math.min(timerCubeCount - 1, rawDot)}
-                  {@const inReverse = timerMet && (rawDot % cycle >= timerCubeCount)}
-                  {@const direction = inReverse ? -1 : 1}
-                  <div class="time-active-bar">
-                    <span class="time-active-set">S{s + 1}</span>
-                    <div class="time-active-progress">
-                      <div
-                        class="timer-progress-cubes"
-                        class:timer-progress-cubes--running={countdownRunning}
-                        class:timer-progress-cubes--met={timerMet}
-                        class:timer-progress-cubes--yellow={status === 'yellow' && !timerMet}
-                      >
-                        {#each Array(timerCubeCount) as _, i}
-                          {@const isCurrent = i === displayDot}
-                          {@const isPast = !isCurrent && (
-                            direction > 0
-                              ? i < displayDot
-                              : i > displayDot ||
-                                (displayDot === timerCubeCount - 1 && i < displayDot)
-                          )}
-                          {@const isTrail = i === displayDot - direction}
-                          {@const isFuture = !isCurrent && !isPast && !isTrail}
-                          <div
-                            class="timer-progress-cube"
-                            class:timer-progress-cube--past={isPast && !isTrail}
-                            class:timer-progress-cube--trail={isTrail}
-                            class:timer-progress-cube--future={isFuture}
-                            class:timer-progress-cube--lit={isCurrent && !timerMet}
-                            class:timer-progress-cube--met={timerMet && isCurrent}
-                          ></div>
-                        {/each}
-                      </div>
-                    </div>
-                    <div class="time-active-actions">
-                      <button
-                        type="button"
-                        class="timer-control-btn"
-                        onclick={toggleExerciseTimer}
-                        aria-label={countdownRunning ? 'Pause timer' : 'Resume timer'}
-                      >
-                        {#if countdownRunning}<Pause class="size-3.5 fill-current" />{:else}<Play class="size-3.5 fill-current" />{/if}
-                      </button>
-                      <button
-                        type="button"
-                        class="timer-control-btn"
-                        aria-label="Stop and save set"
-                        onclick={() => stopAndSaveTimedSet(exercise.id, s, timeTotal)}
-                      >
-                        <Square class="size-3.5 fill-current" />
-                      </button>
-                    </div>
-                  </div>
-                {:else}
+            {#snippet timerProgressCubes(running, met, yellow, cubeCount, displayDot, direction, inReverse, isRest = false)}
+              <div
+                class="timer-progress-cubes"
+                class:timer-progress-cubes--running={running}
+                class:timer-progress-cubes--met={met}
+                class:timer-progress-cubes--yellow={yellow && !met}
+              >
+                {#each Array(cubeCount) as _, i}
+                  {@const isCurrent = i === displayDot}
+                  {@const effectiveIsPast = (met && !running) ? true : (!isCurrent && (met || (
+                    direction > 0
+                      ? i < displayDot
+                      : i > displayDot ||
+                        (displayDot === cubeCount - 1 && i < displayDot)
+                  )))}
+                  {@const effectiveIsTrail = (met && !running) ? false : (i === displayDot - direction)}
+                  {@const effectiveIsFuture = (met && !running) ? false : (!isCurrent && !effectiveIsPast && !effectiveIsTrail)}
+                  {@const effectiveIsCurrent = isCurrent && !(met && !running)}
                   <div
-                    class="set-row set-row--time grid gap-1 h-7"
-                    style="grid-template-columns: repeat({exercise.target_sets}, minmax(0, 1fr));"
-                  >
-                    {#each Array(exercise.target_sets) as _, s}
-                      {@const bubbleStatus = getSetBubbleStatus(exercise.id, s, undefined, exercise)}
-                      {@const saved = isViewingToday && useLiveSessionTracking()
-                        ? completedTimers[`${exercise.id}-${s}`]
-                        : getHistoricalTime(
-                            isViewingToday ? todayLog : viewedLog,
-                            exercise.id,
-                            s,
-                            timeTotal,
-                          )}
-                      {@const setUnrecorded = setShowsUnrecordedCross(bubbleStatus)}
-                      {@const setBubbleSkipped = exRed || setUnrecorded}
-                      <div
-                        class="set-bubble relative h-7 rounded-lg flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
-                          {setBubbleSkipped
-                            ? 'set-bubble--empty status-surface--skipped'
-                            : bubbleStatus === 'empty'
-                              ? 'set-bubble--empty status-surface--neutral'
-                              : ''}
-                          {!setBubbleSkipped && bubbleStatus === 'green' ? 'set-bubble--logged status-surface--green' : ''}
-                          {!setBubbleSkipped && bubbleStatus === 'yellow' ? 'set-bubble--logged status-surface--yellow' : ''}"
-                      >
-                        {#if setUnrecorded}
-                          <div class="set-bubble-unrecorded relative z-10 w-full h-full flex items-center justify-center" aria-label="Set not recorded">
-                            <X class="size-3.5 shrink-0 opacity-90" strokeWidth={2.5} />
-                          </div>
-                        {:else}
+                    class="timer-progress-cube"
+                    class:timer-progress-cube--past={effectiveIsPast && !effectiveIsTrail}
+                    class:timer-progress-cube--trail={effectiveIsTrail}
+                    class:timer-progress-cube--future={effectiveIsFuture}
+                    class:timer-progress-cube--lit={effectiveIsCurrent && !met}
+                    class:timer-progress-cube--met={met && effectiveIsCurrent}
+                    style={isRest ? `background-color: ${effectiveIsPast && !effectiveIsTrail ? '#9a3412' : effectiveIsTrail ? '#c2410f' : effectiveIsFuture ? '#431407' : effectiveIsCurrent && !met ? '#f97316' : '#ea580c'};` : undefined}
+                  ></div>
+                {/each}
+              </div>
+            {/snippet}
+
+            <!-- sets lane: set boxes crossfade to the rest progress bar during the 1s fade-to-orange -->
+            <div class="relative h-7 w-full">
+              <!-- Set boxes layer (crossfades out during fade/rest) -->
+              <div
+                class="absolute inset-0 transition-opacity duration-1000"
+                style="opacity: {(hasActiveRestThis || isFadingToRestThis) ? '0' : '1'}; pointer-events: {(hasActiveRestThis || isFadingToRestThis) ? 'none' : 'auto'};"
+              >
+                {#if exercise.exercise_type === 'reps'}
+                  {#if exercise.current_weight !== null}
+                    <div class="set-row grid gap-1" style="grid-template-columns: repeat({exercise.target_sets}, minmax(0, 1fr));">
+                      {#each Array(exercise.target_sets) as _, s}
+                        {@const bubbleStatus = getSetBubbleStatus(exercise.id, s, exercise.target_reps)}
+                        {@const repsValue = isViewingToday && useLiveSessionTracking()
+                          ? trackedReps[`${exercise.id}-${s}`]
+                          : getHistoricalReps(isViewingToday ? todayLog : viewedLog, exercise.id, s)}
+                        {@const setKey = `${exercise.id}-${s}`}
+                        {@const isEditingThisSet = editingSetKey === setKey}
+                        {@const isHoldingSet = repSetHoldKey === setKey}
+                        {@const setUnrecorded = setShowsUnrecordedCross(bubbleStatus)}
+                        {@const setBubbleSkipped = exRed || setUnrecorded}
+                        {@const isFutureLocked = isFutureSetLockedByOrder(exercise.id, s, false)}
+                        {@const canLogThisSet = isSetUnlockedForLogging(exercise.id, s, false)}
+                        <div
+                          class="set-bubble relative h-7 rounded-lg flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
+                            {setBubbleSkipped
+                              ? 'set-bubble--empty status-surface--skipped'
+                              : bubbleStatus === 'empty'
+                                ? 'set-bubble--empty status-surface--neutral'
+                                : ''}
+                            {!setBubbleSkipped && bubbleStatus === 'green' ? 'set-bubble--logged status-surface--green' : ''}
+                            {!setBubbleSkipped && bubbleStatus === 'yellow' ? 'set-bubble--logged status-surface--yellow' : ''}
+                            {isHoldingSet ? 'set-bubble--holding' : ''}
+                            {hasActiveRestElsewhere || isFutureLocked ? 'opacity-60' : ''}"
+                        >
+                          {#if isHoldingSet && !isEditingThisSet}
+                            <div
+                              class="set-bubble-hold-fill"
+                              style="width: {repSetHoldProgress}%"
+                            ></div>
+                          {/if}
+
+                          {#if isFutureLocked}
+                            <div class="relative z-10 w-full h-full flex items-center justify-center" aria-label="Locked - log previous sets first">
+                              <Lock class="size-3.5 text-zinc-500" />
+                            </div>
+                          {:else if hasActiveRestElsewhere}
+                            <div class="relative z-10 w-full h-full flex items-center justify-center" aria-label="Locked during rest on another exercise">
+                              <Lock class="size-3.5 text-zinc-500" />
+                            </div>
+                          {:else if setUnrecorded}
+                            <div class="set-bubble-unrecorded relative z-10 w-full h-full flex items-center justify-center" aria-label="Set not recorded">
+                              <X class="size-3.5 shrink-0 opacity-90" strokeWidth={2.5} />
+                            </div>
+                          {:else if isEditingThisSet}
+                            <input type="text" inputmode="numeric" autocomplete="off" id="input-{exercise.id}-{s}" placeholder={exercise.target_reps.toString()}
+                              class="prop-num-input absolute inset-0 z-10 w-full h-full bg-transparent border-none outline-none text-center font-sans text-[10px] font-extrabold text-white"
+                              use:clampedNumericProp={{
+                                kind: 'trackedReps',
+                                getValue: () => repsValue ?? 0,
+                                setValue: () => {},
+                              }}
+                              onblur={() => saveManualRepEdit(exercise.id, s)}
+                              onkeydown={(e) => { if (e.key === 'Enter') saveManualRepEdit(exercise.id, s); }} />
+                          {:else}
+                            <button
+                              type="button"
+                              class="relative z-10 w-full h-full flex flex-col items-center justify-center bg-transparent border-none p-0 text-zinc-400 font-sans {hasActiveRestElsewhere || !canLogThisSet ? '' : 'hover:brightness-110'} select-none touch-none"
+                              onmousedown={(e) => startRepSetHold(e, exercise.id, s, exercise.target_reps)}
+                              onmouseup={() => stopRepSetHold(exercise.id, s)}
+                              onmouseleave={cancelRepSetHold}
+                              ontouchstart={(e) => startRepSetHold(e, exercise.id, s, exercise.target_reps)}
+                              ontouchend={() => stopRepSetHold(exercise.id, s)}
+                              ontouchcancel={cancelRepSetHold}
+                              disabled={!workoutExercisesEditable || hasActiveRestElsewhere || !canLogThisSet}
+                            >
+                              <span class="sl text-[8px] tracking-wider opacity-60 block leading-none text-zinc-400">S{s + 1}</span>
+                              <span class="sv text-[11px] font-extrabold block text-current leading-none">{repsValue !== undefined ? repsValue : '—'}</span>
+                            </button>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                {:else}
+                  <div class="time-set-lane">
+                    {#if hasActiveTimerThis && activeTimerSetIndex !== null}
+                      {@const s = activeTimerSetIndex}
+                      {@const timerCubeCount = Math.max(8, Math.floor((timerBarProgressWidth || 200) / 8))}
+                      {@const timerMet = timeTotal > 0 && countdownSeconds >= timeTotal}
+                      {@const rawDot = visualRawStep}
+                      {@const cycle = timerCubeCount * 2}
+                      {@const adjustedRawForBounce = timerMet ? (rawDot + metPhaseShift) : rawDot}
+                      {@const displayDot = timerMet
+                        ? (() => {
+                            let p = adjustedRawForBounce % cycle;
+                            if (p >= timerCubeCount) p = cycle - p;
+                            return Math.min(timerCubeCount - 1, p);
+                          })()
+                        : Math.min(timerCubeCount - 1, Math.floor((rawDot / visualDotCount) * timerCubeCount))}
+                      {@const inReverse = timerMet && (adjustedRawForBounce % cycle >= timerCubeCount)}
+                      {@const direction = inReverse ? -1 : 1}
+                      <div class="time-active-bar">
+                        <span class="time-active-set">S{s + 1}</span>
+                        <div class="time-active-progress" bind:clientWidth={timerBarProgressWidth}>
+                          {@render timerProgressCubes(countdownRunning, timerMet, status === 'yellow' && !timerMet, timerCubeCount, displayDot, direction, inReverse, false)}
+                        </div>
+                        <div class="time-active-actions">
                           <button
                             type="button"
-                            class="relative z-10 w-full h-full flex flex-col items-center justify-center bg-transparent border-none p-0 font-sans {workoutExercisesEditable ? 'hover:brightness-110' : ''} {exRed ? 'text-current' : 'text-white'}"
-                            onclick={() => activateOrSwitchTimeSet(exercise.id, s)}
-                            disabled={!workoutExercisesEditable}
+                            class="timer-control-btn"
+                            onclick={toggleExerciseTimer}
+                            aria-label={countdownRunning ? 'Pause timer' : 'Resume timer'}
                           >
-                            <span class="sl text-[8px] tracking-wider opacity-60 block leading-none text-zinc-400">S{s + 1}</span>
-                            <span class="sv text-[11px] font-extrabold block text-current leading-none tabular-nums">{saved ? saved.result : '—'}</span>
+                            {#if countdownRunning}<Pause class="size-3.5 fill-current" />{:else}<Play class="size-3.5 fill-current" />{/if}
                           </button>
-                        {/if}
+                          <button
+                            type="button"
+                            class="timer-control-btn"
+                            aria-label="Stop and save set"
+                            onclick={() => stopAndSaveTimedSet(exercise.id, s, timeTotal)}
+                          >
+                            <Square class="size-3.5 fill-current" />
+                          </button>
+                        </div>
                       </div>
-                    {/each}
+                    {:else}
+                      <div
+                        class="set-row set-row--time grid gap-1 h-7"
+                        style="grid-template-columns: repeat({exercise.target_sets}, minmax(0, 1fr));"
+                      >
+                        {#each Array(exercise.target_sets) as _, s}
+                          {@const bubbleStatus = getSetBubbleStatus(exercise.id, s, undefined, exercise)}
+                          {@const saved = isViewingToday && useLiveSessionTracking()
+                            ? completedTimers[`${exercise.id}-${s}`]
+                            : getHistoricalTime(
+                                isViewingToday ? todayLog : viewedLog,
+                                exercise.id,
+                                s,
+                                timeTotal,
+                              )}
+                          {@const setUnrecorded = setShowsUnrecordedCross(bubbleStatus)}
+                          {@const setBubbleSkipped = exRed || setUnrecorded}
+                          {@const isFutureLocked = isFutureSetLockedByOrder(exercise.id, s, true)}
+                          {@const canLogThisSet = isSetUnlockedForLogging(exercise.id, s, true)}
+                          <div
+                            class="set-bubble relative h-7 rounded-lg flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
+                              {setBubbleSkipped
+                                ? 'set-bubble--empty status-surface--skipped'
+                                : bubbleStatus === 'empty'
+                                  ? 'set-bubble--empty status-surface--neutral'
+                                  : ''}
+                              {!setBubbleSkipped && bubbleStatus === 'green' ? 'set-bubble--logged status-surface--green' : ''}
+                              {!setBubbleSkipped && bubbleStatus === 'yellow' ? 'set-bubble--logged status-surface--yellow' : ''}
+                              {hasActiveRestElsewhere || isFutureLocked ? 'opacity-60' : ''}"
+                          >
+                            {#if isFutureLocked}
+                              <div class="relative z-10 w-full h-full flex items-center justify-center" aria-label="Locked - log previous sets first">
+                                <Lock class="size-3.5 text-zinc-500" />
+                              </div>
+                            {:else if hasActiveRestElsewhere}
+                              <div class="relative z-10 w-full h-full flex items-center justify-center" aria-label="Locked during rest on another exercise">
+                                <Lock class="size-3.5 text-zinc-500" />
+                              </div>
+                            {:else if setUnrecorded}
+                              <div class="set-bubble-unrecorded relative z-10 w-full h-full flex items-center justify-center" aria-label="Set not recorded">
+                                <X class="size-3.5 shrink-0 opacity-90" strokeWidth={2.5} />
+                              </div>
+                            {:else}
+                              <button
+                                type="button"
+                                class="relative z-10 w-full h-full flex flex-col items-center justify-center bg-transparent border-none p-0 font-sans {workoutExercisesEditable && !hasActiveRestElsewhere && canLogThisSet ? 'hover:brightness-110' : ''} {exRed ? 'text-current' : 'text-white'}"
+                                onclick={() => activateOrSwitchTimeSet(exercise.id, s)}
+                                disabled={!workoutExercisesEditable || hasActiveRestElsewhere || !canLogThisSet}
+                              >
+                                <span class="sl text-[8px] tracking-wider opacity-60 block leading-none text-zinc-400">S{s + 1}</span>
+                                <span class="sv text-[11px] font-extrabold block text-current leading-none tabular-nums">{saved ? saved.result : '—'}</span>
+                              </button>
+                            {/if}
+                          </div>
+                        {/each}
+                      </div>
+                    {/if}
                   </div>
                 {/if}
               </div>
-            {/if}
+
+              <!-- Rest progress bar layer (crossfades in) -->
+              {#if hasActiveRestThis || isFadingToRestThis}
+                {@const s = activeRestSetIndex ?? 0}
+                {@const timerCubeCount = Math.max(8, Math.floor((timerBarProgressWidth || 200) / 8))}
+                {@const timerMet = restCurrentTargetSeconds > 0 && restCountdownSeconds <= 0}
+                {@const rawDot = restVisualRawStep}
+                {@const cycle = timerCubeCount * 2}
+                {@const effectiveRawDot = (timerMet && !restCountdownRunning) ? (timerCubeCount + 1) : rawDot}
+                {@const displayDot = timerMet
+                  ? (() => {
+                      let p = effectiveRawDot % cycle;
+                      if (p >= timerCubeCount) p = cycle - p;
+                      return Math.min(timerCubeCount - 1, p);
+                    })()
+                  : Math.min(timerCubeCount - 1, Math.floor((rawDot / restVisualDotCount) * timerCubeCount))}
+                {@const inReverse = timerMet && (effectiveRawDot % cycle >= timerCubeCount)}
+                {@const direction = inReverse ? -1 : 1}
+                <div
+                  class="absolute inset-0"
+                  transition:fade={{ duration: 1000 }}
+                >
+                  <div class="time-set-lane">
+                    <div class="time-active-bar" style="color: #f97316;">
+                      <span class="time-active-set">REST</span>
+                      <div class="time-active-progress" bind:clientWidth={timerBarProgressWidth}>
+                        {@render timerProgressCubes(restCountdownRunning, timerMet, false, timerCubeCount, displayDot, direction, inReverse, true)}
+                      </div>
+                      <!-- stop only for rest (no pause) -->
+                      <div class="time-active-actions">
+                        <button
+                          type="button"
+                          class="timer-control-btn"
+                          aria-label="Stop rest"
+                          onclick={() => stopRestTimer()}
+                        >
+                          <Square class="size-3.5 fill-current" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              {/if}
+            </div>
             </div>
           </div>
         {/each}
@@ -7621,6 +8251,15 @@
             class="w-full h-8 flex items-center justify-center px-2 rounded border border-[#2a2a2a] bg-black text-xs font-medium truncate leading-none text-center text-white"
           >{builderDayAssignmentLabel}</span>
         </div>
+        <button
+          type="button"
+          class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-zinc-400 hover:text-white hover:bg-[#1a1a1a] flex items-center justify-center transition-colors disabled:opacity-40"
+          title="Export your full routine (all templates + schedule) as CSV"
+          onclick={() => void exportRoutineAsCsv()}
+          disabled={!templates || templates.length === 0}
+        >
+          <Download class="size-4" />
+        </button>
       </div>
 
       <div class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none text-center">CLICK DAY TO ASSIGN</div>
@@ -8465,6 +9104,46 @@
                       </div>
                     </div>
                   {/if}
+
+                  <!-- Rest time (common to reps and time exercises) -->
+                  <div class="grid grid-cols-2 gap-1 text-[9px] mt-1 pt-1 border-t border-[#1e1e1e]">
+                    <div>
+                      <span class="text-zinc-500 block mb-0.5 leading-none">Rest Min</span>
+                      <input 
+                        type="text" 
+                        inputmode="numeric" 
+                        autocomplete="off" 
+                        class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
+                        value={ex.rest_minutes ?? 0}
+                        oninput={(e) => {
+                          const raw = (e.currentTarget as HTMLInputElement).value;
+                          const { value, display } = clampRestMinsFieldInput(raw);
+                          draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, rest_minutes: value } : ee);
+                          const input = e.currentTarget as HTMLInputElement;
+                          if (input.value !== display) input.value = display;
+                        }}
+                        onblur={() => void persistTemplateExercisesNow()} 
+                      />
+                    </div>
+                    <div>
+                      <span class="text-zinc-500 block mb-0.5 leading-none">Rest Sec</span>
+                      <input 
+                        type="text" 
+                        inputmode="numeric" 
+                        autocomplete="off" 
+                        class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
+                        value={ex.rest_seconds ?? 0}
+                        oninput={(e) => {
+                          const raw = (e.currentTarget as HTMLInputElement).value;
+                          const { value, display } = clampRestSecsFieldInput(raw);
+                          draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, rest_seconds: value } : ee);
+                          const input = e.currentTarget as HTMLInputElement;
+                          if (input.value !== display) input.value = display;
+                        }}
+                        onblur={() => void persistTemplateExercisesNow()} 
+                      />
+                    </div>
+                  </div>
                   </div>
                 {/if}
               {:else}

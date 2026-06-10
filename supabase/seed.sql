@@ -76,14 +76,14 @@ begin
   insert into public.exercises (
     id, user_id, name, exercise_type,
     target_sets, target_reps, target_minutes, target_seconds,
-    increment, current_weight
+    rest_minutes, rest_seconds, increment, current_weight
   ) values
-    (gen_random_uuid(), v_user_id, 'SEED: Bench Press',     'reps', 4, 8, null, null, 2.5, 82.5),
-    (gen_random_uuid(), v_user_id, 'SEED: Overhead Press',  'reps', 4, 6, null, null, 2.5, 55.0),
-    (gen_random_uuid(), v_user_id, 'SEED: Bent Over Row',   'reps', 4, 8, null, null, 2.5, 70.0),
-    (gen_random_uuid(), v_user_id, 'SEED: Back Squat',      'reps', 5, 5, null, null, 5.0, 100.0),
-    (gen_random_uuid(), v_user_id, 'SEED: Face Pulls',      'reps', 3, 15, null, null, 1.25, 12.5),
-    (gen_random_uuid(), v_user_id, 'SEED: Plank',           'time', 3, null, 1, 0, 5, null)
+    (gen_random_uuid(), v_user_id, 'SEED: Bench Press',     'reps', 4, 8, null, null, 1, 30, 2.5, 82.5),
+    (gen_random_uuid(), v_user_id, 'SEED: Overhead Press',  'reps', 4, 6, null, null, 1, 30, 2.5, 55.0),
+    (gen_random_uuid(), v_user_id, 'SEED: Bent Over Row',   'reps', 4, 8, null, null, 1, 30, 2.5, 70.0),
+    (gen_random_uuid(), v_user_id, 'SEED: Back Squat',      'reps', 5, 5, null, null, 1, 30, 5.0, 100.0),
+    (gen_random_uuid(), v_user_id, 'SEED: Face Pulls',      'reps', 3, 15, null, null, 1, 30, 1.25, 12.5),
+    (gen_random_uuid(), v_user_id, 'SEED: Plank',           'time', 3, null, 1, 0, 0, 30, 5, null)
   returning id into v_ex_bench;   -- we only need one for later reference, but we'll fetch others
 
   -- Fetch the ids we just created so we can link them cleanly

@@ -6,6 +6,8 @@ import {
 	clampIncrementSecFieldInput,
 	clampMinsFieldInput,
 	clampRepsFieldInput,
+	clampRestMinsFieldInput,
+	clampRestSecsFieldInput,
 	clampSecsFieldInput,
 	clampSetsFieldInput,
 	clampTemplateNameFieldInput,
@@ -30,6 +32,8 @@ export type NumericPropKind =
 	| "reps"
 	| "mins"
 	| "secs"
+	| "restMins"
+	| "restSecs"
 	| "baseKg"
 	| "incKg"
 	| "incSec"
@@ -45,6 +49,8 @@ const NUMERIC_CLAMPERS: Record<
 	reps: clampRepsFieldInput,
 	mins: clampMinsFieldInput,
 	secs: clampSecsFieldInput,
+	restMins: clampRestMinsFieldInput,
+	restSecs: clampRestSecsFieldInput,
 	baseKg: clampBaseKgFieldInput,
 	incKg: clampIncrementKgFieldInput,
 	incSec: clampIncrementSecFieldInput,

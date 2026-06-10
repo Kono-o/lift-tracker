@@ -82,6 +82,8 @@ create table public.exercises (
   target_reps smallint,
   target_minutes smallint,
   target_seconds smallint,
+  rest_minutes smallint default 0,
+  rest_seconds smallint default 0,
   increment real not null default 0,
   current_weight real,
   created_at timestamptz not null default now(),
@@ -999,6 +1001,8 @@ begin
         'exercise_type', 'reps',
         'target_sets', target_sets,
         'target_reps', target_reps,
+        'rest_minutes', coalesce((ex->>'rest_minutes')::int, 0),
+        'rest_seconds', coalesce((ex->>'rest_seconds')::int, 0),
         'sets', ex_sets,
         'weight_before', ex->'current_weight',
         'weight_after', next_weight
@@ -1040,6 +1044,8 @@ begin
           'target_sets', target_sets,
           'target_minutes', coalesce((ex->>'target_minutes')::int, 0),
           'target_seconds', coalesce((ex->>'target_seconds')::int, 0),
+          'rest_minutes', coalesce((ex->>'rest_minutes')::int, 0),
+          'rest_seconds', coalesce((ex->>'rest_seconds')::int, 0),
           'sets', ex_sets
         )
       );
@@ -1165,6 +1171,8 @@ declare
   v_target_reps smallint;
   v_target_minutes smallint;
   v_target_seconds smallint;
+  v_rest_minutes smallint;
+  v_rest_seconds smallint;
   v_increment real;
   v_current_weight real;
   saved_ids uuid[] := '{}';
@@ -1223,6 +1231,9 @@ begin
       v_current_weight := null;
     end if;
 
+    v_rest_minutes := least(99, greatest(0, coalesce((ex->>'rest_minutes')::int, 0)));
+    v_rest_seconds := least(59, greatest(0, coalesce((ex->>'rest_seconds')::int, 0)));
+
     v_ex_id := null;
     begin
       if ex->>'id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
@@ -1244,6 +1255,8 @@ begin
         target_reps = v_target_reps,
         target_minutes = v_target_minutes,
         target_seconds = v_target_seconds,
+        rest_minutes = v_rest_minutes,
+        rest_seconds = v_rest_seconds,
         increment = v_increment,
         current_weight = v_current_weight
       where id = v_ex_id and user_id = uid
@@ -1251,10 +1264,10 @@ begin
     else
       insert into public.exercises (
         user_id, name, exercise_type, target_sets, target_reps,
-        target_minutes, target_seconds, increment, current_weight
+        target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight
       ) values (
         uid, v_ex_name, v_ex_type, v_target_sets, v_target_reps,
-        v_target_minutes, v_target_seconds, v_increment, v_current_weight
+        v_target_minutes, v_target_seconds, v_rest_minutes, v_rest_seconds, v_increment, v_current_weight
       )
       returning * into row;
       v_ex_id := row.id;

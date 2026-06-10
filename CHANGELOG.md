@@ -2,19 +2,28 @@
 
 All notable changes to Lift Tracker are documented here.
 
-## [1.0.3] - 2026-06-09
-
-**Faux test release** (for auto-update verification only).
-
-- Small bump used exclusively to test further chained in-app updates (e.g. 1.0.2 → 1.0.3).
-- No user-facing changes.
-
 ## [1.0.2] - 2026-06-09
 
-**Faux test release** (for auto-update verification only).
+**Faux test release** (for chained auto-update verification).
 
-- Small bump used exclusively to test chained in-app updates (e.g. from a clean 1.0.1 install to 1.0.2).
-- No user-facing changes.
+This release is primarily intended to let users who installed v1.0.0 or v1.0.1 exercise the full in-app update pipeline one more time in a controlled way (v1.0.1 → v1.0.2). It uses the **exact same stable release signing key** as all prior 1.0.x releases, so the update will install cleanly over existing installs without any "package conflict" or uninstall requirement.
+
+### Purpose of This Faux Release
+- Validate end-to-end auto-update on real devices for the second link in the chain.
+- Confirm that "last seen version" tracking correctly suppresses re-prompting after a successful update.
+- Ensure the native downloader, progress reporting, verification (size + magic bytes), permission flow, and post-update "UPDATED + confetti" screen all continue to work after the v1.0.1 baseline.
+- The in-app updater will pull this release via `/repos/Kono-o/lift-tracker/releases/latest` and offer the `lift-tracker-v1.0.2.apk` asset.
+
+### What's Included
+- All the solid foundation from v1.0.0 + v1.0.1 (templates, live workouts, rep + timed exercises, custom stats, Supabase sync, beautiful centered update UX).
+- Small incremental polish that landed since v1.0.1 (improved identicon/avatar rendering and persistence of custom seeds).
+- No breaking changes. The APK is built with the locked-down `scripts/build-release-apk.fish` process and the documented long-lived keystore (see `SIGNING.md` and `RELEASE.md`).
+
+After you update, the first cold start should show the friendly "UPDATED" modal with these notes and confetti. Future real feature releases will follow the same safe signing + distribution rules.
+
+See the v1.0.0 release notes for the complete feature list and sideloading instructions. All of that still applies.
+
+**Thank you for testing the update machinery.** This is what makes a sideloaded Android app feel production-grade.
 
 ## [1.0.0] - 2026-06-09
 

@@ -76,3 +76,6 @@ vite.config.ts.timestamp-*
 local-*.fish
 reset-db.fish
 supabase-local.*
+
+# Personal scratch / user likes folder (local only, not committed)
+user-likes/

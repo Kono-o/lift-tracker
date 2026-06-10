@@ -442,6 +442,9 @@ export interface Exercise {
 	target_minutes: number;
 	target_seconds: number;
 
+	rest_minutes: number;
+	rest_seconds: number;
+
 	increment: number;
 	current_weight: number | null;
 	/** Present when an exercise is loaded in template context. */
@@ -491,6 +494,8 @@ function exerciseRowForDb(
 					target_reps: safe.target_reps ?? 0,
 					target_minutes: null,
 					target_seconds: null,
+					rest_minutes: safe.rest_minutes ?? 0,
+					rest_seconds: safe.rest_seconds ?? 0,
 					increment: safe.increment ?? 0,
 					current_weight: safe.current_weight ?? null,
 				}
@@ -502,6 +507,8 @@ function exerciseRowForDb(
 					target_reps: null,
 					target_minutes: safe.target_minutes ?? 0,
 					target_seconds: safe.target_seconds ?? 0,
+					rest_minutes: safe.rest_minutes ?? 0,
+					rest_seconds: safe.rest_seconds ?? 0,
 					increment: safe.increment ?? 0,
 					current_weight: null,
 				};
@@ -587,7 +594,7 @@ export interface PerformanceSnapshot {
 	started_at?: number;
 	// Raw tracking maps used during an active session
 	reps?: Record<string, number>;
-	times?: Record<string, { result: string }>;
+	times?: Record<string, { result: string; target?: number }>;
 }
 
 export interface WorkoutSnapshotExerciseSet {
@@ -607,6 +614,8 @@ export interface WorkoutSnapshotExercise {
 	target_reps?: number;
 	target_minutes?: number;
 	target_seconds?: number;
+	rest_minutes?: number;
+	rest_seconds?: number;
 	increment?: number;
 	weight_before?: number | null;
 	weight_after?: number | null;
@@ -657,7 +666,12 @@ function normalizeCompletedWorkoutDuration(seconds: number): number {
 
 /** Parse `01m30s` or raw seconds from timer UI. */
 export function parseTimeResultToSeconds(result: string): number | null {
-	const m = result.match(/(\d+)m(\d+)s/i);
+	if (!result) return null;
+	// Current format from formatTime(): MM:SS or M:SS
+	let m = result.match(/(\d+):(\d{1,2})/);
+	if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+	// Legacy format: 00m00s (or 0m0s)
+	m = result.match(/(\d+)m(\d+)s/i);
 	if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
 	const n = parseFloat(result);
 	return Number.isFinite(n) ? Math.round(n) : null;
@@ -685,6 +699,8 @@ function normalizeExerciseFromDb(row: Exercise): Exercise {
 			target_reps: row.target_reps ?? 0,
 			target_minutes: 0,
 			target_seconds: 0,
+			rest_minutes: row.rest_minutes ?? 0,
+			rest_seconds: row.rest_seconds ?? 0,
 		};
 	}
 	return {
@@ -693,6 +709,8 @@ function normalizeExerciseFromDb(row: Exercise): Exercise {
 		target_minutes: row.target_minutes ?? 0,
 		target_seconds: row.target_seconds ?? 0,
 		current_weight: null,
+		rest_minutes: row.rest_minutes ?? 0,
+		rest_seconds: row.rest_seconds ?? 0,
 	};
 }
 
@@ -1210,7 +1228,7 @@ export const db = {
 					.select("id, user_id, name, color, display_order")
 					.order("display_order")
 					.order("created_at"),
-				supabase.from("exercises").select("*").order("created_at"),
+				supabase.from("exercises").select("id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, created_at").order("created_at"),
 				supabase
 					.from("template_exercises")
 					.select("template_id, exercise_id, display_order")
@@ -1616,6 +1634,8 @@ export const db = {
 			target_reps?: number;
 			target_minutes?: number;
 			target_seconds?: number;
+			rest_minutes?: number;
+			rest_seconds?: number;
 			increment?: number;
 			current_weight?: number | null;
 		}>,
@@ -1633,6 +1653,8 @@ export const db = {
 				exercise_type: safe.exercise_type,
 				target_sets: safe.target_sets ?? 0,
 				increment: safe.increment ?? 0,
+				rest_minutes: safe.rest_minutes ?? 0,
+				rest_seconds: safe.rest_seconds ?? 0,
 			};
 			if (isPersistedExerciseId(exerciseId)) row.id = exerciseId;
 			if (safe.exercise_type === "reps") {
@@ -1736,6 +1758,8 @@ export const db = {
 				target_reps: ex.exercise_type === "reps" ? ex.target_reps : null,
 				target_minutes: ex.exercise_type === "time" ? ex.target_minutes : null,
 				target_seconds: ex.exercise_type === "time" ? ex.target_seconds : null,
+				rest_minutes: ex.rest_minutes ?? 0,
+				rest_seconds: ex.rest_seconds ?? 0,
 				increment: ex.increment,
 				current_weight: ex.current_weight,
 			})),

@@ -18,6 +18,9 @@ export const DEFAULT_TARGET_REPS = 12;
 export const DEFAULT_BASE_KG = 15;
 export const DEFAULT_INCREMENT_KG = 2.5;
 export const DEFAULT_TARGET_SECONDS = 30;
+export const DEFAULT_REST_MINUTES = 0;
+export const DEFAULT_REST_SECONDS = 0;
+export const MIN_REST_SECONDS = 0;
 
 export type ExerciseTypeFieldStash = {
 	reps?: {
@@ -39,6 +42,8 @@ export type DraftExerciseLike = {
 	target_reps?: number;
 	target_minutes?: number;
 	target_seconds?: number;
+	rest_minutes?: number;
+	rest_seconds?: number;
 	increment?: number;
 	current_weight?: number | null;
 };
@@ -156,6 +161,28 @@ export function clampMinsFieldInput(raw: string): ClampedFieldInput {
 
 export function clampSecsFieldInput(raw: string): ClampedFieldInput {
 	return clampIntFieldInput(raw, 0, MAX_SECS);
+}
+
+export function clampRestMinsFieldInput(raw: string): ClampedFieldInput {
+	const t = raw.trim();
+	if (t === "" || t === "-") {
+		return {
+			value: DEFAULT_REST_MINUTES,
+			display: String(DEFAULT_REST_MINUTES),
+		};
+	}
+	return clampIntFieldInput(raw, MIN_REST_SECONDS, MAX_MINS);
+}
+
+export function clampRestSecsFieldInput(raw: string): ClampedFieldInput {
+	const t = raw.trim();
+	if (t === "" || t === "-") {
+		return {
+			value: DEFAULT_REST_SECONDS,
+			display: String(DEFAULT_REST_SECONDS),
+		};
+	}
+	return clampIntFieldInput(raw, MIN_REST_SECONDS, MAX_SECS);
 }
 
 export function clampBaseKgFieldInput(raw: string): ClampedFieldInput {
@@ -335,6 +362,9 @@ export function normalizeDraftExercise(ex: DraftExerciseLike): void {
 		ex.target_reps = 0;
 		ex.current_weight = null;
 	}
+	// Rest time is common to both exercise types (default 0, and UI shows 0)
+	ex.rest_minutes = sanitizeMinutes(ex.rest_minutes ?? DEFAULT_REST_MINUTES);
+	ex.rest_seconds = sanitizeSeconds(ex.rest_seconds ?? DEFAULT_REST_SECONDS);
 }
 
 export function sanitizeExerciseRowForDb(

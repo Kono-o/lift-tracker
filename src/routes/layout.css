@@ -1599,6 +1599,7 @@ input.prop-num-input::-webkit-outer-spin-button {
 	align-self: stretch;
 	min-width: 0;
 	padding: 0 0.125rem;
+	overflow: hidden;
 }
 
 .timer-progress-cubes {
@@ -1607,7 +1608,8 @@ input.prop-num-input::-webkit-outer-spin-button {
 	display: flex;
 	flex-wrap: nowrap;
 	align-items: center;
-	gap: clamp(2px, 0.5vw, 4px);
+	justify-content: flex-start;
+	gap: clamp(1px, 0.25vw, 2px);
 	width: 100%;
 	height: clamp(4px, 1vw, 6px);
 	min-width: 0;
@@ -1658,9 +1660,8 @@ input.prop-num-input::-webkit-outer-spin-button {
 }
 
 .timer-progress-cube {
-	flex: 1 1 0;
-	min-width: 2px;
-	max-width: 5px;
+	flex: 0 0 auto;
+	min-width: 1px;
 	height: 100%;
 	aspect-ratio: 1;
 	border-radius: 1px;

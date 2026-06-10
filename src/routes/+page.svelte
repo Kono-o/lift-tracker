@@ -107,6 +107,8 @@
     type UpdateInfo,
   } from '$lib/updater';
   import { isNativeApp } from '$lib/native';
+  import { marked } from 'marked';
+  import DOMPurify from 'dompurify';
   import { App } from '@capacitor/app';
   import confetti from 'canvas-confetti';
 
@@ -124,6 +126,19 @@
 
   function getTemplateColor(id: number): string {
     return TEMPLATE_COLORS[Math.max(0, Math.min(4, Math.floor(id || 0)))];
+  }
+
+  /** Render GitHub release notes (markdown) to sanitized HTML.
+   *  Falls back to basic <br> replacement if no DOM (SSR/build) or DOMPurify not ready.
+   */
+  function renderChangelog(text: string): string {
+    if (!text) return '';
+    if (typeof window === 'undefined' || typeof DOMPurify === 'undefined') {
+      // Safe fallback for server-side or before DOMPurify loads
+      return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+    }
+    const rawHtml = marked.parse(text, { breaks: true, gfm: true }) as string;
+    return DOMPurify.sanitize(rawHtml, { ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'ul', 'ol', 'li', 'a', 'code', 'pre', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote'] });
   }
 
   function toDateStr(d: Date): string {
@@ -591,7 +606,7 @@
   let bootOverlayVisible = $state(true);
   let bootOverlayExiting = $state(false);
   let bootAccountReveal = $state(false);
-  let stageRevealActive = $state(false);
+  let stageRevealActive = $state(true);
   const BOOT_ACCOUNT_REVEAL_HOLD_MS = 900;
 
   function onBootOverlayTransitionEnd(e: TransitionEvent) {
@@ -606,13 +621,11 @@
       bootOverlayVisible = true;
       bootOverlayExiting = false;
       bootAccountReveal = false;
-      stageRevealActive = false;
       return;
     }
     let cancelled = false;
     let revealHoldTimer: ReturnType<typeof setTimeout> | undefined;
     let exitFallbackTimer: ReturnType<typeof setTimeout> | undefined;
-    stageRevealActive = false;
     bootAccountReveal = false;
 
     if (!currentUser) {
@@ -632,10 +645,10 @@
       if (cancelled) return;
       await preloadSupabaseBackend();
       if (cancelled) return;
+      stageRevealActive = true;
       bootAccountReveal = true;
       revealHoldTimer = setTimeout(() => {
         if (cancelled) return;
-        stageRevealActive = true;
         bootOverlayExiting = true;
         exitFallbackTimer = setTimeout(() => {
           if (cancelled || !bootOverlayExiting) return;
@@ -670,7 +683,7 @@
 
     didRunStartupUpdateCheck = true;
 
-    // Small delay so the main menu has time to fully settle and render before the update prompt appears.
+    // Small delay so the main menu has time to fully settle and render before the update prompt (or post-update "UPDATED" screen) appears.
     // This prevents it from feeling like "the first thing" on app open.
     setTimeout(() => {
       // Fire and forget — we show modals when data arrives.
@@ -700,7 +713,7 @@
           console.error('[updater] startup check failed (non-fatal)', e);
         }
       })();
-    }, 600);
+    }, 250);
   });
 
   let signingIn = $state(false);
@@ -779,7 +792,7 @@
     finishAuthFeedbackExit();
   }
 
-  let authMode = $state<'signin' | 'signup'>('signin');
+  let authMode = $state<'signin' | 'signup'>('signup');
   let authCredentialMethod = $state<'username' | 'email'>('username');
   let authUsername = $state('');
   let authEmail = $state('');
@@ -1393,10 +1406,10 @@
     isViewingToday && workoutState === 'active' && !isFuture,
   );
   let showHeaderEditActions = $derived.by(() => {
-    if (!isViewingToday || selectedDateStr < REAL_TODAY_STR) return false;
+    if (selectedDateStr < REAL_TODAY_STR) return false;
     if (workoutState === 'skipped' || workoutState === 'done') return false;
     if (finishSyncPending) return false;
-    return workoutState === 'idle';
+    return workoutState === 'idle' || selectedDateStr > REAL_TODAY_STR;
   });
   let currentWeekDates = $derived.by(() => {
     const base = new Date(selectedDate);
@@ -3667,6 +3680,9 @@
 	}
 
   onMount(() => {
+    // Load the persisted auth preference (signup for first install, signin thereafter)
+    loadPreferredAuthMode();
+
     const unsubDbActivity = subscribeDbActivity(flashDbIoIndicator);
     const unsubDbActivitySnapshot = subscribeDbActivitySnapshot(() => {
       dbActivitySnapshot = getDbActivitySnapshot();
@@ -3696,6 +3712,7 @@
         }
 
         if (currentUser && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
+          void savePreferredAuthMode('signin');
           startSupabaseBackgroundSync();
           if (newcomerBootstrapPending) {
             bootstrapNewcomerAppState();
@@ -5052,6 +5069,7 @@
     authSuccess = null;
     try {
       await db.signInWithGoogle();
+      void savePreferredAuthMode('signin');
     } catch (e) {
       console.error('Google sign-in failed', e);
       setAuthError(formatAuthError(e, 'google'));
@@ -5066,6 +5084,7 @@
     authSuccess = null;
     try {
       await db.signInWithGitHub();
+      void savePreferredAuthMode('signin');
     } catch (e) {
       console.error('GitHub sign-in failed', e);
       setAuthError(formatAuthError(e, 'github'));
@@ -5080,6 +5099,7 @@
     authSuccess = null;
     try {
       await db.signInWithDiscord();
+      void savePreferredAuthMode('signin');
     } catch (e) {
       console.error('Discord sign-in failed', e);
       setAuthError(formatAuthError(e, 'discord'));
@@ -5094,6 +5114,7 @@
     authSuccess = null;
     try {
       await db.signInWithX();
+      void savePreferredAuthMode('signin');
     } catch (e) {
       console.error('X sign-in failed', e);
       setAuthError(formatAuthError(e, 'x'));
@@ -5143,6 +5164,7 @@
         const { session, user } = await db.signUpWithEmail(email, authPassword);
         if (session) {
           currentUser = user;
+          void savePreferredAuthMode('signin');
           bootstrapNewcomerAppState();
           authPassword = '';
           authConfirmPassword = '';
@@ -5159,6 +5181,7 @@
         const { session, user } = await db.signInWithEmail(email, authPassword);
         if (session?.user) currentUser = session.user;
         else if (user) currentUser = user;
+        void savePreferredAuthMode('signin');
         authPassword = '';
       }
     } catch (e) {
@@ -5205,6 +5228,7 @@
         const { session, user } = await db.signUpWithUsername(username, authPassword);
         if (session) {
           currentUser = user;
+          void savePreferredAuthMode('signin');
           bootstrapNewcomerAppState();
           authPassword = '';
           authConfirmPassword = '';
@@ -5221,6 +5245,7 @@
         const { session, user } = await db.signInWithUsername(username, authPassword);
         if (session?.user) currentUser = session.user;
         else if (user) currentUser = user;
+        void savePreferredAuthMode('signin');
         authPassword = '';
       }
     } catch (e) {
@@ -5238,6 +5263,38 @@
     authSuccess = null;
     if (mode === 'signin') authConfirmPassword = '';
   }
+
+  /** Persist which auth tab should be shown by default on future launches.
+   *  'signup' for very first launch on a device.
+   *  'signin' after the user has successfully authenticated at least once.
+   *  This data is deleted on app uninstall, so reinstalls start fresh with signup.
+   */
+  async function savePreferredAuthMode(mode: 'signin' | 'signup') {
+    try {
+      const { Preferences } = await import('@capacitor/preferences');
+      await Preferences.set({ key: 'preferredAuthMode', value: mode });
+    } catch (err) {
+      // Non-fatal; web or storage unavailable
+      console.warn('[auth] Could not persist preferred auth mode', err);
+    }
+  }
+
+  async function loadPreferredAuthMode() {
+    try {
+      const { Preferences } = await import('@capacitor/preferences');
+      const { value } = await Preferences.get({ key: 'preferredAuthMode' });
+      if (value === 'signin' || value === 'signup') {
+        authMode = value;
+      } else {
+        // First time on this device/install → default to signup
+        authMode = 'signup';
+      }
+    } catch {
+      authMode = 'signup';
+    }
+  }
+
+  // Load will be called in onMount (client only)
 
   function finishChangePasswordFeedbackExit() {
     if (changePasswordFeedbackExitTimer) {
@@ -5536,6 +5593,39 @@
         }
       }).catch(() => {
         /* non-fatal */
+      });
+    }
+  }
+
+  // Handle Android hardware back button (and iOS swipe-back in some cases) to mimic the on-screen back arrows.
+  // This ensures closing editors/menus triggers the same save logic as clicking the ArrowLeft buttons.
+  if (isNativeApp()) {
+    const w = (typeof window !== 'undefined' ? (window as any) : {}) as any;
+    if (!w.__LIFT_BACK_BUTTON_LISTENER) {
+      w.__LIFT_BACK_BUTTON_LISTENER = true;
+      App.addListener('backButton', () => {
+        // Prioritize deepest "modal" first so saves happen exactly as arrow buttons do.
+        if (currentView === 'edit_template') {
+          void exitEditTemplate();
+          return;
+        }
+        if (currentView === 'swap_template') {
+          void exitRoutineEditor();
+          return;
+        }
+        if (currentView === 'edit_stats') {
+          void exitStatsEditor();
+          return;
+        }
+        if (currentView === 'stats') {
+          exitStatsView();
+          return;
+        }
+        if (showSettingsPanel) {
+          closeSettingsPanel();
+          return;
+        }
+        // Nothing to close in our "navigation stack" — let the system handle (usually minimizes or no-op at root).
       });
     }
   }
@@ -6580,7 +6670,7 @@
                 >{START_CTA_TARGET}</span>
               </button>
               <button
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {cancelTapPulseActive ? 'hold-cancel-tap-pulse' : cancelProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'}"
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {cancelTapPulseActive ? 'hold-cancel-tap-pulse' : cancelProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-white hover:border-white/40'}"
                 onmousedown={startCancelHold}
                 onmouseup={stopCancelHold}
                 onmouseleave={stopCancelHold}
@@ -6610,7 +6700,7 @@
               </button>
               <button
                 type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'}"
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-white hover:border-white/40'}"
                 onmousedown={startEraseHold}
                 onmouseup={stopEraseHold}
                 onmouseleave={stopEraseHold}
@@ -6635,7 +6725,7 @@
               </button>
               <button
                 type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-zinc-500'}"
+                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-white hover:border-white/40'}"
                 onmousedown={startEraseHold}
                 onmouseup={stopEraseHold}
                 onmouseleave={stopEraseHold}
@@ -7033,7 +7123,6 @@
       aria-modal="true"
       aria-label="Update available"
       tabindex="-1"
-      onclick={(e) => { if (e.target === e.currentTarget && !updateInstalling) closeUpdatePrompt(); }}
     >
       <div class="settings-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left">
         <div class="settings-panel-header">
@@ -7085,8 +7174,8 @@
           {#if updateInfo.notes}
             <div class="mt-3">
               <div class="mb-1 text-[9px] font-medium tracking-[1px] text-zinc-500">WHAT'S NEW</div>
-              <div class="max-h-40 overflow-auto rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2.5 text-[10px] leading-snug text-zinc-300 whitespace-pre-wrap no-scrollbar">
-                {updateInfo.notes}
+              <div class="max-h-40 overflow-auto rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2.5 text-[10px] leading-snug text-zinc-300 markdown-content no-scrollbar">
+                {@html renderChangelog(updateInfo.notes)}
               </div>
             </div>
           {:else}
@@ -7157,7 +7246,6 @@
       aria-modal="true"
       aria-label="App updated"
       tabindex="-1"
-      onclick={(e) => { if (e.target === e.currentTarget) closePostUpdate(); }}
     >
       <div class="settings-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left">
         <div class="settings-panel-header">
@@ -7199,8 +7287,8 @@
           {#if postUpdateNotes}
             <div class="mt-3">
               <div class="mb-1 text-[9px] font-medium tracking-[1px] text-zinc-500">WHAT'S NEW</div>
-              <div class="max-h-44 overflow-auto rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2 text-[10px] leading-snug text-zinc-300 whitespace-pre-wrap no-scrollbar">
-                {postUpdateNotes}
+              <div class="max-h-44 overflow-auto rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2 text-[10px] leading-snug text-zinc-300 markdown-content no-scrollbar">
+                {@html renderChangelog(postUpdateNotes)}
               </div>
               <span class="mt-2 block text-center text-[10px] text-zinc-400">Thanks for staying up to date!</span>
             </div>
@@ -9178,16 +9266,8 @@
           >
             <div
               class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
-              style="transform: translateX({authMode === 'signup' ? 'calc(100% + 4px)' : '0'})"
+              style="transform: translateX({authMode === 'signup' ? '0' : 'calc(100% + 4px)'})"
             ></div>
-            <button
-              type="button"
-              class="relative z-10 h-9 flex items-center justify-center text-[10px] font-black tracking-[0.12em] transition-colors {authMode === 'signin' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
-              disabled={signingIn}
-              onclick={() => setAuthMode('signin')}
-            >
-              SIGN IN
-            </button>
             <button
               type="button"
               class="relative z-10 h-9 flex items-center justify-center text-[10px] font-black tracking-[0.12em] transition-colors {authMode === 'signup' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
@@ -9196,11 +9276,19 @@
             >
               SIGN UP
             </button>
+            <button
+              type="button"
+              class="relative z-10 h-9 flex items-center justify-center text-[10px] font-black tracking-[0.12em] transition-colors {authMode === 'signin' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+              disabled={signingIn}
+              onclick={() => setAuthMode('signin')}
+            >
+              SIGN IN
+            </button>
           </div>
         </div>
 
         <div class="p-3 text-left">
-          <div class="relative mb-3" aria-hidden="true">
+          <div class="relative mb-3 hidden" aria-hidden="true">
             <div class="flex justify-between gap-1.5 pointer-events-none select-none">
               <div
                 class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl flex items-center justify-center bg-[#0a0a0a] text-zinc-400">

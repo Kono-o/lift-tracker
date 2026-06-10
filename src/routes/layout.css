@@ -2320,7 +2320,43 @@ span.boot-panel-placeholder::after,
 	pointer-events: auto;
 }
 
-
+/* Basic markdown styles for changelog boxes in update/updated prompts */
+.markdown-content {
+	line-height: 1.4;
+}
+.markdown-content p {
+	margin: 0.35em 0;
+}
+.markdown-content ul,
+.markdown-content ol {
+	margin: 0.35em 0;
+	padding-left: 1.1em;
+}
+.markdown-content li {
+	margin: 0.15em 0;
+}
+.markdown-content strong,
+.markdown-content b {
+	font-weight: 700;
+	color: #e4e4e7;
+}
+.markdown-content em,
+.markdown-content i {
+	font-style: italic;
+}
+.markdown-content code {
+	font-family: ui-monospace, monospace;
+	background: #0a0a0a;
+	padding: 0.05em 0.25em;
+	border-radius: 0.125rem;
+}
+.markdown-content a {
+	color: #60a5fa;
+	text-decoration: underline;
+}
+.markdown-content a:hover {
+	color: #93c5fd;
+}
 
 .boot-overlay {
 	position: fixed;

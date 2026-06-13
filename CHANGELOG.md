@@ -2,6 +2,26 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.5] - 2026-06-10
+
+**Feature release** — new branding, reliable exercise editing, zero-increment support for timed work, and automatic workout duration estimates. Built and signed with the **exact same long-lived release key** (fingerprint 37:04:C3:...) as all prior 1.0.x releases so in-app updates continue to install cleanly.
+
+### New Features & Improvements
+- **New app icon / logo**: Replaced the simple dumbbell with a proper gym barbell design across the entire product.
+  - Web/PWA: updated `static/icon.svg`, `manifest.webmanifest`, `src/lib/assets/favicon.svg`, and `<link rel="apple-touch-icon">`.
+  - Android: regenerated all launcher icons (ldpi through xxxhdpi + round), adaptive icon foreground/background, and the source `assets/icon.png`.
+- **Full exercise property editor**: All target fields now work reliably in the routine editor (sets, reps, current weight, +kg, minutes, seconds, +s). Previously only the new rest times were updating/saving correctly; switched the remaining fields to the same controlled + immutable `draftExercises = map(...)` pattern.
+- **Timed exercise +s (increment) defaults to 0 and is fully settable to 0**: Client-side clamps, normalize, validation, and display updated. Most importantly, the server-side `save_template_exercises` RPC was fixed (in both `setup.sql` and the rest-time migration) — it no longer forces `greatest(1, ..., 5)` for time exercises. The change was applied live to the DB without any data loss.
+- **Automatic session time estimator on the template box**: The header line that used to say only "X EXERCISES • Y SETS" now also shows an estimated total workout duration.
+  - Reps sets: 1 minute of work each (as specified).
+  - Timed sets: exact target time (`target_minutes * 60 + target_seconds`).
+  - Rests: one rest after every set for both types (N sets = N rests per exercise, per feedback).
+  - Shown as `• ~45m` or `• ~1h 20m` right next to the exercise/set counts. Works for scheduled templates, active sessions, and historical logs.
+
+All changes preserve the existing stable signing key, auto-update flow, and no-breaking-changes promise.
+
+See v1.0.0 notes for the full original feature list and sideloading story.
+
 ## [1.0.4] - 2026-06-09
 
 **Feature release** — focused on better workflow enforcement, phone-native UX, auth onboarding, and polish for the update experience. Built and signed with the **exact same long-lived release key** (fingerprint 37:04:C3:...) as all prior 1.0.x releases so in-app updates continue to install cleanly.

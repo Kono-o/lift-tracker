@@ -62,10 +62,14 @@ export function clampStatValueFieldInput(raw: string): {
 } {
 	const t = raw.trim();
 	if (t === "") return { value: 0, display: "" };
-	const n = Number.parseFloat(t.replace(/,/g, "."));
+	const cleaned = t.replace(/,/g, ".");
+	const n = Number.parseFloat(cleaned);
 	if (!Number.isFinite(n) || n < 0) return { value: 0, display: "" };
 	const value = sanitizeStatConfigValue(n);
-	const display = Number.isInteger(value) ? String(value) : String(value);
+	let display = Number.isInteger(value) ? String(value) : String(value);
+	if (cleaned.endsWith(".") && !display.includes(".")) {
+		display += ".";
+	}
 	return { value, display };
 }
 
@@ -75,10 +79,14 @@ export function clampStatLogFieldInput(raw: string): {
 } {
 	const t = raw.trim();
 	if (t === "") return { value: 0, display: "" };
-	const n = Number.parseFloat(t.replace(/,/g, "."));
+	const cleaned = t.replace(/,/g, ".");
+	const n = Number.parseFloat(cleaned);
 	if (!Number.isFinite(n) || n <= 0) return { value: 0, display: "" };
 	const value = Math.min(MAX_STAT_VALUE, Math.max(MIN_STAT_VALUE, n));
-	const display = Number.isInteger(value) ? String(value) : String(value);
+	let display = Number.isInteger(value) ? String(value) : String(value);
+	if (cleaned.endsWith(".") && !display.includes(".")) {
+		display += ".";
+	}
 	return { value, display };
 }
 

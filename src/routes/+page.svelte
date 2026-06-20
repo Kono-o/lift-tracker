@@ -63,7 +63,7 @@
   } from '$lib/clampedInputs';
   import {
     ArrowLeft,
-    BarChart3,
+    Dna,
     Bed,
     CalendarDays,
     ChevronDown,
@@ -6613,7 +6613,7 @@
                 onclick={enterStatsView}
               >
                 <span class="workout-cta-side-content">
-                  <BarChart3 class="workout-cta-side-icon" strokeWidth={2.25} aria-hidden="true" />
+                  <Dna class="workout-cta-side-icon" strokeWidth={2.25} aria-hidden="true" />
                   <span class={workoutSideLabelClass} style={ctaChStyle('STATS', SIDE_CTA_MAX_CH)}>STATS</span>
                 </span>
               </button>
@@ -6663,7 +6663,7 @@
             onclick={enterStatsView}
           >
             <span class="workout-cta-side-content">
-              <BarChart3 class="workout-cta-side-icon" strokeWidth={2.25} aria-hidden="true" />
+              <Dna class="workout-cta-side-icon" strokeWidth={2.25} aria-hidden="true" />
               <span class={workoutSideLabelClass} style={ctaChStyle('STATS', SIDE_CTA_MAX_CH)}>STATS</span>
             </span>
           </button>
@@ -6923,7 +6923,7 @@
                       <span class="leading-none">{panel.usage.workout_history} wrk logs</span>
                     </span>
                     <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                      <BarChart3 class="size-3 shrink-0" aria-hidden="true" />
+                      <Dna class="size-3 shrink-0" aria-hidden="true" />
                       <span class="leading-none">{panel.usage.tracked_stats ?? 0} sts</span>
                     </span>
                     <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
@@ -7441,7 +7441,7 @@
                     <span class="leading-none">{panel.usage.workout_history} wrk logs</span>
                   </span>
                   <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                    <BarChart3 class="size-3 shrink-0" aria-hidden="true" />
+                    <Dna class="size-3 shrink-0" aria-hidden="true" />
                     <span class="leading-none">{panel.usage.tracked_stats ?? 0} sts</span>
                   </span>
                   <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
@@ -7523,7 +7523,7 @@
                   <span class="leading-none boot-panel-placeholder__ghost">0 wrk logs</span>
                 </span>
                 <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
-                  <BarChart3 class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
+                  <Dna class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
                   <span class="leading-none boot-panel-placeholder__ghost">0 sts</span>
                 </span>
                 <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
@@ -8757,7 +8757,7 @@
                     onclick={() => selectDraftStat(stat.id)}
                   >
                     <div class="flex items-center gap-1 min-w-0 flex-1">
-                      <BarChart3 class="size-3 shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
+                      <Dna class="size-3 shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
                       {#if editingStatNameId === stat.id}
                         <input
                           type="text"

@@ -8799,19 +8799,24 @@ function getStatIcon(id: number): typeof Dna {
                   <div class="border-t border-[#1e1e1e] pt-1">
                     {#if statChartData.length === 0}
                       <div class="text-center py-4 text-[10px] text-zinc-600">No history yet.</div>
-                    {:else if chartData.length === 0}
-                      <div class="text-center py-4 text-[10px] text-zinc-600">No data in selected range.</div>
                     {:else}
-                      <div class="flex items-center justify-end gap-1 mb-1">
-                        {#each rangeModes as mode}
+                      <div class="relative grid grid-cols-3 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5 mb-2" role="group" aria-label="Chart range">
+                        <div
+                          class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(33.333%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+                          style="transform: translateX({statRangeMode === '2weeks' ? '0' : statRangeMode === 'ytd' ? 'calc(100% + 4px)' : 'calc(200% + 8px)'})"
+                        ></div>
+                        {#each rangeModes as mode, idx}
                           <button
                             type="button"
-                            class="text-[10px] px-1.5 py-0.5 rounded transition-colors {statRangeMode === mode ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}"
+                            class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.12em] transition-colors {statRangeMode === mode ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
                             onclick={(e) => { e.stopPropagation(); statRangeMode = mode; }}
                           >{mode === '2weeks' ? '2W' : mode === 'ytd' ? 'YTD' : 'ALL'}</button>
                         {/each}
                       </div>
-                      {@const values = chartData.map(d => d.value)}
+                      {#if chartData.length === 0}
+                        <div class="text-center py-4 text-[10px] text-zinc-600">No data in selected range.</div>
+                      {:else}
+                        {@const values = chartData.map(d => d.value)}
                       {@const rawMin = Math.min(...values)}
                       {@const rawMax = Math.max(...values)}
                       {@const targetVal = stat.has_target && stat.target_value != null ? stat.target_value : null}
@@ -8835,8 +8840,8 @@ function getStatIcon(id: number): typeof Dna {
                         ? padT + plotH - ((targetVal - minVal) / range) * plotH
                         : null}
 
-                      <div class="overflow-x-auto flex justify-center">
-                        <svg viewBox="0 0 {chartW} {chartH}" width={chartW} height={chartH} style="max-width: none; height: auto" onclick={(e) => {
+                      <div class="overflow-x-auto flex justify-center" style="height: 227px;">
+                        <svg viewBox="0 0 {chartW} {chartH}" width={chartW} height={chartH} style="max-width: none; height: 195px" onclick={(e) => {
                         e.stopPropagation();
                         const rect = e.currentTarget.getBoundingClientRect();
                         const scaleX = chartW / rect.width;
@@ -8961,6 +8966,7 @@ function getStatIcon(id: number): typeof Dna {
                         </button>
                       </div>
                       {/key}
+                    {/if}
                     {/if}
                   </div>
                 </div>

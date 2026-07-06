@@ -727,6 +727,7 @@ export interface TrackedStat {
 	start_value: number;
 	has_target: boolean;
 	target_value: number | null;
+	icon: number;
 }
 
 export type StatLogSnapshotRow = {
@@ -1317,7 +1318,7 @@ export const db = {
 	async getTrackedStats(): Promise<TrackedStat[]> {
 		const full = await supabase
 			.from("tracked_stats")
-			.select("id, user_id, name, unit, display_order, start_value, has_target, target_value")
+			.select("id, user_id, name, unit, display_order, start_value, has_target, target_value, icon")
 			.order("display_order")
 			.order("created_at");
 
@@ -1431,6 +1432,7 @@ export const db = {
 			start_value?: number;
 			has_target?: boolean;
 			target_value?: number | null;
+			icon?: number;
 		}>,
 	): Promise<TrackedStat[]> {
 		const validationError = validateDraftStats(stats as DraftStatLike[]);
@@ -1445,6 +1447,7 @@ export const db = {
 				start_value: safe.start_value ?? 0,
 				has_target: !!safe.has_target,
 				target_value: safe.has_target ? (safe.target_value ?? 0) : null,
+				icon: safe.icon ?? 0,
 			};
 			const statId = typeof d.id === "string" ? d.id : "";
 			if (
@@ -1471,6 +1474,7 @@ export const db = {
 					display_order: row.display_order,
 				};
 				if (row.id) legacy.id = row.id;
+				if (row.icon != null) legacy.icon = row.icon;
 				return legacy;
 			});
 			const retry = await supabase.rpc("save_tracked_stats", {
@@ -1507,6 +1511,7 @@ export const db = {
 					has_target: (draft.has_target as boolean | undefined) ?? merged.has_target,
 					target_value:
 						(draft.target_value as number | null | undefined) ?? merged.target_value,
+					icon: (draft.icon as number | undefined) ?? merged.icon,
 				},
 				display_order,
 			);

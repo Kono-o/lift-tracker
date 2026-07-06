@@ -95,7 +95,15 @@
     Timer,
     Trash2,
     User,
-    X
+    X,
+    Weight,
+    Heart,
+    Zap,
+    TrendingUp,
+    Activity,
+    Ruler,
+    Scale,
+    Hash,
   } from '@lucide/svelte';
   import AuthBrandIcon from '$lib/components/auth-brand-icons.svelte';
   import {
@@ -122,17 +130,34 @@
   const DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
   const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-  const TEMPLATE_COLORS: string[] = [
-    '#4ADE80', // green (was orange)
-    '#afe64f', // saturated lime (25% less saturated, slightly brighter)
-    '#65c7e9', // sky blue (25% less saturated, slightly brighter)
-    '#9173eb', // blurple (25% less saturated, slightly brighter)
-    '#eb7393', // pink (25% less saturated, slightly brighter)
-  ];
+const TEMPLATE_COLORS: string[] = [
+  '#4ADE80', // green (was orange)
+  '#afe64f', // saturated lime (25% less saturated, slightly brighter)
+  '#65c7e9', // sky blue (25% less saturated, slightly brighter)
+  '#9173eb', // blurple (25% less saturated, slightly brighter)
+  '#eb7393', // pink (25% less saturated, slightly brighter)
+];
 
-  function getTemplateColor(id: number): string {
-    return TEMPLATE_COLORS[Math.max(0, Math.min(4, Math.floor(id || 0)))];
-  }
+function getTemplateColor(id: number): string {
+  return TEMPLATE_COLORS[Math.max(0, Math.min(4, Math.floor(id || 0)))];
+}
+
+const STAT_ICONS = [
+  Dna,
+  Weight,
+  Heart,
+  Zap,
+  TrendingUp,
+  Activity,
+  Timer,
+  Ruler,
+  Scale,
+  Hash,
+];
+
+function getStatIcon(id: number): typeof Dna {
+  return STAT_ICONS[Math.max(0, Math.min(9, Math.floor(id || 0)))];
+}
 
   /** Render GitHub release notes (markdown) to sanitized HTML.
    *  Falls back to basic <br> replacement if no DOM (SSR/build) or DOMPurify not ready.
@@ -255,6 +280,8 @@
   let trackedStats = $state<TrackedStat[]>([]);
   let statLogs = $state<Record<string, Record<string, number>>>({});
   let statLogSnapshots = $state<StatLogSnapshotRow[]>([]);
+  let selectedStatsViewStatId = $state<string | null>(null);
+  let statEditEntry = $state<string | null>(null);
   let draftStats = $state<TrackedStat[]>([]);
   let selectedDraftStatId = $state<string | null>(null);
   let editingStatNameId = $state<string | null>(null);
@@ -2952,42 +2979,14 @@
     );
   }
 
-  let statHistoryGroups = $derived.by(() => {
-    const activeById = new Map(trackedStats.map((s) => [s.id, s]));
-    const groups = new Map<
-      string,
-      {
-        statId: string;
-        name: string;
-        unit: string;
-        isActive: boolean;
-        entries: Array<{ date: string; value: number }>;
-      }
-    >();
-
-    for (const row of statLogSnapshots) {
-      if (row.log_date === REAL_TODAY_STR) continue;
-      let group = groups.get(row.stat_id);
-      if (!group) {
-        const active = activeById.get(row.stat_id);
-        group = {
-          statId: row.stat_id,
-          name: active?.name ?? row.name,
-          unit: active?.unit ?? row.unit,
-          isActive: !!active,
-          entries: [],
-        };
-        groups.set(row.stat_id, group);
-      }
-      group.entries.push({ date: row.log_date, value: row.value });
-    }
-
-    return [...groups.values()]
-      .map((g) => ({
-        ...g,
-        entries: g.entries.sort((a, b) => b.date.localeCompare(a.date)),
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+  let statChartData = $derived.by(() => {
+    if (!selectedStatsViewStatId) return [];
+    const logs = statLogs[selectedStatsViewStatId];
+    if (!logs) return [];
+    return Object.entries(logs)
+      .filter(([date]) => date !== REAL_TODAY_STR)
+      .map(([date, value]) => ({ date, value }))
+      .sort((a, b) => a.date.localeCompare(b.date));
   });
 
   function enterStatsView() {
@@ -3058,6 +3057,7 @@
         start_value: 0,
         has_target: false,
         target_value: null,
+        icon: 0,
       },
     ];
     selectDraftStat(tempId);
@@ -8681,7 +8681,7 @@
           type="button"
           class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
           title="Go back"
-          onclick={exitStatsView}
+          onclick={() => { selectedStatsViewStatId = null; exitStatsView(); }}
         >
           <ArrowLeft class="size-4" />
         </button>
@@ -8696,7 +8696,7 @@
         </button>
       </div>
 
-      {#if trackedStats.length === 0 && statHistoryGroups.length === 0}
+      {#if trackedStats.length === 0}
         <div class="text-center py-6 space-y-3">
           <div class="text-xs text-zinc-500">No stats defined yet.</div>
           <button
@@ -8708,19 +8708,34 @@
           </button>
         </div>
       {:else}
-        {#if trackedStats.length > 0}
-          <div class="flex flex-col gap-1 min-w-0">
-            {#each trackedStats as stat (stat.id)}
-              <div class="flex items-stretch gap-1 h-8 min-w-0">
-                <div class="flex-1 min-w-0 h-8 px-1.5 border border-[#1e1e1e] rounded bg-[#0d0d0d] text-xs flex items-center">
-                  <span class="font-medium truncate leading-none text-zinc-300">{stat.name}</span>
+        <div class="flex flex-col gap-1.5 min-w-0">
+          {#each trackedStats as stat (stat.id)}
+            {@const isSelected = selectedStatsViewStatId === stat.id}
+            {@const IconComponent = getStatIcon(stat.icon)}
+            <div
+              class="rounded-lg border transition-all cursor-pointer"
+              class:bg-[#1a1a1a]={isSelected}
+              class:bg-[#0d0d0d]={!isSelected}
+              style="border-color: {isSelected ? '#2a2a2a' : '#1e1e1e'}"
+              onclick={() => { selectedStatsViewStatId = selectedStatsViewStatId === stat.id ? null : stat.id; }}
+            >
+              <div class="flex items-stretch gap-1.5 p-1.5">
+                <div class="w-8 h-8 shrink-0 flex items-center justify-center rounded border border-[#1e1e1e] bg-black" style={isSelected ? 'border-color: #2a2a2a' : ''}>
+                  <IconComponent class="size-4 text-zinc-300" />
+                </div>
+                <div class="flex-1 min-w-0 flex items-center">
+                  <span class="font-medium text-xs truncate leading-none text-zinc-300">{stat.name}</span>
+                  {#if stat.unit}
+                    <span class="ml-1 text-[9px] uppercase text-zinc-600 shrink-0 leading-none">{stat.unit}</span>
+                  {/if}
                 </div>
                 <input
                   type="text"
                   inputmode="decimal"
                   autocomplete="off"
                   placeholder={String(stat.start_value || 0)}
-                  class="prop-num-input w-[4.5rem] shrink-0 h-8 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
+                  class="prop-num-input w-16 shrink-0 h-8 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
+                  class:border-zinc-400={isSelected}
                   use:clampedNumericProp={{
                     kind: 'statLog',
                     getValue: () => getStatTodayInputValue(stat.id),
@@ -8730,75 +8745,120 @@
                   onkeydown={(e) => {
                     if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
                   }}
+                  onclick={(e) => e.stopPropagation()}
                 />
-                {#if stat.unit}
-                  <span class="shrink-0 h-8 flex items-center text-[10px] font-medium uppercase text-zinc-400">{stat.unit}</span>
-                {/if}
               </div>
-            {/each}
-          </div>
-        {/if}
 
-        {#if statHistoryGroups.length > 0}
-          <div class="space-y-2 {trackedStats.length > 0 ? 'pt-2 border-t border-[#1e1e1e]' : ''}">
-            <div class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none text-center">History</div>
-            {#each statHistoryGroups as group (group.statId)}
-              <div class="space-y-1">
-                <div class="flex items-center gap-1 min-w-0 px-0.5">
-                  <span class="text-[10px] font-medium uppercase truncate text-zinc-400">{group.name}</span>
-                  {#if group.unit}
-                    <span class="text-[9px] uppercase text-zinc-600 shrink-0">{group.unit}</span>
-                  {/if}
-                  {#if !group.isActive}
-                    <span class="text-[8px] uppercase tracking-[0.08em] text-zinc-600 shrink-0">archived</span>
-                  {/if}
-                </div>
-                <div class="border border-[#1e1e1e] rounded overflow-hidden text-xs">
-                  {#each group.entries as entry (entry.date)}
-                    <div class="flex items-center border-b border-[#1e1e1e] last:border-b-0 bg-[#0d0d0d] hover:bg-[#141414]">
-                      <div class="w-24 px-2 py-1 font-mono text-zinc-400 border-r border-[#1e1e1e] text-[10px]">{entry.date}</div>
-                      <input
-                        type="text"
-                        inputmode="decimal"
-                        autocomplete="off"
-                        class="prop-num-input flex-1 bg-transparent px-2 py-1 text-right text-white outline-none text-xs"
-                        use:clampedNumericProp={{
-                          kind: 'statLog',
-                          getValue: () => statLogs[group.statId]?.[entry.date] ?? 0,
-                          setValue: (v) => {
-                            const prev = statLogs[group.statId] ?? {};
-                            statLogs = {
-                              ...statLogs,
-                              [group.statId]: { ...prev, [entry.date]: v },
-                            };
-                          },
-                        }}
-                        onblur={() =>
-                          persistStatLogEntry(
-                            group.statId,
-                            entry.date,
-                            statLogs[group.statId]?.[entry.date] ?? 0,
-                          )}
-                        onkeydown={(e) => {
-                          if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
-                        }}
-                      />
-                      {#if group.unit}
-                        <span class="px-2 text-[9px] uppercase text-zinc-500 shrink-0">{group.unit}</span>
+              {#if isSelected}
+                {@const sid = selectedStatsViewStatId as string}
+                <div class="px-1.5 pb-1.5">
+                  <div class="border-t border-[#1e1e1e] pt-1.5">
+                    {#if statChartData.length === 0}
+                      <div class="text-center py-4 text-[10px] text-zinc-600">No history yet.</div>
+                    {:else}
+                      {@const values = statChartData.map(d => d.value)}
+                      {@const minVal = Math.min(...values)}
+                      {@const maxVal = Math.max(...values)}
+                      {@const range = maxVal - minVal || 1}
+                      {@const chartW = 280}
+                      {@const chartH = 120}
+                      {@const padL = 28}
+                      {@const padR = 8}
+                      {@const padT = 8}
+                      {@const padB = 20}
+                      {@const plotW = chartW - padL - padR}
+                      {@const plotH = chartH - padT - padB}
+
+                      <svg viewBox="0 0 {chartW} {chartH}" class="w-full h-auto" style="max-height: 130px">
+                        <polyline
+                          fill="none"
+                          stroke="#4ADE80"
+                          stroke-width="1.5"
+                          stroke-linejoin="round"
+                          stroke-linecap="round"
+                          points={statChartData.map((d, i) => {
+                            const x = padL + (i / Math.max(statChartData.length - 1, 1)) * plotW;
+                            const y = padT + plotH - ((d.value - minVal) / range) * plotH;
+                            return `${x},${y}`;
+                          }).join(' ')}
+                        />
+                        {#each statChartData as d, i}
+                          {@const x = padL + (i / Math.max(statChartData.length - 1, 1)) * plotW}
+                          {@const y = padT + plotH - ((d.value - minVal) / range) * plotH}
+                          <g
+                            role="button"
+                            tabindex="0"
+                            style="cursor: pointer"
+                            onclick={(e) => { e.stopPropagation(); statEditEntry = d.date; }}
+                            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); statEditEntry = d.date; } }}
+                          >
+                            <circle cx={x} cy={y} r="3" fill="#4ADE80" stroke="#141414" stroke-width="1.5" />
+                          </g>
+                        {/each}
+                        <text x={padL} y={padT + plotH + 14} class="text-[8px]" fill="#666" font-size="8">{statChartData[0]?.date?.slice(5) ?? ''}</text>
+                        <text x={chartW - padR} y={padT + plotH + 14} class="text-[8px]" fill="#666" font-size="8" text-anchor="end">{statChartData[statChartData.length - 1]?.date?.slice(5) ?? ''}</text>
+                        <text x={padL - 2} y={padT + 10} class="text-[8px]" fill="#666" font-size="8" text-anchor="end">{maxVal.toFixed(1)}</text>
+                        <text x={padL - 2} y={padT + plotH} class="text-[8px]" fill="#666" font-size="8" text-anchor="end">{minVal.toFixed(1)}</text>
+                      </svg>
+
+                      {#if statEditEntry}
+                        {@const editDate = statEditEntry as string}
+                        {@const editVal = statLogs[sid]?.[editDate] ?? 0}
+                        <div class="flex items-center gap-1.5 mt-1.5 border-t border-[#1e1e1e] pt-1.5" onclick={(e) => e.stopPropagation()}>
+                          <span class="text-[9px] text-zinc-500 font-mono shrink-0">{editDate}</span>
+                          <input
+                            type="text"
+                            inputmode="decimal"
+                            autocomplete="off"
+                            class="prop-num-input flex-1 h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none min-w-0"
+                            use:clampedNumericProp={{
+                              kind: 'statLog',
+                              getValue: () => statLogs[sid]?.[editDate] ?? 0,
+                              setValue: (v) => {
+                                const prev = statLogs[sid] ?? {};
+                                statLogs = {
+                                  ...statLogs,
+                                  [sid]: { ...prev, [editDate]: v },
+                                };
+                              },
+                            }}
+                            onblur={() => {
+                              persistStatLogEntry(sid, editDate, statLogs[sid]?.[editDate] ?? 0);
+                              statEditEntry = null;
+                            }}
+                            onkeydown={(e) => {
+                              if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+                              if (e.key === 'Escape') { statEditEntry = null; }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 transition-colors"
+                            onclick={() => {
+                              deleteStatLogEntry(sid, editDate);
+                              statEditEntry = null;
+                            }}
+                            title="Delete entry"
+                          >
+                            <Trash2 class="size-3" />
+                          </button>
+                          <button
+                            type="button"
+                            class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-[#1e1e1e] bg-[#0d0d0d] text-zinc-400 hover:text-white transition-colors"
+                            onclick={() => { statEditEntry = null; }}
+                            title="Cancel"
+                          >
+                            <X class="size-3" />
+                          </button>
+                        </div>
                       {/if}
-                      <button
-                        type="button"
-                        class="px-2 py-1 text-red-400 hover:text-red-300 text-[10px] font-bold"
-                        onclick={() => deleteStatLogEntry(group.statId, entry.date)}
-                        title="Delete entry"
-                      >×</button>
-                    </div>
-                  {/each}
+                    {/if}
+                  </div>
                 </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
+              {/if}
+            </div>
+          {/each}
+        </div>
       {/if}
     </div>
 
@@ -8931,6 +8991,23 @@
                   {@const stat = draftStatById(statId)}
                   {#if stat}
                     {@const hasTarget = !!draftStatById(statId)?.has_target}
+                    {@const statIconId = (draftStatById(statId)?.icon ?? 0)}
+                    {@const StatIcon = getStatIcon(statIconId)}
+                    <div class="flex justify-center mb-1.5">
+                      <button
+                        type="button"
+                        class="w-9 h-9 rounded-lg border flex items-center justify-center transition-all group hover:border-zinc-400"
+                        style="border-color: #2a2a2a"
+                        onclick={() => {
+                          const next = (statIconId + 1) % 10;
+                          patchDraftStat(statId, { icon: next });
+                          void persistTrackedStatsNow();
+                        }}
+                        title="Click to cycle stat icon"
+                      >
+                        <StatIcon class="size-5 text-zinc-300 transition-all group-active:scale-90" />
+                      </button>
+                    </div>
                     <div class="grid grid-cols-[minmax(0,1.55fr)_minmax(0,0.85fr)] gap-x-1 gap-y-2 text-[9px]">
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Start</span>

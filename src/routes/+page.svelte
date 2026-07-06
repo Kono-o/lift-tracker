@@ -8803,35 +8803,38 @@ function getStatIcon(id: number): typeof Dna {
                       {@const editDate = statEditEntry ?? REAL_TODAY_STR}
                       <div class="flex items-center gap-2 mb-3" onclick={(e) => e.stopPropagation()}>
                         {#key editDate}
-                          <div class="bg-[#060606] border border-[#1e1e1e] rounded flex items-center gap-1.5 px-2 flex-1 min-w-0" style="height:34px;" onclick={(e) => e.stopPropagation()}>
-                            <span class="text-[9px] text-zinc-500 font-mono leading-none whitespace-nowrap uppercase tracking-wide shrink-0 w-20">{shortDateLabel(editDate)}</span>
-                            <input
-                              type="text"
-                              inputmode="decimal"
-                              autocomplete="off"
-                              class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-none text-right text-xs font-extrabold text-white outline-none px-2"
-                              use:clampedNumericProp={{
-                                kind: 'statLog',
-                                getValue: () => statLogs[sid]?.[editDate] ?? 0,
-                                setValue: (v) => {
-                                  const prev = statLogs[sid] ?? {};
-                                  statLogs = {
-                                    ...statLogs,
-                                    [sid]: { ...prev, [editDate]: v },
-                                  };
-                                },
-                              }}
-                              onblur={() => {
-                                persistStatLogEntry(sid, editDate, statLogs[sid]?.[editDate] ?? 0);
-                              }}
-                              onkeydown={(e) => {
-                                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
-                                if (e.key === 'Escape') { statEditEntry = REAL_TODAY_STR; }
-                              }}
-                            />
+                          <div class="bg-[#060606] border border-[#1e1e1e] rounded flex items-center gap-3 px-3 flex-1 min-w-0" style="height:34px;" onclick={(e) => e.stopPropagation()}>
+                            <div class="flex items-center justify-center h-full w-20 text-[9px] text-zinc-500 font-mono uppercase tracking-wide">{shortDateLabel(editDate)}</div>
+                            <div class="flex-1 flex items-center justify-center h-full">
+                              <input
+                                type="text"
+                                inputmode="decimal"
+                                autocomplete="off"
+                                class="prop-num-input w-full h-7 bg-transparent border-none text-center text-sm font-semibold text-white outline-none"
+                                use:clampedNumericProp={{
+                                  kind: 'statLog',
+                                  getValue: () => statLogs[sid]?.[editDate] ?? 0,
+                                  setValue: (v) => {
+                                    const prev = statLogs[sid] ?? {};
+                                    statLogs = {
+                                      ...statLogs,
+                                      [sid]: { ...prev, [editDate]: v },
+                                    };
+                                  },
+                                }}
+                                onblur={() => {
+                                  persistStatLogEntry(sid, editDate, statLogs[sid]?.[editDate] ?? 0);
+                                }}
+                                onkeydown={(e) => {
+                                  if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+                                  if (e.key === 'Escape') { statEditEntry = REAL_TODAY_STR; }
+                                }}
+                              />
+                            </div>
                             <button
                               type="button"
-                              class="shrink-0 rounded flex items-center justify-center text-zinc-400 hover:bg-red-700/10 hover:text-red-400 transition-colors" style="width:34px;height:34px;"
+                              class="shrink-0 flex items-center justify-center rounded text-zinc-400 hover:bg-red-700/10 hover:text-red-400 transition-colors"
+                              style="width:34px; height:34px;"
                               onclick={() => {
                                 deleteStatLogEntry(sid, editDate);
                                 if (editDate !== REAL_TODAY_STR) statEditEntry = REAL_TODAY_STR;
@@ -8839,7 +8842,7 @@ function getStatIcon(id: number): typeof Dna {
                               aria-label="Delete entry"
                               title="Delete entry"
                             >
-                              <Trash2 class="size-4" />
+                              <Trash2 class="size-3.5" />
                             </button>
                           </div>
                         {/key}

@@ -8926,21 +8926,33 @@ function getStatIcon(id: number): typeof Dna {
                             {@const y1 = padT + plotH - ((d1.value - minVal) / range) * plotH}
                             {@const gapDays = idx1 - idx0}
                             {#if gapDays > 1}
-                              <!-- Draw dotted vertical markers for each missing day (full gap width reflects spacingX * gapDays) -->
-                              {#each Array(gapDays - 1) as _, g}
-                                {@const xGap = padL + (idx0 + g + 1) * spacingX}
-                                <line x1={xGap} y1={padT} x2={xGap} y2={padT + plotH} stroke="#444" stroke-width="1" stroke-dasharray="2,3" opacity="0.6" />
-                              {/each}
+                              {@const missingCount = gapDays - 1}
+                              {@const leftIdx = idx0 + 1}
+                              {@const rightIdx = idx1 - 1}
+                              {@const xLeft = padL + leftIdx * spacingX}
+                              {@const xRight = padL + rightIdx * spacingX}
+                              {#if missingCount === 1}
+                                <!-- Single missing day: draw a single dotted red line -->
+                                <line x1={xLeft} y1={padT} x2={xLeft} y2={padT + plotH} stroke="#ef4444" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
+                              {:else}
+                                {@const rectX = xLeft - spacingX/2}
+                                {@const rectW = (rightIdx - leftIdx + 1) * spacingX}
+                                <!-- translucent red fill for the missing area -->
+                                <rect x={rectX} y={padT} width={rectW} height={plotH} fill="#ef4444" fill-opacity="0.06" />
+                                <!-- dotted red borders at the edges -->
+                                <line x1={xLeft} y1={padT} x2={xLeft} y2={padT + plotH} stroke="#ef4444" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
+                                <line x1={xRight} y1={padT} x2={xRight} y2={padT + plotH} stroke="#ef4444" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
+                              {/if}
                             {:else}
                               {#if targetVal !== null && (d0.value > targetVal) !== (d1.value > targetVal)}
                                 {@const t = Math.abs((targetVal - d0.value) / (d1.value - d0.value))}
                                 {@const midX = x0 + t * (x1 - x0)}
                                 {@const midY = y0 + t * (y1 - y0)}
                                 {@const isD0Above = d0.value > targetVal}
-                                <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={isD0Above ? '#064e3b' : '#4ADE80'} stroke-width="2" stroke-linecap="round" />
-                                <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={isD0Above ? '#4ADE80' : '#064e3b'} stroke-width="2" stroke-linecap="round" />
+                                <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={isD0Above ? '#022c22' : '#064e3b'} stroke-width="2" stroke-linecap="round" />
+                                <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={isD0Above ? '#064e3b' : '#022c22'} stroke-width="2" stroke-linecap="round" />
                               {:else}
-                                {@const segColor = targetVal !==null && (d0.value > targetVal || d1.value > targetVal) ? '#064e3b' : '#4ADE80'}
+                                {@const segColor = targetVal !== null && (d0.value > targetVal && d1.value > targetVal) ? '#022c22' : '#064e3b'}
                                 <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={segColor} stroke-width="2" stroke-linecap="round" />
                               {/if}
                             {/if}
@@ -8952,7 +8964,7 @@ function getStatIcon(id: number): typeof Dna {
                             {@const y = padT + plotH - ((d.value - minVal) / range) * plotH}
                             {@const isLatest = d.date === chartData[chartData.length - 1].date}
                             {@const isPtSelected = statEditEntry === d.date}
-                            {@const ptColor = targetVal !== null && d.value > targetVal ? '#064e3b' : '#4ADE80'}
+                            {@const ptColor = targetVal !== null && d.value > targetVal ? '#022c22' : '#064e3b'}
                             {#if isPtSelected}
                               <line x1={x} y1={padT} x2={x} y2={padT + plotH} stroke="#fff" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.5" />
                             {/if}

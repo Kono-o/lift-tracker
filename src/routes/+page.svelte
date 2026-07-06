@@ -8840,8 +8840,8 @@ function getStatIcon(id: number): typeof Dna {
                         ? padT + plotH - ((targetVal - minVal) / range) * plotH
                         : null}
 
-                      <div class="overflow-x-auto flex justify-center" style="height: 227px;">
-                        <svg viewBox="0 0 {chartW} {chartH}" width={chartW} height={chartH} style="max-width: none; height: 195px" onclick={(e) => {
+                      <div class="overflow-x-auto flex justify-center min-h-0" style="height: 227px;">
+                        <svg viewBox="0 0 {chartW} {chartH}" width={chartW} height={chartH} preserveAspectRatio="none" style="max-width: none; height: 195px; width: auto;" onclick={(e) => {
                         e.stopPropagation();
                         const rect = e.currentTarget.getBoundingClientRect();
                         const scaleX = chartW / rect.width;

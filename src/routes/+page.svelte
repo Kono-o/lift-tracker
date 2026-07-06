@@ -8914,17 +8914,26 @@ function getStatIcon(id: number): typeof Dna {
                             {@const y0 = padT + plotH - ((d0.value - minVal) / range) * plotH}
                             {@const x1 = padL + (i + 1) * spacingX}
                             {@const y1 = padT + plotH - ((d1.value - minVal) / range) * plotH}
-                            {#if targetVal !== null && (d0.value > targetVal) !== (d1.value > targetVal)}
-                              {@const t = Math.abs((targetVal - d0.value) / (d1.value - d0.value))}
-                              {@const midX = x0 + t * (x1 - x0)}
-                              {@const midY = y0 + t * (y1 - y0)}
-                              {@const isD0Above = d0.value > targetVal}
-                              <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={isD0Above ? '#fbbf24' : '#4ADE80'} stroke-width="2" stroke-linecap="round" />
-                              <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={isD0Above ? '#4ADE80' : '#fbbf24'} stroke-width="2" stroke-linecap="round" />
+                            {@const d0Date = new Date(d0.date + 'T00:00:00')}
+                            {@const d1Date = new Date(d1.date + 'T00:00:00')}
+                            {@const gapDays = Math.round((d1Date.getTime() - d0Date.getTime()) / (24 * 60 * 60 * 1000))}
+                            {#if gapDays > 1}
+                              {@const xMid = (x0 + x1) / 2}
+                              <!-- Don't draw a connecting line across missing days. Show a dotted vertical marker to indicate unlogged area. -->
+                              <line x1={xMid} y1={padT} x2={xMid} y2={padT + plotH} stroke="#444" stroke-width="1" stroke-dasharray="2,3" opacity="0.6" />
                             {:else}
-                              {@const segColor = targetVal !== null && (d0.value > targetVal || d1.value > targetVal) ? '#fbbf24' : '#4ADE80'}
-                              <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={segColor} stroke-width="2" stroke-linecap="round" />
+                              {#if targetVal !== null && (d0.value > targetVal) !== (d1.value > targetVal)}
+                                {@const t = Math.abs((targetVal - d0.value) / (d1.value - d0.value))}
+                                {@const midX = x0 + t * (x1 - x0)}
+                                {@const midY = y0 + t * (y1 - y0)}
+                                {@const isD0Above = d0.value > targetVal}
+                                <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={isD0Above ? '#fbbf24' : '#4ADE80'} stroke-width="2" stroke-linecap="round" />
+                                <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={isD0Above ? '#4ADE80' : '#fbbf24'} stroke-width="2" stroke-linecap="round" />
+                              {:else}
+                                {@const segColor = targetVal !== null && (d0.value > targetVal || d1.value > targetVal) ? '#fbbf24' : '#4ADE80'}
+                                <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={segColor} stroke-width="2" stroke-linecap="round" />
                               {/if}
+                            {/if}
                             {/each}
                             {#each chartData as d, i}
                             {@const x = padL + i * spacingX}

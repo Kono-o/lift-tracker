@@ -261,7 +261,28 @@
   let statSaveError = $state<string | null>(null);
   let statDraftSaveInFlight = false;
   let statDraggedIndex = $state<number | null>(null);
+  let statDragOverIndex = $state<number | null>(null);
   let statRowDragged = false;
+  let statListBody = $state<HTMLDivElement | undefined>();
+
+  const ROW_TOTAL = 36;
+  function dragShift(draggedIdx: number | null, overIdx: number | null, itemIdx: number): number {
+      if (draggedIdx == null || overIdx == null || draggedIdx === overIdx) return 0;
+      if (itemIdx === draggedIdx) return 0;
+      if (draggedIdx < overIdx) {
+          if (itemIdx > draggedIdx && itemIdx <= overIdx) return -ROW_TOTAL;
+      } else {
+          if (itemIdx >= overIdx && itemIdx < draggedIdx) return ROW_TOTAL;
+      }
+      return 0;
+  }
+
+  function computeRowIndex(e: DragEvent, container: HTMLElement, maxIndex: number, firstRowOffset: number = 0): number {
+    const rect = container.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    const idx = Math.floor((y - firstRowOffset) / ROW_TOTAL);
+    return Math.max(0, Math.min(maxIndex, idx));
+  }
   let currentView = $state<'track' | 'swap_template' | 'edit_template' | 'stats' | 'edit_stats'>('track');
   let templateEditorReturnView = $state<'track' | 'swap_template'>('track');
 
@@ -2186,7 +2207,7 @@
    */
   function isSetUnlockedForLogging(exerciseId: string, setIndex: number, isTimeEx: boolean): boolean {
     if (!isViewingToday || !useLiveSessionTracking()) return true;
-    if (isSetLoggedInLive(exerciseId, setIndex, isTimeEx)) return false;
+    if (isSetLoggedInLive(exerciseId, setIndex, isTimeEx)) return true;
     for (let prev = 0; prev < setIndex; prev++) {
       if (!isSetLoggedInLive(exerciseId, prev, isTimeEx)) return false;
     }
@@ -2199,6 +2220,7 @@
    */
   function isFutureSetLockedByOrder(exerciseId: string, setIndex: number, isTimeEx: boolean): boolean {
     if (!isViewingToday || !useLiveSessionTracking()) return false;
+    if (isSetLoggedInLive(exerciseId, setIndex, isTimeEx)) return false;
     for (let prev = 0; prev < setIndex; prev++) {
       if (!isSetLoggedInLive(exerciseId, prev, isTimeEx)) return true;
     }
@@ -2397,9 +2419,10 @@
   }
 
   function writeActiveSessionBackup() {
-    if (typeof sessionStorage === 'undefined') return;
+    if (typeof localStorage === 'undefined') return;
     if (workoutState !== 'active' || !isViewingToday) {
-      sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+      localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+      if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
       return;
     }
     const template = activeWorkoutTemplate ?? activeTemplate;
@@ -2419,13 +2442,21 @@
         targetSeconds: restCurrentTargetSeconds,
       } : null,
     };
-    sessionStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(payload));
+    localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(payload));
+    if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
   }
 
   function readActiveSessionBackup(): ActiveSessionBackup | null {
-    if (typeof sessionStorage === 'undefined') return null;
+    if (typeof localStorage === 'undefined') return null;
     try {
-      const raw = sessionStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+      let raw = localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+      if (!raw && typeof sessionStorage !== 'undefined') {
+        raw = sessionStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+        if (raw) {
+          localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, raw);
+          sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+        }
+      }
       if (!raw) return null;
       const parsed = JSON.parse(raw) as ActiveSessionBackup;
       if (parsed?.date !== REAL_TODAY_STR) return null;
@@ -2436,8 +2467,8 @@
   }
 
   function clearActiveSessionBackup() {
-    if (typeof sessionStorage === 'undefined') return;
-    sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+    if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
   }
 
   function countLoggedSets(
@@ -2666,7 +2697,7 @@
 
     workoutProgressSaveInFlight = true;
     try {
-      const refreshed = await db.saveWorkoutProgress(template, perf, workoutDuration, startedAt);
+      const refreshed = await db.saveWorkoutProgress(template, perf, workoutElapsedSeconds(), startedAt);
       if (
         saveGen !== workoutProgressSaveGen ||
         workoutState !== 'active' ||
@@ -3086,6 +3117,7 @@
 
   function handleStatDragStart(e: DragEvent, index: number) {
     statDraggedIndex = index;
+    statDragOverIndex = index;
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', index.toString());
@@ -3095,11 +3127,20 @@
   function handleStatDragOver(e: DragEvent) {
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    if (!statListBody) return;
+    const idx = computeRowIndex(e, statListBody, draftStats.length - 1);
+    if (statDragOverIndex !== idx) statDragOverIndex = idx;
   }
 
-  function handleStatDrop(e: DragEvent, targetIndex: number) {
+  function handleStatDrop(e: DragEvent) {
     e.preventDefault();
-    if (statDraggedIndex === null || statDraggedIndex === targetIndex) {
+    statDragOverIndex = null;
+    if (statDraggedIndex === null || !statListBody) {
+      statDraggedIndex = null;
+      return;
+    }
+    const targetIndex = computeRowIndex(e, statListBody, draftStats.length - 1);
+    if (statDraggedIndex === targetIndex) {
       statDraggedIndex = null;
       return;
     }
@@ -3114,6 +3155,7 @@
   function handleStatDragEnd() {
     const wasDragging = statDraggedIndex !== null;
     statDraggedIndex = null;
+    statDragOverIndex = null;
     if (wasDragging) {
       statRowDragged = true;
       setTimeout(() => {
@@ -3818,7 +3860,10 @@
     })();
 
     const onPageHide = () => {
-      if (document.visibilityState === 'hidden') flushWorkoutProgressSave();
+      if (document.visibilityState === 'hidden') {
+        writeActiveSessionBackup();
+        flushWorkoutProgressSave();
+      }
     };
     document.addEventListener('visibilitychange', onPageHide);
 
@@ -3921,7 +3966,11 @@
     deleteTemplateProgress = 0;
     eraseProgress = 0;
     justFinishedStatus = null;
-    workoutTimer = setInterval(() => { workoutDuration++; }, 1000);
+    workoutTimer = setInterval(() => {
+      if (workoutStartedAt != null) {
+        workoutDuration = Math.max(0, Math.round((Date.now() - workoutStartedAt) / 1000));
+      }
+    }, 1000);
     beginHeaderTimerFadeIn();
     writeActiveSessionBackup();
     void persistWorkoutProgressNow();
@@ -4207,7 +4256,9 @@
   function startExerciseCountdownInterval() {
     clearInterval(countdownTimer);
     countdownTimer = setInterval(() => {
-      countdownSeconds++;
+      if (timerStartTimestamp != null) {
+        countdownSeconds = Math.max(0, Math.floor((Date.now() - timerStartTimestamp) / 1000));
+      }
     }, 1000);
   }
 
@@ -4313,6 +4364,9 @@
       countdownRunning = false;
     } else {
       countdownRunning = true;
+      if (timerStartTimestamp != null) {
+        countdownSeconds = Math.max(0, Math.floor((Date.now() - timerStartTimestamp) / 1000));
+      }
       timerStartTimestamp = Date.now() - countdownSeconds * 1000;
       startExerciseCountdownInterval();
       startExerciseVisualInterval();
@@ -5608,6 +5662,33 @@
     }
   }
 
+  // Timer pause/resume: save accurate state on background and recalculate from wall-clock on resume.
+  // This ensures timers don't drift when the app is backgrounded or the process is suspended.
+  if (isNativeApp()) {
+    const w = (typeof window !== 'undefined' ? (window as any) : {}) as any;
+    if (!w.__LIFT_TIMER_PAUSE_RESUME_LISTENER) {
+      w.__LIFT_TIMER_PAUSE_RESUME_LISTENER = true;
+      App.addListener('pause', () => {
+        writeActiveSessionBackup();
+        flushWorkoutProgressSave();
+      }).catch(() => {});
+      App.addListener('resume', () => {
+        if (workoutState === 'active') {
+          if (workoutStartedAt != null) {
+            workoutDuration = Math.max(0, Math.round((Date.now() - workoutStartedAt) / 1000));
+          }
+          if (activeTimerExerciseId != null && timerStartTimestamp != null && countdownRunning) {
+            countdownSeconds = Math.max(0, Math.floor((Date.now() - timerStartTimestamp) / 1000));
+          }
+          if (activeRestExerciseId != null && restTimerStartTimestamp != null && restCountdownRunning) {
+            const elapsed = Math.floor((Date.now() - restTimerStartTimestamp) / 1000);
+            restCountdownSeconds = Math.max(0, restCurrentTargetSeconds - elapsed);
+          }
+        }
+      }).catch(() => {});
+    }
+  }
+
   // One-time resume listener for a smoother permission flow:
   // After the user grants "Install unknown apps" in settings and returns to the app,
   // we automatically re-invoke startUpdateInstall(). Because we now do the permission
@@ -6486,25 +6567,37 @@
 
   // Drag and drop reorder (replaces arrows)
   let draggedIndex = $state<number | null>(null);
+  let dragOverIndex = $state<number | null>(null);
+  let exerciseListBody = $state<HTMLDivElement | undefined>();
 
   function handleDragStart(e: DragEvent, index: number) {
     draggedIndex = index;
+    dragOverIndex = index;
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', index.toString());
     }
   }
 
-  function handleDragOver(e: DragEvent) {
+  function handleExerciseDragOver(e: DragEvent) {
     e.preventDefault();
     if (e.dataTransfer) {
       e.dataTransfer.dropEffect = 'move';
     }
+    if (!exerciseListBody) return;
+    const idx = computeRowIndex(e, exerciseListBody, draftExercises.length - 1);
+    if (dragOverIndex !== idx) dragOverIndex = idx;
   }
 
-  function handleDrop(e: DragEvent, targetIndex: number) {
+  function handleExerciseDrop(e: DragEvent) {
     e.preventDefault();
-    if (draggedIndex === null || draggedIndex === targetIndex) {
+    dragOverIndex = null;
+    if (draggedIndex === null || !exerciseListBody) {
+      draggedIndex = null;
+      return;
+    }
+    const targetIndex = computeRowIndex(e, exerciseListBody, draftExercises.length - 1);
+    if (draggedIndex === targetIndex) {
       draggedIndex = null;
       return;
     }
@@ -6521,6 +6614,7 @@
   function handleDragEnd() {
     const wasDragging = draggedIndex !== null;
     draggedIndex = null;
+    dragOverIndex = null;
     if (wasDragging) {
       exerciseRowDragged = true;
       setTimeout(() => {
@@ -6531,10 +6625,13 @@
 
   // Drag and drop reorder for the templates list in the routine builder
   let templateDraggedIndex = $state<number | null>(null);
+  let templateDragOverIndex = $state<number | null>(null);
   let templateRowDragged = $state(false);
+  let templateListBody = $state<HTMLDivElement | undefined>();
 
   function handleTemplateDragStart(e: DragEvent, index: number) {
     templateDraggedIndex = index;
+    templateDragOverIndex = index;
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', index.toString());
@@ -6546,11 +6643,20 @@
     if (e.dataTransfer) {
       e.dataTransfer.dropEffect = 'move';
     }
+    if (!templateListBody) return;
+    const idx = computeRowIndex(e, templateListBody, templates.length - 1);
+    if (templateDragOverIndex !== idx) templateDragOverIndex = idx;
   }
 
-  function handleTemplateDrop(e: DragEvent, targetIndex: number) {
+  function handleTemplateDrop(e: DragEvent) {
     e.preventDefault();
-    if (templateDraggedIndex === null || templateDraggedIndex === targetIndex) {
+    templateDragOverIndex = null;
+    if (templateDraggedIndex === null || !templateListBody) {
+      templateDraggedIndex = null;
+      return;
+    }
+    const targetIndex = computeRowIndex(e, templateListBody, templates.length - 1);
+    if (templateDraggedIndex === targetIndex) {
       templateDraggedIndex = null;
       return;
     }
@@ -6581,6 +6687,7 @@
   function handleTemplateDragEnd() {
     const wasDragging = templateDraggedIndex !== null;
     templateDraggedIndex = null;
+    templateDragOverIndex = null;
     if (wasDragging) {
       templateRowDragged = true;
       setTimeout(() => {
@@ -8451,6 +8558,7 @@
             </button>
           </div>
 
+          <div class="flex flex-col gap-1" role="list" bind:this={templateListBody} ondrop={handleTemplateDrop} ondragover={handleTemplateDragOver}>
           {#each templates as template, index (template.id)}
             {@const isEmpty = template.exercises.length === 0}
             {@const rawSelectedId = builderAssignments[builderEditingDay] ?? null}
@@ -8458,22 +8566,20 @@
             {@const isRealAssigned = builderAssignedTemplateId === template.id}
             {@const tColor = getTemplateColor(template.color ?? 0)}
             <div
-              class="flex items-stretch gap-1 h-8"
-              ondragover={handleTemplateDragOver}
-              ondrop={(e) => handleTemplateDrop(e, index)}
+              class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing"
+              style="transform: translateY({dragShift(templateDraggedIndex, templateDragOverIndex, index)}px); transition: transform 150ms ease; {templateDraggedIndex === index ? 'opacity: 0.25;' : ''}"
+              draggable="true"
+              ondragstart={(e) => handleTemplateDragStart(e, index)}
+              ondragend={handleTemplateDragEnd}
             >
               <button
                 type="button"
-                draggable="true"
-                class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none cursor-grab active:cursor-grabbing transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
+                class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
                 style={isSelected ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white;` : ''}
-                title="Drag to reorder — click to select"
                 onclick={() => {
                   if (templateRowDragged) return;
                   assignTemplateToBuilderDay(template.id);
                 }}
-                ondragstart={(e) => handleTemplateDragStart(e, index)}
-                ondragend={handleTemplateDragEnd}
               >
                 {index + 1}
               </button>
@@ -8552,6 +8658,7 @@
               </div>
             </div>
           {/each}
+          </div>
         </div>
 
         <button
@@ -8722,7 +8829,7 @@
           </div>
 
           <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
-            <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0">
+            <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0" role="list" bind:this={statListBody} ondrop={handleStatDrop} ondragover={handleStatDragOver}>
               {#if draftStats.length === 0}
                 <div class="text-center py-3 border border-dashed border-[#1e1e1e] rounded text-[10px] text-zinc-500">
                   No stats yet.<br />
@@ -8732,22 +8839,20 @@
               {#each draftStats as stat, index (stat.id)}
                 {@const isSelected = selectedDraftStatId === stat.id}
                 <div
-                  class="flex items-stretch gap-1 h-8"
-                  ondragover={handleStatDragOver}
-                  ondrop={(e) => handleStatDrop(e, index)}
+                  class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing"
+                  style="transform: translateY({dragShift(statDraggedIndex, statDragOverIndex, index)}px); transition: transform 150ms ease; {statDraggedIndex === index ? 'opacity: 0.25;' : ''}"
+                  draggable="true"
+                  ondragstart={(e) => handleStatDragStart(e, index)}
+                  ondragend={handleStatDragEnd}
                 >
                   <button
                     type="button"
-                    draggable="true"
-                    class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none cursor-grab active:cursor-grabbing transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
+                    class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
                     style={isSelected ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white` : ''}
-                    title="Drag to reorder — click to select"
                     onclick={() => {
                       if (statRowDragged) return;
                       selectDraftStat(stat.id);
                     }}
-                    ondragstart={(e) => handleStatDragStart(e, index)}
-                    ondragend={handleStatDragEnd}
                   >
                     {index + 1}
                   </button>
@@ -8989,7 +9094,7 @@
           </div>
 
           <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
-            <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0">
+            <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0" role="list" bind:this={exerciseListBody} ondrop={handleExerciseDrop} ondragover={handleExerciseDragOver}>
               {#if draftExercises.length === 0}
                 <div class="text-center py-3 border border-dashed border-[#1e1e1e] rounded text-[10px] text-zinc-500">
                   No exercises yet.<br />
@@ -9004,22 +9109,20 @@
               {#each draftExercises as exercise, index (exercise.id)}
                 {@const isSelected = selectedExerciseId === exercise.id}
                 <div
-                  class="flex items-stretch gap-1 h-8"
-                  ondragover={handleDragOver}
-                  ondrop={(e) => handleDrop(e, index)}
+                  class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing"
+                  style="transform: translateY({dragShift(draggedIndex, dragOverIndex, index)}px); transition: transform 150ms ease; {draggedIndex === index ? 'opacity: 0.25;' : ''}"
+                  draggable="true"
+                  ondragstart={(e) => handleDragStart(e, index)}
+                  ondragend={handleDragEnd}
                 >
                   <button
                     type="button"
-                    draggable="true"
-                    class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none cursor-grab active:cursor-grabbing transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
+                    class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
                     style={isSelected ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white` : ''}
-                    title="Drag to reorder — click to select"
                     onclick={() => {
                       if (exerciseRowDragged) return;
                       selectExercise(exercise.id);
                     }}
-                    ondragstart={(e) => handleDragStart(e, index)}
-                    ondragend={handleDragEnd}
                   >
                     {index + 1}
                   </button>

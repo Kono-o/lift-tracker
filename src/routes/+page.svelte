@@ -8803,13 +8803,13 @@ function getStatIcon(id: number): typeof Dna {
                       {@const editDate = statEditEntry ?? REAL_TODAY_STR}
                       <div class="flex items-center gap-2 mb-3" onclick={(e) => e.stopPropagation()}>
                         {#key editDate}
-                          <div class="bg-black border border-[#1e1e1e] rounded flex items-center gap-1.5 px-2 h-7 flex-1 min-w-0" onclick={(e) => e.stopPropagation()}>
-                            <span class="text-[9px] text-zinc-500 font-mono leading-none whitespace-nowrap uppercase tracking-wide shrink-0">{shortDateLabel(editDate)}</span>
+                          <div class="bg-[#060606] border border-[#1e1e1e] rounded-md flex items-center gap-3 px-3 h-9 flex-1 min-w-0" onclick={(e) => e.stopPropagation()}>
+                            <span class="text-[9px] text-zinc-500 font-mono leading-none whitespace-nowrap uppercase tracking-wide shrink-0 w-20">{shortDateLabel(editDate)}</span>
                             <input
                               type="text"
                               inputmode="decimal"
                               autocomplete="off"
-                              class="prop-num-input flex-1 min-w-0 h-full bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
+                              class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-none text-right text-sm font-semibold text-white outline-none px-2"
                               use:clampedNumericProp={{
                                 kind: 'statLog',
                                 getValue: () => statLogs[sid]?.[editDate] ?? 0,
@@ -8831,14 +8831,15 @@ function getStatIcon(id: number): typeof Dna {
                             />
                             <button
                               type="button"
-                              class="shrink-0 flex items-center justify-center text-zinc-600 hover:text-red-400 transition-colors"
+                              class="shrink-0 w-8 h-8 rounded-md flex items-center justify-center text-zinc-400 hover:bg-red-700/10 hover:text-red-400 transition-colors"
                               onclick={() => {
                                 deleteStatLogEntry(sid, editDate);
                                 if (editDate !== REAL_TODAY_STR) statEditEntry = REAL_TODAY_STR;
                               }}
+                              aria-label="Delete entry"
                               title="Delete entry"
                             >
-                              <Trash2 class="size-3.5" />
+                              <Trash2 class="size-4" />
                             </button>
                           </div>
                         {/key}

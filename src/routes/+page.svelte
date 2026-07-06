@@ -9157,6 +9157,7 @@ function getStatIcon(id: number): typeof Dna {
                   {@const stat = draftStatById(statId)}
                   {#if stat}
                     {@const hasTarget = !!draftStatById(statId)?.has_target}
+                    {@const prefersLower = draftStatById(statId)?.target_prefers_lower ?? true}
                     <div class="grid grid-cols-[minmax(0,1.55fr)_minmax(0,0.85fr)] gap-x-1 gap-y-2 text-[9px]">
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Start</span>
@@ -9243,6 +9244,37 @@ function getStatIcon(id: number): typeof Dna {
                               void persistTrackedStatsNow();
                             }}
                           >ON</button>
+                        </div>
+                      </div>
+
+                      <!-- New: target goal preference (UNDER = prefer <= target, OVER = prefer >= target) -->
+                      <div class="flex items-end">
+                        <div
+                          class="relative grid grid-cols-2 w-full rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
+                          role="group"
+                          aria-label="Target goal preference"
+                          style="opacity: {hasTarget ? 1 : 0.45}; pointer-events: {hasTarget ? 'auto' : 'none'}"
+                        >
+                          <div
+                            class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+                            style="transform: translateX({prefersLower ? '0' : 'calc(100% + 4px)'})"
+                          ></div>
+                          <button
+                            type="button"
+                            class="relative z-10 h-7 flex items-center justify-center text-[8px] font-black tracking-[0.1em] transition-colors {prefersLower ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                            onclick={() => {
+                              patchDraftStat(statId, { target_prefers_lower: true });
+                              void persistTrackedStatsNow();
+                            }}
+                          >UNDER</button>
+                          <button
+                            type="button"
+                            class="relative z-10 h-7 flex items-center justify-center text-[8px] font-black tracking-[0.1em] transition-colors {!prefersLower ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                            onclick={() => {
+                              patchDraftStat(statId, { target_prefers_lower: false });
+                              void persistTrackedStatsNow();
+                            }}
+                          >OVER</button>
                         </div>
                       </div>
                     </div>

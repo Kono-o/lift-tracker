@@ -163,6 +163,7 @@ create table public.tracked_stats (
   start_value real not null default 0,
   has_target boolean not null default false,
   target_value real,
+  target_prefers_lower boolean not null default true,
   created_at timestamptz not null default now(),
   constraint tracked_stats_name_not_empty check (char_length(trim(name)) > 0),
   constraint tracked_stats_display_order_nonneg check (display_order >= 0),

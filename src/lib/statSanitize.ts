@@ -14,6 +14,7 @@ export type DraftStatLike = {
 	start_value?: number;
 	has_target?: boolean;
 	target_value?: number | null;
+	target_prefers_lower?: boolean;
 	icon?: number;
 };
 
@@ -131,6 +132,8 @@ export function normalizeDraftStat(stat: DraftStatLike): void {
 	stat.target_value = stat.has_target
 		? sanitizeStatConfigValue(stat.target_value ?? 0)
 		: null;
+	// New: whether the user's goal is to be at-or-below the target (true) or at-or-above (false)
+	stat.target_prefers_lower = stat.target_prefers_lower !== undefined ? !!stat.target_prefers_lower : true;
 	stat.icon = stat.icon ?? 0;
 }
 
@@ -149,6 +152,7 @@ export type TrackedStatLike = {
 	start_value?: number | null;
 	has_target?: boolean | null;
 	target_value?: number | null;
+	target_prefers_lower?: boolean | null;
 	icon?: number | null;
 };
 
@@ -163,6 +167,7 @@ export function toTrackedStat(row: TrackedStatLike, fallbackOrder = 0) {
 		start_value: row.start_value ?? 0,
 		has_target,
 		target_value: has_target ? (row.target_value ?? null) : null,
+		target_prefers_lower: row.target_prefers_lower ?? true,
 		icon: row.icon ?? 0,
 	};
 }

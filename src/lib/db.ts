@@ -1432,11 +1432,13 @@ export const db = {
 			start_value?: number;
 			has_target?: boolean;
 			target_value?: number | null;
+			target_prefers_lower?: boolean;
 			icon?: number;
 		}>,
 	): Promise<TrackedStat[]> {
 		const validationError = validateDraftStats(stats as DraftStatLike[]);
 		if (validationError) throw new Error(validationError);
+
 
 		const payload = stats.map((d, i) => {
 			const safe = sanitizeStatRowForDb(d as DraftStatLike);
@@ -1447,6 +1449,7 @@ export const db = {
 				start_value: safe.start_value ?? 0,
 				has_target: !!safe.has_target,
 				target_value: safe.has_target ? (safe.target_value ?? 0) : null,
+				target_prefers_lower: safe.target_prefers_lower ?? true,
 				icon: safe.icon ?? 0,
 			};
 			const statId = typeof d.id === "string" ? d.id : "";
@@ -1511,11 +1514,12 @@ export const db = {
 					has_target: (draft.has_target as boolean | undefined) ?? merged.has_target,
 					target_value:
 						(draft.target_value as number | null | undefined) ?? merged.target_value,
-					icon: (draft.icon as number | undefined) ?? merged.icon,
-				},
-				display_order,
-			);
-		});
+				target_prefers_lower: (draft.target_prefers_lower as boolean | undefined) ?? merged.target_prefers_lower,
+				icon: (draft.icon as number | undefined) ?? merged.icon,
+						},
+						display_order,
+					);
+				});
 	},
 
 	/* ==================================================

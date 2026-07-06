@@ -172,6 +172,11 @@ function getStatIcon(id: number): typeof Dna {
     return DOMPurify.sanitize(rawHtml, { ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'ul', 'ol', 'li', 'a', 'code', 'pre', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote'] });
   }
 
+  function shortDateLabel(dateStr: string): string {
+    const d = new Date(dateStr + 'T00:00:00');
+    return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
+  }
+
   function toDateStr(d: Date): string {
     const year = d.getFullYear();
     const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -282,6 +287,9 @@ function getStatIcon(id: number): typeof Dna {
   let statLogSnapshots = $state<StatLogSnapshotRow[]>([]);
   let selectedStatsViewStatId = $state<string | null>(null);
   let statEditEntry = $state<string | null>(null);
+  type RangeMode = '2weeks' | 'ytd' | 'all';
+  let statRangeMode = $state<RangeMode>('all');
+  const rangeModes: RangeMode[] = ['2weeks', 'ytd', 'all'];
   let draftStats = $state<TrackedStat[]>([]);
   let selectedDraftStatId = $state<string | null>(null);
   let editingStatNameId = $state<string | null>(null);
@@ -2984,9 +2992,25 @@ function getStatIcon(id: number): typeof Dna {
     const logs = statLogs[selectedStatsViewStatId];
     if (!logs) return [];
     return Object.entries(logs)
-      .filter(([date]) => date !== REAL_TODAY_STR)
       .map(([date, value]) => ({ date, value }))
       .sort((a, b) => a.date.localeCompare(b.date));
+  });
+
+  let chartData = $derived.by(() => {
+    if (statRangeMode === 'all') return statChartData;
+    const cutoff = statRangeMode === '2weeks'
+      ? toDateStr(new Date(REAL_TODAY.getTime() - 14 * 24 * 60 * 60 * 1000))
+      : toDateStr(new Date(REAL_TODAY.getFullYear(), 0, 1));
+    return statChartData.filter(d => d.date >= cutoff);
+  });
+
+  let prevSelectedStatId: string | null = null;
+  $effect(() => {
+    const sid = selectedStatsViewStatId;
+    if (sid !== prevSelectedStatId) {
+      prevSelectedStatId = sid;
+      statEditEntry = REAL_TODAY_STR;
+    }
   });
 
   function enterStatsView() {
@@ -8708,7 +8732,7 @@ function getStatIcon(id: number): typeof Dna {
           </button>
         </div>
       {:else}
-        <div class="flex flex-col gap-1.5 min-w-0">
+        <div class="flex flex-col gap-1 min-w-0">
           {#each trackedStats as stat (stat.id)}
             {@const isSelected = selectedStatsViewStatId === stat.id}
             {@const IconComponent = getStatIcon(stat.icon)}
@@ -8719,139 +8743,219 @@ function getStatIcon(id: number): typeof Dna {
               style="border-color: {isSelected ? '#2a2a2a' : '#1e1e1e'}"
               onclick={() => { selectedStatsViewStatId = selectedStatsViewStatId === stat.id ? null : stat.id; }}
             >
-              <div class="flex items-stretch gap-1.5 p-1.5">
-                <div class="w-8 h-8 shrink-0 flex items-center justify-center rounded border border-[#1e1e1e] bg-black" style={isSelected ? 'border-color: #2a2a2a' : ''}>
+              <div class="flex items-stretch gap-1 p-1">
+                <div class="ml-0.5 shrink-0 flex items-center justify-center">
                   <IconComponent class="size-4 text-zinc-300" />
                 </div>
                 <div class="flex-1 min-w-0 flex items-center">
                   <span class="font-medium text-xs truncate leading-none text-zinc-300">{stat.name}</span>
-                  {#if stat.unit}
-                    <span class="ml-1 text-[9px] uppercase text-zinc-600 shrink-0 leading-none">{stat.unit}</span>
-                  {/if}
                 </div>
-                <input
-                  type="text"
-                  inputmode="decimal"
-                  autocomplete="off"
-                  placeholder={String(stat.start_value || 0)}
-                  class="prop-num-input w-16 shrink-0 h-8 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
-                  class:border-zinc-400={isSelected}
-                  use:clampedNumericProp={{
-                    kind: 'statLog',
-                    getValue: () => getStatTodayInputValue(stat.id),
-                    setValue: (v) => { setStatTodayInputDraft(stat.id, v); },
-                  }}
-                  onblur={() => persistStatTodayLog(stat.id)}
-                  onkeydown={(e) => {
-                    if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
-                  }}
-                  onclick={(e) => e.stopPropagation()}
-                />
+                <div class="flex items-center gap-1.5 shrink-0">
+                  {#if stat.unit}
+                    <span class="text-[9px] uppercase text-zinc-500 leading-none">{stat.unit}</span>
+                  {/if}
+                  <input
+                    type="text"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    placeholder={String(stat.start_value || 0)}
+                    class="prop-num-input w-14 h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
+                    class:border-zinc-400={isSelected}
+                    use:clampedNumericProp={{
+                      kind: 'statLog',
+                      getValue: () => {
+                        if (statEditEntry && isSelected && statLogs[stat.id]?.[statEditEntry] !== undefined) {
+                          return statLogs[stat.id][statEditEntry];
+                        }
+                        return getStatTodayInputValue(stat.id);
+                      },
+                      setValue: (v) => {
+                        if (statEditEntry && isSelected) {
+                          const prev = statLogs[stat.id] ?? {};
+                          statLogs = { ...statLogs, [stat.id]: { ...prev, [statEditEntry]: v } };
+                        } else {
+                          setStatTodayInputDraft(stat.id, v);
+                        }
+                      },
+                    }}
+                    onblur={() => {
+                      if (statEditEntry && isSelected) {
+                        persistStatLogEntry(stat.id, statEditEntry, statLogs[stat.id]?.[statEditEntry] ?? 0);
+                      } else {
+                        persistStatTodayLog(stat.id);
+                      }
+                    }}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+                    }}
+                    onclick={(e) => e.stopPropagation()}
+                  />
+                </div>
               </div>
 
               {#if isSelected}
                 {@const sid = selectedStatsViewStatId as string}
-                <div class="px-1.5 pb-1.5">
-                  <div class="border-t border-[#1e1e1e] pt-1.5">
+                <div class="pb-1" onclick={(e) => e.stopPropagation()}>
+                  <div class="border-t border-[#1e1e1e] pt-1">
                     {#if statChartData.length === 0}
                       <div class="text-center py-4 text-[10px] text-zinc-600">No history yet.</div>
+                    {:else if chartData.length === 0}
+                      <div class="text-center py-4 text-[10px] text-zinc-600">No data in selected range.</div>
                     {:else}
-                      {@const values = statChartData.map(d => d.value)}
-                      {@const minVal = Math.min(...values)}
-                      {@const maxVal = Math.max(...values)}
+                      <div class="flex items-center justify-end gap-1 mb-1">
+                        {#each rangeModes as mode}
+                          <button
+                            type="button"
+                            class="text-[10px] px-1.5 py-0.5 rounded transition-colors {statRangeMode === mode ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'}"
+                            onclick={(e) => { e.stopPropagation(); statRangeMode = mode; }}
+                          >{mode === '2weeks' ? '2W' : mode === 'ytd' ? 'YTD' : 'ALL'}</button>
+                        {/each}
+                      </div>
+                      {@const values = chartData.map(d => d.value)}
+                      {@const rawMin = Math.min(...values)}
+                      {@const rawMax = Math.max(...values)}
+                      {@const targetVal = stat.has_target && stat.target_value != null ? stat.target_value : null}
+                      {@const minVal = targetVal !== null ? Math.min(rawMin, targetVal) : rawMin}
+                      {@const maxVal = targetVal !== null ? Math.max(rawMax, targetVal) : rawMax}
                       {@const range = maxVal - minVal || 1}
-                      {@const chartW = 280}
-                      {@const chartH = 120}
-                      {@const padL = 28}
+                      {@const chartW = Math.max(600, chartData.length * 80)}
+                      {@const chartH = 195}
+                      {@const padL = 34}
                       {@const padR = 8}
                       {@const padT = 8}
-                      {@const padB = 20}
+                      {@const padB = 24}
                       {@const plotW = chartW - padL - padR}
                       {@const plotH = chartH - padT - padB}
+                      {@const targetY = targetVal !== null
+                        ? padT + plotH - ((targetVal - minVal) / range) * plotH
+                        : null}
 
-                      <svg viewBox="0 0 {chartW} {chartH}" class="w-full h-auto" style="max-height: 130px">
-                        <polyline
-                          fill="none"
-                          stroke="#4ADE80"
-                          stroke-width="1.5"
-                          stroke-linejoin="round"
-                          stroke-linecap="round"
-                          points={statChartData.map((d, i) => {
-                            const x = padL + (i / Math.max(statChartData.length - 1, 1)) * plotW;
-                            const y = padT + plotH - ((d.value - minVal) / range) * plotH;
-                            return `${x},${y}`;
-                          }).join(' ')}
-                        />
-                        {#each statChartData as d, i}
-                          {@const x = padL + (i / Math.max(statChartData.length - 1, 1)) * plotW}
+                      <div class="overflow-x-auto no-scrollbar">
+                        <svg viewBox="0 0 {chartW} {chartH}" width={chartW} height={chartH} style="max-width: none; height: auto" onclick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const scaleX = chartW / rect.width;
+                        const svgX = (e.clientX - rect.left) * scaleX;
+                        const ratio = Math.max(0, Math.min(1, (svgX - padL) / plotW));
+                        const idx = Math.round(ratio * (chartData.length - 1));
+                        statEditEntry = chartData[idx]?.date ?? REAL_TODAY_STR;
+                      }}>
+                        <rect x="0" y="0" width={chartW} height={chartH} fill="#0a0a0a" rx="4" />
+                        {#if targetY !== null}
+                          <line
+                            x1={padL} y1={targetY} x2={chartW - padR} y2={targetY}
+                            stroke="#4ADE80" stroke-width="1" stroke-dasharray="4,4" opacity="0.6"
+                          />
+                        {/if}
+                        {#each chartData.slice(0, -1) as _, i}
+                          {@const d0 = chartData[i]}
+                          {@const d1 = chartData[i + 1]}
+                          {@const x0 = padL + (i / Math.max(chartData.length - 1, 1)) * plotW}
+                          {@const y0 = padT + plotH - ((d0.value - minVal) / range) * plotH}
+                          {@const x1 = padL + ((i + 1) / Math.max(chartData.length - 1, 1)) * plotW}
+                          {@const y1 = padT + plotH - ((d1.value - minVal) / range) * plotH}
+                          {#if targetVal !== null && (d0.value > targetVal) !== (d1.value > targetVal)}
+                            {@const t = Math.abs((targetVal - d0.value) / (d1.value - d0.value))}
+                            {@const midX = x0 + t * (x1 - x0)}
+                            {@const midY = y0 + t * (y1 - y0)}
+                            {@const isD0Above = d0.value > targetVal}
+                            <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={isD0Above ? '#fbbf24' : '#4ADE80'} stroke-width="1.5" stroke-linecap="round" />
+                            <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={isD0Above ? '#4ADE80' : '#fbbf24'} stroke-width="1.5" stroke-linecap="round" />
+                          {:else}
+                            {@const segColor = targetVal !== null && (d0.value > targetVal || d1.value > targetVal) ? '#fbbf24' : '#4ADE80'}
+                            <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={segColor} stroke-width="1.5" stroke-linecap="round" />
+                          {/if}
+                        {/each}
+                        {#each chartData as d, i}
+                          {@const x = padL + (i / Math.max(chartData.length - 1, 1)) * plotW}
                           {@const y = padT + plotH - ((d.value - minVal) / range) * plotH}
+                          {@const isLatest = i === chartData.length - 1}
+                          {@const isPtSelected = statEditEntry === d.date}
+                          {@const ptColor = targetVal !== null && d.value > targetVal ? '#fbbf24' : '#4ADE80'}
+                          {#if isPtSelected}
+                            <line
+                              x1={x} y1={padT} x2={x} y2={padT + plotH}
+                              stroke="#fff" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"
+                            />
+                          {/if}
                           <g
                             role="button"
                             tabindex="0"
                             style="cursor: pointer"
-                            onclick={(e) => { e.stopPropagation(); statEditEntry = d.date; }}
-                            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); statEditEntry = d.date; } }}
+                            onclick={(e) => { e.stopPropagation(); statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date; }}
+                            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date; } }}
                           >
-                            <circle cx={x} cy={y} r="3" fill="#4ADE80" stroke="#141414" stroke-width="1.5" />
+                            <rect
+                              x={x - (isPtSelected ? 3.5 : isLatest ? 2.5 : 2)} y={y - (isPtSelected ? 3.5 : isLatest ? 2.5 : 2)}
+                              width={isPtSelected ? 7 : isLatest ? 5 : 4} height={isPtSelected ? 7 : isLatest ? 5 : 4}
+                              rx={isPtSelected ? 2 : isLatest ? 1.5 : 1.5}
+                              fill={ptColor}
+                              stroke={isPtSelected ? '#fff' : ptColor}
+                              stroke-width={isPtSelected ? 1.5 : 1}
+                            />
                           </g>
                         {/each}
-                        <text x={padL} y={padT + plotH + 14} class="text-[8px]" fill="#666" font-size="8">{statChartData[0]?.date?.slice(5) ?? ''}</text>
-                        <text x={chartW - padR} y={padT + plotH + 14} class="text-[8px]" fill="#666" font-size="8" text-anchor="end">{statChartData[statChartData.length - 1]?.date?.slice(5) ?? ''}</text>
-                        <text x={padL - 2} y={padT + 10} class="text-[8px]" fill="#666" font-size="8" text-anchor="end">{maxVal.toFixed(1)}</text>
-                        <text x={padL - 2} y={padT + plotH} class="text-[8px]" fill="#666" font-size="8" text-anchor="end">{minVal.toFixed(1)}</text>
+                        {#if true}
+                          {@const yTickCount = Math.max(2, Math.floor(plotH / 40) + 1)}
+                          {#each Array(yTickCount) as _, i}
+                            {@const tickVal = minVal + (i / (yTickCount - 1)) * range}
+                            {@const tickY = padT + plotH - ((tickVal - minVal) / range) * plotH}
+                            <line x1={padL} y1={tickY} x2={chartW - padR} y2={tickY} stroke="#111" stroke-width="0.5" />
+                            <text x={padL - 6} y={tickY + 4} text-anchor="end" fill="#555" font-size="12">{tickVal.toFixed(1)}</text>
+                          {/each}
+                          {@const xTickCount = Math.min(Math.max(2, Math.floor(plotW / 100) + 1), chartData.length)}
+                          {#each Array(xTickCount) as _, i}
+                            {@const idx = Math.round((i / (xTickCount - 1)) * (chartData.length - 1))}
+                            {@const d = chartData[idx]}
+                            {@const tickX = padL + (idx / Math.max(chartData.length - 1, 1)) * plotW}
+                            <line x1={tickX} y1={padT} x2={tickX} y2={padT + plotH} stroke="#111" stroke-width="0.5" />
+                            <text x={tickX} y={padT + plotH + 17} text-anchor="middle" fill="#555" font-size="12">{shortDateLabel(d.date)}</text>
+                          {/each}
+                        {/if}
                       </svg>
+                      </div>
 
-                      {#if statEditEntry}
-                        {@const editDate = statEditEntry as string}
-                        {@const editVal = statLogs[sid]?.[editDate] ?? 0}
-                        <div class="flex items-center gap-1.5 mt-1.5 border-t border-[#1e1e1e] pt-1.5" onclick={(e) => e.stopPropagation()}>
-                          <span class="text-[9px] text-zinc-500 font-mono shrink-0">{editDate}</span>
-                          <input
-                            type="text"
-                            inputmode="decimal"
-                            autocomplete="off"
-                            class="prop-num-input flex-1 h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none min-w-0"
-                            use:clampedNumericProp={{
-                              kind: 'statLog',
-                              getValue: () => statLogs[sid]?.[editDate] ?? 0,
-                              setValue: (v) => {
-                                const prev = statLogs[sid] ?? {};
-                                statLogs = {
-                                  ...statLogs,
-                                  [sid]: { ...prev, [editDate]: v },
-                                };
-                              },
-                            }}
-                            onblur={() => {
-                              persistStatLogEntry(sid, editDate, statLogs[sid]?.[editDate] ?? 0);
-                              statEditEntry = null;
-                            }}
-                            onkeydown={(e) => {
-                              if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
-                              if (e.key === 'Escape') { statEditEntry = null; }
-                            }}
-                          />
-                          <button
-                            type="button"
-                            class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 transition-colors"
-                            onclick={() => {
-                              deleteStatLogEntry(sid, editDate);
-                              statEditEntry = null;
-                            }}
-                            title="Delete entry"
-                          >
-                            <Trash2 class="size-3" />
-                          </button>
-                          <button
-                            type="button"
-                            class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-[#1e1e1e] bg-[#0d0d0d] text-zinc-400 hover:text-white transition-colors"
-                            onclick={() => { statEditEntry = null; }}
-                            title="Cancel"
-                          >
-                            <X class="size-3" />
-                          </button>
-                        </div>
-                      {/if}
+                      {@const editDate = statEditEntry ?? REAL_TODAY_STR}
+                      {#key editDate}
+                      <div class="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg flex items-center gap-2 px-2.5 h-8 mt-2" onclick={(e) => e.stopPropagation()}>
+                        <span class="text-[11px] text-zinc-500 font-mono leading-none shrink-0">{shortDateLabel(editDate)}</span>
+                        <input
+                          type="text"
+                          inputmode="decimal"
+                          autocomplete="off"
+                          class="flex-1 min-w-0 h-full bg-transparent border-0 text-xs text-white text-center outline-none rounded"
+                          use:clampedNumericProp={{
+                            kind: 'statLog',
+                            getValue: () => statLogs[sid]?.[editDate] ?? 0,
+                            setValue: (v) => {
+                              const prev = statLogs[sid] ?? {};
+                              statLogs = {
+                                ...statLogs,
+                                [sid]: { ...prev, [editDate]: v },
+                              };
+                            },
+                          }}
+                          onblur={() => {
+                            persistStatLogEntry(sid, editDate, statLogs[sid]?.[editDate] ?? 0);
+                          }}
+                          onkeydown={(e) => {
+                            if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+                            if (e.key === 'Escape') { statEditEntry = REAL_TODAY_STR; }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          class="shrink-0 flex items-center justify-center text-zinc-600 hover:text-red-400 transition-colors"
+                          onclick={() => {
+                            deleteStatLogEntry(sid, editDate);
+                            if (editDate !== REAL_TODAY_STR) statEditEntry = REAL_TODAY_STR;
+                          }}
+                          title="Delete entry"
+                        >
+                          <Trash2 class="size-3.5" />
+                        </button>
+                      </div>
+                      {/key}
                     {/if}
                   </div>
                 </div>
@@ -8874,11 +8978,45 @@ function getStatIcon(id: number): typeof Dna {
         >
           <ArrowLeft class="size-4" />
         </button>
+        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">STAT EDITOR</span>
+        <div class="flex-1 min-w-0 flex items-center">
+          <input
+            autocomplete="off"
+            class="w-full h-8 bg-black border border-[#1e1e1e] text-xs font-medium uppercase text-center px-2 rounded outline-none placeholder:text-zinc-600"
+            placeholder="Stat name"
+            disabled={!selectedDraftStatId}
+            value={selectedDraftStatId ? (draftStatById(selectedDraftStatId)?.name ?? '') : ''}
+            oninput={(e) => {
+              const v = (e.currentTarget as HTMLInputElement).value;
+              if (selectedDraftStatId) {
+                patchDraftStat(selectedDraftStatId, { name: v });
+                void persistTrackedStatsNow();
+              }
+            }}
+          />
+        </div>
+        {#if selectedDraftStatId}
+          {@const selectedStat = draftStatById(selectedDraftStatId)}
+          {@const statIconId = selectedStat?.icon ?? 0}
+          {@const StatIcon = getStatIcon(statIconId)}
+          <button
+            type="button"
+            class="w-8 h-8 rounded bg-black border border-[#1e1e1e] flex items-center justify-center transition-all group hover:border-zinc-400"
+            onclick={() => {
+              const next = (statIconId + 1) % 10;
+              patchDraftStat(selectedDraftStatId, { icon: next });
+              void persistTrackedStatsNow();
+            }}
+            title="Click to cycle stat icon"
+          >
+            <StatIcon class="size-5 text-zinc-300 transition-all group-active:scale-90" />
+          </button>
+        {/if}
       </div>
       {#if statSaveError}
         <p class="text-[10px] text-red-300 leading-snug">{statSaveError}</p>
       {/if}
-
+  
       <div class="space-y-1.5">
         <div class="builder-editor-grid">
           <div class="col-start-1 row-start-1 h-5 flex items-center">
@@ -8887,7 +9025,7 @@ function getStatIcon(id: number): typeof Dna {
           <div class="col-start-2 row-start-1 h-5 flex items-center border-l border-[#1e1e1e] pl-2">
             <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">PROPERTIES</span>
           </div>
-
+  
           <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
             <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0" role="list" bind:this={statListBody} ondrop={handleStatDrop} ondragover={handleStatDragOver}>
               {#if draftStats.length === 0}
@@ -8898,6 +9036,7 @@ function getStatIcon(id: number): typeof Dna {
               {/if}
               {#each draftStats as stat, index (stat.id)}
                 {@const isSelected = selectedDraftStatId === stat.id}
+                {@const RowIcon = getStatIcon(stat.icon)}
                 <div
                   class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing"
                   style="transform: translateY({dragShift(statDraggedIndex, statDragOverIndex, index)}px); transition: transform 150ms ease; {statDraggedIndex === index ? 'opacity: 0.25;' : ''}"
@@ -8922,7 +9061,7 @@ function getStatIcon(id: number): typeof Dna {
                     onclick={() => selectDraftStat(stat.id)}
                   >
                     <div class="flex items-center gap-1 min-w-0 flex-1">
-                      <Dna class="size-3 shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
+                      <RowIcon class="size-3 shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
                       {#if editingStatNameId === stat.id}
                         <input
                           type="text"
@@ -8991,23 +9130,6 @@ function getStatIcon(id: number): typeof Dna {
                   {@const stat = draftStatById(statId)}
                   {#if stat}
                     {@const hasTarget = !!draftStatById(statId)?.has_target}
-                    {@const statIconId = (draftStatById(statId)?.icon ?? 0)}
-                    {@const StatIcon = getStatIcon(statIconId)}
-                    <div class="flex justify-center mb-1.5">
-                      <button
-                        type="button"
-                        class="w-9 h-9 rounded-lg border flex items-center justify-center transition-all group hover:border-zinc-400"
-                        style="border-color: #2a2a2a"
-                        onclick={() => {
-                          const next = (statIconId + 1) % 10;
-                          patchDraftStat(statId, { icon: next });
-                          void persistTrackedStatsNow();
-                        }}
-                        title="Click to cycle stat icon"
-                      >
-                        <StatIcon class="size-5 text-zinc-300 transition-all group-active:scale-90" />
-                      </button>
-                    </div>
                     <div class="grid grid-cols-[minmax(0,1.55fr)_minmax(0,0.85fr)] gap-x-1 gap-y-2 text-[9px]">
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Start</span>

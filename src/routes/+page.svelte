@@ -8818,10 +8818,15 @@ function getStatIcon(id: number): typeof Dna {
                       {@const minVal = targetVal !== null ? Math.min(rawMin, targetVal) : rawMin}
                       {@const maxVal = targetVal !== null ? Math.max(rawMax, targetVal) : rawMax}
                       {@const range = maxVal - minVal || 1}
-                      {@const chartW = Math.max(600, chartData.length * 80)}
-                      {@const chartH = 195}
                       {@const padL = 34}
                       {@const padR = 8}
+                      {@const maxVisibleWidth = 560}
+                      {@const numGaps = Math.max(1, chartData.length - 1)}
+                      {@const minSpacing = 40}
+                      {@const maxSpacing = 100}
+                      {@const spacingPerPoint = Math.max(minSpacing, Math.min(maxSpacing, maxVisibleWidth / numGaps))}
+                      {@const chartW = padL + padR + numGaps * spacingPerPoint}
+                      {@const chartH = 195}
                       {@const padT = 8}
                       {@const padB = 24}
                       {@const plotW = chartW - padL - padR}
@@ -8830,7 +8835,7 @@ function getStatIcon(id: number): typeof Dna {
                         ? padT + plotH - ((targetVal - minVal) / range) * plotH
                         : null}
 
-                      <div class="overflow-x-auto no-scrollbar">
+                      <div class="overflow-x-auto flex justify-center">
                         <svg viewBox="0 0 {chartW} {chartH}" width={chartW} height={chartH} style="max-width: none; height: auto" onclick={(e) => {
                         e.stopPropagation();
                         const rect = e.currentTarget.getBoundingClientRect();

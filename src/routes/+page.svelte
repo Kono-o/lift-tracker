@@ -8842,7 +8842,7 @@ function getStatIcon(id: number): typeof Dna {
                             </button>
                           </div>
                         {/key}
-                        <div class="relative grid grid-cols-3 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5 shrink-0" style="width: 120px;" role="group" aria-label="Chart range">
+                        <div class="relative grid grid-cols-3 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5 shrink-0" style="width: 180px;" role="group" aria-label="Chart range">
                           <div
                             class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(33.333%-4px)] rounded bg-white transition-transform duration-200 ease-out"
                             style="transform: translateX({statRangeMode === '2weeks' ? '0' : statRangeMode === 'ytd' ? 'calc(100% + 4px)' : 'calc(200% + 8px)'})"

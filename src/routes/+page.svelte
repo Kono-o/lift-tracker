@@ -8879,7 +8879,11 @@ function getStatIcon(id: number): typeof Dna {
                         {@const plotW = containerW - padL - padR}
                         {@const plotH = containerH - padT - padB}
                         {@const numPoints = chartData.length}
-                        {@const spacingX = numPoints > 1 ? plotW / (numPoints - 1) : 0}
+                        {@const msDay = 24 * 60 * 60 * 1000}
+                        {@const startDate = new Date(chartData[0].date + 'T00:00:00')}
+                        {@const endDate = new Date(chartData[numPoints - 1].date + 'T00:00:00')}
+                        {@const totalDays = Math.round((endDate.getTime() - startDate.getTime()) / msDay) + 1}
+                        {@const spacingX = totalDays > 1 ? plotW / (totalDays - 1) : 0}
                         {@const targetY = targetVal !== null
                           ? padT + plotH - ((targetVal - minVal) / range) * plotH
                           : null}
@@ -8888,10 +8892,11 @@ function getStatIcon(id: number): typeof Dna {
                           val: minVal + (i / (yTickCount - 1)) * range,
                           y: padT + plotH - ((minVal + (i / (yTickCount - 1)) * range - minVal) / range) * plotH
                         }))}
-                        {@const xTickCount = Math.min(5, numPoints)}
+                        {@const xTickCount = Math.min(5, totalDays)}
                         {@const xTicks = Array.from({length: xTickCount}, (_, i) => {
-                          const idx = Math.round((i / Math.max(1, xTickCount - 1)) * Math.max(0, numPoints - 1));
-                          return { idx, x: padL + idx * spacingX, date: chartData[idx]?.date || '' };
+                          const dayIdx = Math.round((i / Math.max(1, xTickCount - 1)) * Math.max(0, totalDays - 1));
+                          const dateStr = toDateStr(new Date(startDate.getTime() + dayIdx * msDay));
+                          return { dayIdx, x: padL + dayIdx * spacingX, date: dateStr };
                         })}
 
                         <div class="relative rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] overflow-hidden">
@@ -8900,8 +8905,9 @@ function getStatIcon(id: number): typeof Dna {
                             const rect = e.currentTarget.getBoundingClientRect();
                             const svgX = (e.clientX - rect.left) * (containerW / rect.width);
                             const ratio = Math.max(0, Math.min(1, (svgX - padL) / plotW));
-                            const idx = Math.round(ratio * Math.max(0, numPoints - 1));
-                            statEditEntry = chartData[idx]?.date ?? REAL_TODAY_STR;
+                            const dayIdx = Math.round(ratio * Math.max(0, totalDays - 1));
+                            const dateStr = toDateStr(new Date(startDate.getTime() + dayIdx * msDay));
+                            statEditEntry = dateStr;
                           }}>
                             <rect x="0" y="0" width={containerW} height={containerH} fill="#0a0a0a" />
                             {#if targetY !== null}
@@ -8910,17 +8916,21 @@ function getStatIcon(id: number): typeof Dna {
                             {#each chartData.slice(0, -1) as _, i}
                             {@const d0 = chartData[i]}
                             {@const d1 = chartData[i + 1]}
-                            {@const x0 = padL + i * spacingX}
-                            {@const y0 = padT + plotH - ((d0.value - minVal) / range) * plotH}
-                            {@const x1 = padL + (i + 1) * spacingX}
-                            {@const y1 = padT + plotH - ((d1.value - minVal) / range) * plotH}
                             {@const d0Date = new Date(d0.date + 'T00:00:00')}
                             {@const d1Date = new Date(d1.date + 'T00:00:00')}
-                            {@const gapDays = Math.round((d1Date.getTime() - d0Date.getTime()) / (24 * 60 * 60 * 1000))}
+                            {@const idx0 = Math.round((d0Date.getTime() - startDate.getTime()) / msDay)}
+                            {@const idx1 = Math.round((d1Date.getTime() - startDate.getTime()) / msDay)}
+                            {@const x0 = padL + idx0 * spacingX}
+                            {@const y0 = padT + plotH - ((d0.value - minVal) / range) * plotH}
+                            {@const x1 = padL + idx1 * spacingX}
+                            {@const y1 = padT + plotH - ((d1.value - minVal) / range) * plotH}
+                            {@const gapDays = idx1 - idx0}
                             {#if gapDays > 1}
-                              {@const xMid = (x0 + x1) / 2}
-                              <!-- Don't draw a connecting line across missing days. Show a dotted vertical marker to indicate unlogged area. -->
-                              <line x1={xMid} y1={padT} x2={xMid} y2={padT + plotH} stroke="#444" stroke-width="1" stroke-dasharray="2,3" opacity="0.6" />
+                              <!-- Draw dotted vertical markers for each missing day (full gap width reflects spacingX * gapDays) -->
+                              {#each Array(gapDays - 1) as _, g}
+                                {@const xGap = padL + (idx0 + g + 1) * spacingX}
+                                <line x1={xGap} y1={padT} x2={xGap} y2={padT + plotH} stroke="#444" stroke-width="1" stroke-dasharray="2,3" opacity="0.6" />
+                              {/each}
                             {:else}
                               {#if targetVal !== null && (d0.value > targetVal) !== (d1.value > targetVal)}
                                 {@const t = Math.abs((targetVal - d0.value) / (d1.value - d0.value))}
@@ -8936,9 +8946,11 @@ function getStatIcon(id: number): typeof Dna {
                             {/if}
                             {/each}
                             {#each chartData as d, i}
-                            {@const x = padL + i * spacingX}
+                            {@const dDate = new Date(d.date + 'T00:00:00')}
+                            {@const dayIdx = Math.round((dDate.getTime() - startDate.getTime()) / msDay)}
+                            {@const x = padL + dayIdx * spacingX}
                             {@const y = padT + plotH - ((d.value - minVal) / range) * plotH}
-                            {@const isLatest = i === numPoints - 1}
+                            {@const isLatest = d.date === chartData[chartData.length - 1].date}
                             {@const isPtSelected = statEditEntry === d.date}
                             {@const ptColor = targetVal !== null && d.value > targetVal ? '#fbbf24' : '#4ADE80'}
                             {#if isPtSelected}

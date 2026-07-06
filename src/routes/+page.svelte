@@ -8800,7 +8800,7 @@ function getStatIcon(id: number): typeof Dna {
                     {#if statChartData.length === 0}
                       <div class="text-center py-4 text-[10px] text-zinc-600">No history yet.</div>
                     {:else}
-                      <div class="relative grid grid-cols-3 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5 mb-2" role="group" aria-label="Chart range">
+                      <div class="relative grid grid-cols-3 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5 mb-3" role="group" aria-label="Chart range">
                         <div
                           class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(33.333%-4px)] rounded bg-white transition-transform duration-200 ease-out"
                           style="transform: translateX({statRangeMode === '2weeks' ? '0' : statRangeMode === 'ytd' ? 'calc(100% + 4px)' : 'calc(200% + 8px)'})"
@@ -8817,113 +8817,91 @@ function getStatIcon(id: number): typeof Dna {
                         <div class="text-center py-4 text-[10px] text-zinc-600">No data in selected range.</div>
                       {:else}
                         {@const values = chartData.map(d => d.value)}
-                      {@const rawMin = Math.min(...values)}
-                      {@const rawMax = Math.max(...values)}
-                      {@const targetVal = stat.has_target && stat.target_value != null ? stat.target_value : null}
-                      {@const minVal = targetVal !== null ? Math.min(rawMin, targetVal) : rawMin}
-                      {@const maxVal = targetVal !== null ? Math.max(rawMax, targetVal) : rawMax}
-                      {@const range = maxVal - minVal || 1}
-                      {@const padL = 34}
-                      {@const padR = 8}
-                      {@const maxVisibleWidth = 560}
-                      {@const numGaps = Math.max(1, chartData.length - 1)}
-                      {@const minSpacing = 40}
-                      {@const maxSpacing = 100}
-                      {@const spacingPerPoint = Math.max(minSpacing, Math.min(maxSpacing, maxVisibleWidth / numGaps))}
-                      {@const chartW = padL + padR + numGaps * spacingPerPoint}
-                      {@const chartH = 195}
-                      {@const padT = 8}
-                      {@const padB = 24}
-                      {@const plotW = chartW - padL - padR}
-                      {@const plotH = chartH - padT - padB}
-                      {@const targetY = targetVal !== null
-                        ? padT + plotH - ((targetVal - minVal) / range) * plotH
-                        : null}
+                        {@const rawMin = Math.min(...values)}
+                        {@const rawMax = Math.max(...values)}
+                        {@const targetVal = stat.has_target && stat.target_value != null ? stat.target_value : null}
+                        {@const minVal = targetVal !== null ? Math.min(rawMin, targetVal) : rawMin}
+                        {@const maxVal = targetVal !== null ? Math.max(rawMax, targetVal) : rawMax}
+                        {@const range = maxVal - minVal || 1}
+                        {@const containerW = 560}
+                        {@const containerH = 200}
+                        {@const padL = 40}
+                        {@const padR = 12}
+                        {@const padT = 12}
+                        {@const padB = 32}
+                        {@const plotW = containerW - padL - padR}
+                        {@const plotH = containerH - padT - padB}
+                        {@const numPoints = chartData.length}
+                        {@const spacingX = numPoints > 1 ? plotW / (numPoints - 1) : 0}
+                        {@const targetY = targetVal !== null
+                          ? padT + plotH - ((targetVal - minVal) / range) * plotH
+                          : null}
+                        {@const yTickCount = 3}
+                        {@const yTicks = Array.from({length: yTickCount}, (_, i) => ({
+                          val: minVal + (i / (yTickCount - 1)) * range,
+                          y: padT + plotH - ((minVal + (i / (yTickCount - 1)) * range - minVal) / range) * plotH
+                        }))}
+                        {@const xTickCount = Math.min(5, numPoints)}
+                        {@const xTicks = Array.from({length: xTickCount}, (_, i) => {
+                          const idx = Math.round((i / Math.max(1, xTickCount - 1)) * Math.max(0, numPoints - 1));
+                          return { idx, x: padL + idx * spacingX, date: chartData[idx]?.date || '' };
+                        })}
 
-                      <div class="overflow-x-auto flex justify-center min-h-0" style="height: 227px;">
-                        <svg viewBox="0 0 {chartW} {chartH}" width={chartW} height={chartH} style="max-width: none; min-width: 100%;" onclick={(e) => {
-                        e.stopPropagation();
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const scaleX = chartW / rect.width;
-                        const svgX = (e.clientX - rect.left) * scaleX;
-                        const ratio = Math.max(0, Math.min(1, (svgX - padL) / plotW));
-                        const idx = Math.round(ratio * (chartData.length - 1));
-                        statEditEntry = chartData[idx]?.date ?? REAL_TODAY_STR;
-                      }}>
-                        <rect x="0" y="0" width={chartW} height={chartH} fill="#0a0a0a" rx="4" />
-                        {#if targetY !== null}
-                          <line
-                            x1={padL} y1={targetY} x2={chartW - padR} y2={targetY}
-                            stroke="#4ADE80" stroke-width="1" stroke-dasharray="4,4" opacity="0.6"
-                          />
-                        {/if}
-                        {#each chartData.slice(0, -1) as _, i}
-                          {@const d0 = chartData[i]}
-                          {@const d1 = chartData[i + 1]}
-                          {@const x0 = padL + (i / Math.max(chartData.length - 1, 1)) * plotW}
-                          {@const y0 = padT + plotH - ((d0.value - minVal) / range) * plotH}
-                          {@const x1 = padL + ((i + 1) / Math.max(chartData.length - 1, 1)) * plotW}
-                          {@const y1 = padT + plotH - ((d1.value - minVal) / range) * plotH}
-                          {#if targetVal !== null && (d0.value > targetVal) !== (d1.value > targetVal)}
-                            {@const t = Math.abs((targetVal - d0.value) / (d1.value - d0.value))}
-                            {@const midX = x0 + t * (x1 - x0)}
-                            {@const midY = y0 + t * (y1 - y0)}
-                            {@const isD0Above = d0.value > targetVal}
-                            <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={isD0Above ? '#fbbf24' : '#4ADE80'} stroke-width="1.5" stroke-linecap="round" />
-                            <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={isD0Above ? '#4ADE80' : '#fbbf24'} stroke-width="1.5" stroke-linecap="round" />
-                          {:else}
-                            {@const segColor = targetVal !== null && (d0.value > targetVal || d1.value > targetVal) ? '#fbbf24' : '#4ADE80'}
-                            <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={segColor} stroke-width="1.5" stroke-linecap="round" />
-                          {/if}
-                        {/each}
-                        {#each chartData as d, i}
-                          {@const x = padL + (i / Math.max(chartData.length - 1, 1)) * plotW}
-                          {@const y = padT + plotH - ((d.value - minVal) / range) * plotH}
-                          {@const isLatest = i === chartData.length - 1}
-                          {@const isPtSelected = statEditEntry === d.date}
-                          {@const ptColor = targetVal !== null && d.value > targetVal ? '#fbbf24' : '#4ADE80'}
-                          {#if isPtSelected}
-                            <line
-                              x1={x} y1={padT} x2={x} y2={padT + plotH}
-                              stroke="#fff" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"
-                            />
-                          {/if}
-                          <g
-                            role="button"
-                            tabindex="0"
-                            style="cursor: pointer"
-                            onclick={(e) => { e.stopPropagation(); statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date; }}
-                            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date; } }}
-                          >
-                            <rect
-                              x={x - (isPtSelected ? 3.5 : isLatest ? 2.5 : 2)} y={y - (isPtSelected ? 3.5 : isLatest ? 2.5 : 2)}
-                              width={isPtSelected ? 7 : isLatest ? 5 : 4} height={isPtSelected ? 7 : isLatest ? 5 : 4}
-                              rx={isPtSelected ? 2 : isLatest ? 1.5 : 1.5}
-                              fill={ptColor}
-                              stroke={isPtSelected ? '#fff' : ptColor}
-                              stroke-width={isPtSelected ? 1.5 : 1}
-                            />
-                          </g>
-                        {/each}
-                        {#if true}
-                          {@const yTickCount = Math.max(2, Math.floor(plotH / 40) + 1)}
-                          {#each Array(yTickCount) as _, i}
-                            {@const tickVal = minVal + (i / (yTickCount - 1)) * range}
-                            {@const tickY = padT + plotH - ((tickVal - minVal) / range) * plotH}
-                            <line x1={padL} y1={tickY} x2={chartW - padR} y2={tickY} stroke="#111" stroke-width="0.5" />
-                            <text x={padL - 6} y={tickY + 4} text-anchor="end" fill="#555" font-size="12">{tickVal.toFixed(1)}</text>
-                          {/each}
-                          {@const xTickCount = Math.min(Math.max(2, Math.floor(plotW / 100) + 1), chartData.length)}
-                          {#each Array(xTickCount) as _, i}
-                            {@const idx = Math.round((i / (xTickCount - 1)) * (chartData.length - 1))}
-                            {@const d = chartData[idx]}
-                            {@const tickX = padL + (idx / Math.max(chartData.length - 1, 1)) * plotW}
-                            <line x1={tickX} y1={padT} x2={tickX} y2={padT + plotH} stroke="#111" stroke-width="0.5" />
-                            <text x={tickX} y={padT + plotH + 17} text-anchor="middle" fill="#555" font-size="12">{shortDateLabel(d.date)}</text>
-                          {/each}
-                        {/if}
-                      </svg>
-                      </div>
+                        <div class="relative rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] overflow-hidden">
+                          <svg viewBox="0 0 {containerW} {containerH}" width="100%" height="200" style="display: block;" onclick={(e) => {
+                            e.stopPropagation();
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const svgX = (e.clientX - rect.left) * (containerW / rect.width);
+                            const ratio = Math.max(0, Math.min(1, (svgX - padL) / plotW));
+                            const idx = Math.round(ratio * Math.max(0, numPoints - 1));
+                            statEditEntry = chartData[idx]?.date ?? REAL_TODAY_STR;
+                          }}>
+                            <rect x="0" y="0" width={containerW} height={containerH} fill="#0a0a0a" />
+                            {#if targetY !== null}
+                            <line x1={padL} y1={targetY} x2={containerW - padR} y2={targetY} stroke="#4ADE80" stroke-width="1" stroke-dasharray="4,4" opacity="0.6" />
+                            {/if}
+                            {#each chartData.slice(0, -1) as _, i}
+                            {@const d0 = chartData[i]}
+                            {@const d1 = chartData[i + 1]}
+                            {@const x0 = padL + i * spacingX}
+                            {@const y0 = padT + plotH - ((d0.value - minVal) / range) * plotH}
+                            {@const x1 = padL + (i + 1) * spacingX}
+                            {@const y1 = padT + plotH - ((d1.value - minVal) / range) * plotH}
+                            {#if targetVal !== null && (d0.value > targetVal) !== (d1.value > targetVal)}
+                              {@const t = Math.abs((targetVal - d0.value) / (d1.value - d0.value))}
+                              {@const midX = x0 + t * (x1 - x0)}
+                              {@const midY = y0 + t * (y1 - y0)}
+                              {@const isD0Above = d0.value > targetVal}
+                              <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={isD0Above ? '#fbbf24' : '#4ADE80'} stroke-width="2" stroke-linecap="round" />
+                              <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={isD0Above ? '#4ADE80' : '#fbbf24'} stroke-width="2" stroke-linecap="round" />
+                            {:else}
+                              {@const segColor = targetVal !== null && (d0.value > targetVal || d1.value > targetVal) ? '#fbbf24' : '#4ADE80'}
+                              <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={segColor} stroke-width="2" stroke-linecap="round" />
+                              {/if}
+                            {/each}
+                            {#each chartData as d, i}
+                            {@const x = padL + i * spacingX}
+                            {@const y = padT + plotH - ((d.value - minVal) / range) * plotH}
+                            {@const isLatest = i === numPoints - 1}
+                            {@const isPtSelected = statEditEntry === d.date}
+                            {@const ptColor = targetVal !== null && d.value > targetVal ? '#fbbf24' : '#4ADE80'}
+                            {#if isPtSelected}
+                              <line x1={x} y1={padT} x2={x} y2={padT + plotH} stroke="#fff" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.5" />
+                            {/if}
+                            <g role="button" tabindex="0" style="cursor: pointer" onclick={(e) => { e.stopPropagation(); statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date; }} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date; } }}>
+                              <rect x={x - (isPtSelected ? 3.5 : isLatest ? 2.5 : 2)} y={y - (isPtSelected ? 3.5 : isLatest ? 2.5 : 2)} width={isPtSelected ? 7 : isLatest ? 5 : 4} height={isPtSelected ? 7 : isLatest ? 5 : 4} rx={isPtSelected ? 2 : isLatest ? 1.5 : 1.5} fill={ptColor} stroke={isPtSelected ? '#fff' : ptColor} stroke-width={isPtSelected ? 1.5 : 1} />
+                            </g>
+                            {/each}
+                            {#each yTicks as tick}
+                            <line x1={padL} y1={tick.y} x2={containerW - padR} y2={tick.y} stroke="#111" stroke-width="0.5" />
+                            <text x={padL - 6} y={tick.y + 4} text-anchor="end" fill="#555" font-size="11">{tick.val.toFixed(1)}</text>
+                            {/each}
+                            {#each xTicks as tick}
+                            <line x1={tick.x} y1={padT} x2={tick.x} y2={padT + plotH} stroke="#111" stroke-width="0.5" />
+                            <text x={tick.x} y={padT + plotH + 18} text-anchor="middle" fill="#555" font-size="11">{shortDateLabel(tick.date)}</text>
+                            {/each}
+                          </svg>
+                        </div>
 
                       {@const editDate = statEditEntry ?? REAL_TODAY_STR}
                       {#key editDate}

@@ -8800,18 +8800,61 @@ function getStatIcon(id: number): typeof Dna {
                     {#if statChartData.length === 0}
                       <div class="text-center py-4 text-[10px] text-zinc-600">No history yet.</div>
                     {:else}
-                      <div class="relative grid grid-cols-3 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5 mb-3" role="group" aria-label="Chart range">
-                        <div
-                          class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(33.333%-4px)] rounded bg-white transition-transform duration-200 ease-out"
-                          style="transform: translateX({statRangeMode === '2weeks' ? '0' : statRangeMode === 'ytd' ? 'calc(100% + 4px)' : 'calc(200% + 8px)'})"
-                        ></div>
-                        {#each rangeModes as mode, idx}
-                          <button
-                            type="button"
-                            class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.12em] transition-colors {statRangeMode === mode ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
-                            onclick={(e) => { e.stopPropagation(); statRangeMode = mode; }}
-                          >{mode === '2weeks' ? '2W' : mode === 'ytd' ? 'YTD' : 'ALL'}</button>
-                        {/each}
+                      {@const editDate = statEditEntry ?? REAL_TODAY_STR}
+                      <div class="flex items-center gap-2 mb-3" onclick={(e) => e.stopPropagation()}>
+                        <div class="relative grid grid-cols-3 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5 flex-1" role="group" aria-label="Chart range">
+                          <div
+                            class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(33.333%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+                            style="transform: translateX({statRangeMode === '2weeks' ? '0' : statRangeMode === 'ytd' ? 'calc(100% + 4px)' : 'calc(200% + 8px)'})"
+                          ></div>
+                          {#each rangeModes as mode, idx}
+                            <button
+                              type="button"
+                              class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.12em] transition-colors {statRangeMode === mode ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                              onclick={(e) => { e.stopPropagation(); statRangeMode = mode; }}
+                            >{mode === '2weeks' ? '2W' : mode === 'ytd' ? 'YTD' : 'ALL'}</button>
+                          {/each}
+                        </div>
+                        {#key editDate}
+                          <div class="bg-black border border-[#1e1e1e] rounded flex items-center gap-1.5 px-2 h-7 shrink-0" onclick={(e) => e.stopPropagation()}>
+                            <span class="text-[9px] text-zinc-500 font-mono leading-none whitespace-nowrap uppercase tracking-wide">{shortDateLabel(editDate)}</span>
+                            <input
+                              type="text"
+                              inputmode="decimal"
+                              autocomplete="off"
+                              class="prop-num-input w-12 h-full bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
+                              use:clampedNumericProp={{
+                                kind: 'statLog',
+                                getValue: () => statLogs[sid]?.[editDate] ?? 0,
+                                setValue: (v) => {
+                                  const prev = statLogs[sid] ?? {};
+                                  statLogs = {
+                                    ...statLogs,
+                                    [sid]: { ...prev, [editDate]: v },
+                                  };
+                                },
+                              }}
+                              onblur={() => {
+                                persistStatLogEntry(sid, editDate, statLogs[sid]?.[editDate] ?? 0);
+                              }}
+                              onkeydown={(e) => {
+                                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+                                if (e.key === 'Escape') { statEditEntry = REAL_TODAY_STR; }
+                              }}
+                            />
+                            <button
+                              type="button"
+                              class="shrink-0 flex items-center justify-center text-zinc-600 hover:text-red-400 transition-colors"
+                              onclick={() => {
+                                deleteStatLogEntry(sid, editDate);
+                                if (editDate !== REAL_TODAY_STR) statEditEntry = REAL_TODAY_STR;
+                              }}
+                              title="Delete entry"
+                            >
+                              <Trash2 class="size-3.5" />
+                            </button>
+                          </div>
+                        {/key}
                       </div>
                       {#if chartData.length === 0}
                         <div class="text-center py-4 text-[10px] text-zinc-600">No data in selected range.</div>
@@ -8902,48 +8945,6 @@ function getStatIcon(id: number): typeof Dna {
                             {/each}
                           </svg>
                         </div>
-
-                      {@const editDate = statEditEntry ?? REAL_TODAY_STR}
-                      {#key editDate}
-                      <div class="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg flex items-center gap-2 px-2.5 h-8 mt-2" onclick={(e) => e.stopPropagation()}>
-                        <span class="text-[11px] text-zinc-500 font-mono leading-none shrink-0">{shortDateLabel(editDate)}</span>
-                        <input
-                          type="text"
-                          inputmode="decimal"
-                          autocomplete="off"
-                          class="flex-1 min-w-0 h-full bg-transparent border-0 text-xs text-white text-center outline-none rounded"
-                          use:clampedNumericProp={{
-                            kind: 'statLog',
-                            getValue: () => statLogs[sid]?.[editDate] ?? 0,
-                            setValue: (v) => {
-                              const prev = statLogs[sid] ?? {};
-                              statLogs = {
-                                ...statLogs,
-                                [sid]: { ...prev, [editDate]: v },
-                              };
-                            },
-                          }}
-                          onblur={() => {
-                            persistStatLogEntry(sid, editDate, statLogs[sid]?.[editDate] ?? 0);
-                          }}
-                          onkeydown={(e) => {
-                            if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
-                            if (e.key === 'Escape') { statEditEntry = REAL_TODAY_STR; }
-                          }}
-                        />
-                        <button
-                          type="button"
-                          class="shrink-0 flex items-center justify-center text-zinc-600 hover:text-red-400 transition-colors"
-                          onclick={() => {
-                            deleteStatLogEntry(sid, editDate);
-                            if (editDate !== REAL_TODAY_STR) statEditEntry = REAL_TODAY_STR;
-                          }}
-                          title="Delete entry"
-                        >
-                          <Trash2 class="size-3.5" />
-                        </button>
-                      </div>
-                      {/key}
                     {/if}
                     {/if}
                   </div>

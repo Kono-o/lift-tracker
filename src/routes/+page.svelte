@@ -8841,7 +8841,7 @@ function getStatIcon(id: number): typeof Dna {
                         : null}
 
                       <div class="overflow-x-auto flex justify-center min-h-0" style="height: 227px;">
-                        <svg viewBox="0 0 {chartW} {chartH}" width={chartW} height={chartH} preserveAspectRatio="none" style="max-width: none; height: 195px; width: auto;" onclick={(e) => {
+                        <svg viewBox="0 0 {chartW} {chartH}" width={chartW} height={chartH} style="max-width: none; min-width: 100%;" onclick={(e) => {
                         e.stopPropagation();
                         const rect = e.currentTarget.getBoundingClientRect();
                         const scaleX = chartW / rect.width;

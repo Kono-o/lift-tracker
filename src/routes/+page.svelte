@@ -8795,8 +8795,8 @@ function getStatIcon(id: number): typeof Dna {
 
               {#if isSelected}
                 {@const sid = selectedStatsViewStatId as string}
-                <div class="pb-1" onclick={(e) => e.stopPropagation()}>
-                  <div class="border-t border-[#1e1e1e] pt-1">
+                <div class="py-2" onclick={(e) => e.stopPropagation()}>
+                  <div class="border-t border-[#1e1e1e] pt-2">
                     {#if statChartData.length === 0}
                       <div class="text-center py-4 text-[10px] text-zinc-600">No history yet.</div>
                     {:else}

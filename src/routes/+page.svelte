@@ -8937,10 +8937,10 @@ function getStatIcon(id: number): typeof Dna {
                                 {@const midX = x0 + t * (x1 - x0)}
                                 {@const midY = y0 + t * (y1 - y0)}
                                 {@const isD0Above = d0.value > targetVal}
-                                <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={isD0Above ? '#fbbf24' : '#4ADE80'} stroke-width="2" stroke-linecap="round" />
-                                <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={isD0Above ? '#4ADE80' : '#fbbf24'} stroke-width="2" stroke-linecap="round" />
+                                <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={isD0Above ? '#2f855a' : '#4ADE80'} stroke-width="2" stroke-linecap="round" />
+                                <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={isD0Above ? '#4ADE80' : '#2f855a'} stroke-width="2" stroke-linecap="round" />
                               {:else}
-                                {@const segColor = targetVal !== null && (d0.value > targetVal || d1.value > targetVal) ? '#fbbf24' : '#4ADE80'}
+                                {@const segColor = targetVal !== null && (d0.value > targetVal || d1.value > targetVal) ? '#2f855a' : '#4ADE80'}
                                 <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={segColor} stroke-width="2" stroke-linecap="round" />
                               {/if}
                             {/if}
@@ -8952,7 +8952,7 @@ function getStatIcon(id: number): typeof Dna {
                             {@const y = padT + plotH - ((d.value - minVal) / range) * plotH}
                             {@const isLatest = d.date === chartData[chartData.length - 1].date}
                             {@const isPtSelected = statEditEntry === d.date}
-                            {@const ptColor = targetVal !== null && d.value > targetVal ? '#fbbf24' : '#4ADE80'}
+                            {@const ptColor = targetVal !== null && d.value > targetVal ? '#2f855a' : '#4ADE80'}
                             {#if isPtSelected}
                               <line x1={x} y1={padT} x2={x} y2={padT + plotH} stroke="#fff" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.5" />
                             {/if}

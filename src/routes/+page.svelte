@@ -8803,7 +8803,7 @@ function getStatIcon(id: number): typeof Dna {
                       {@const editDate = statEditEntry ?? REAL_TODAY_STR}
                       <div class="flex items-center gap-2 mb-3" onclick={(e) => e.stopPropagation()}>
                         {#key editDate}
-                          <div class="bg-[#060606] border border-[#1e1e1e] rounded flex items-center gap-1.5 px-2 h-7 flex-1 min-w-0" onclick={(e) => e.stopPropagation()}>
+                          <div class="bg-[#060606] border border-[#1e1e1e] rounded flex items-center gap-1.5 px-2 h-8 flex-1 min-w-0" onclick={(e) => e.stopPropagation()}>
                             <span class="text-[9px] text-zinc-500 font-mono leading-none whitespace-nowrap uppercase tracking-wide shrink-0 w-20">{shortDateLabel(editDate)}</span>
                             <input
                               type="text"

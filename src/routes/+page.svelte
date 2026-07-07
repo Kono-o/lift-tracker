@@ -287,9 +287,9 @@ function getStatIcon(id: number): typeof Dna {
   let statLogSnapshots = $state<StatLogSnapshotRow[]>([]);
   let selectedStatsViewStatId = $state<string | null>(null);
   let statEditEntry = $state<string | null>(null);
-  type RangeMode = '2weeks' | 'ytd' | 'all';
-  let statRangeMode = $state<RangeMode>('all');
-  const rangeModes: RangeMode[] = ['2weeks', 'ytd', 'all'];
+  type RangeMode = '3weeks' | '3m' | '6m' | 'ytd' | 'all';
+  let statRangeMode = $state<RangeMode>('3weeks');
+  const rangeModes: RangeMode[] = ['3weeks', '3m', '6m', 'ytd', 'all'];
   let draftStats = $state<TrackedStat[]>([]);
   let selectedDraftStatId = $state<string | null>(null);
   let editingStatNameId = $state<string | null>(null);
@@ -2998,9 +2998,13 @@ function getStatIcon(id: number): typeof Dna {
 
   let chartData = $derived.by(() => {
     if (statRangeMode === 'all') return statChartData;
-    const cutoff = statRangeMode === '2weeks'
-      ? toDateStr(new Date(REAL_TODAY.getTime() - 14 * 24 * 60 * 60 * 1000))
-      : toDateStr(new Date(REAL_TODAY.getFullYear(), 0, 1));
+    const cutoff = statRangeMode === '3weeks'
+      ? toDateStr(new Date(REAL_TODAY.getTime() - 21 * 24 * 60 * 60 * 1000))
+      : statRangeMode === '3m'
+        ? toDateStr(new Date(REAL_TODAY.getFullYear(), REAL_TODAY.getMonth() - 3, REAL_TODAY.getDate()))
+        : statRangeMode === '6m'
+          ? toDateStr(new Date(REAL_TODAY.getFullYear(), REAL_TODAY.getMonth() - 6, REAL_TODAY.getDate()))
+          : toDateStr(new Date(REAL_TODAY.getFullYear() - 1, REAL_TODAY.getMonth(), REAL_TODAY.getDate()));
     return statChartData.filter(d => d.date >= cutoff);
   });
 
@@ -8699,24 +8703,24 @@ function getStatIcon(id: number): typeof Dna {
     </div>
 
   {:else if currentView === 'stats'}
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto no-scrollbar">
-      <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
+    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-2 flex-1 min-h-0 overflow-y-auto no-scrollbar">
+      <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2">
         <button
           type="button"
-          class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
+          class="w-7 h-7 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
           title="Go back"
           onclick={() => { selectedStatsViewStatId = null; exitStatsView(); }}
         >
-          <ArrowLeft class="size-4" />
+          <ArrowLeft class="size-3.5" />
         </button>
-        <span class="flex-1 text-xs font-bold tracking-wider text-zinc-400 leading-none">STATS</span>
+        <span class="flex-1 text-[11px] font-bold tracking-[0.15em] text-zinc-400 leading-none">STATS</span>
         <button
           type="button"
-          class="w-8 h-8 rounded-lg shrink-0 flex items-center justify-center border border-[#1e1e1e] bg-transparent text-zinc-400 hover:bg-[#1a1a1a] hover:text-white"
+          class="w-7 h-7 rounded-lg shrink-0 flex items-center justify-center border border-[#1e1e1e] bg-transparent text-zinc-400 hover:bg-[#1a1a1a] hover:text-white"
           onclick={openStatsEditor}
           title="Edit stats"
         >
-          <Pencil class="size-4" />
+          <Pencil class="size-3.5" />
         </button>
       </div>
 
@@ -8725,7 +8729,7 @@ function getStatIcon(id: number): typeof Dna {
           <div class="text-xs text-zinc-500">No stats defined yet.</div>
           <button
             type="button"
-            class="h-8 px-3 bg-[#141414] border border-[#1e1e1e] text-xs font-bold rounded hover:border-[#2a2a2a]"
+            class="h-7 px-3 bg-[#141414] border border-[#1e1e1e] text-[10px] font-bold rounded-lg hover:border-[#2a2a2a]"
             onclick={openStatsEditor}
           >
             CREATE STATS
@@ -8736,31 +8740,30 @@ function getStatIcon(id: number): typeof Dna {
           {#each trackedStats as stat (stat.id)}
             {@const isSelected = selectedStatsViewStatId === stat.id}
             {@const IconComponent = getStatIcon(stat.icon)}
-            <div
-              class="rounded-lg border transition-all cursor-pointer"
-              class:bg-[#1a1a1a]={isSelected}
-              class:bg-[#0d0d0d]={!isSelected}
-              style="border-color: {isSelected ? '#2a2a2a' : '#1e1e1e'}"
-              onclick={() => { selectedStatsViewStatId = selectedStatsViewStatId === stat.id ? null : stat.id; }}
-            >
-              <div class="flex items-stretch gap-1 p-1">
-                <div class="ml-0.5 shrink-0 flex items-center justify-center">
-                  <IconComponent class="size-4 text-zinc-300" />
-                </div>
-                <div class="flex-1 min-w-0 flex items-center">
-                  <span class="font-medium text-xs truncate leading-none text-zinc-300">{stat.name}</span>
-                </div>
-                <div class="flex items-center gap-1.5 shrink-0">
-                  {#if stat.unit}
-                    <span class="text-[9px] uppercase text-zinc-500 leading-none">{stat.unit}</span>
-                  {/if}
-                  <input
-                    type="text"
-                    inputmode="decimal"
-                    autocomplete="off"
-                    placeholder={String(stat.start_value || 0)}
-                    class="prop-num-input w-14 h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
-                    class:border-zinc-400={isSelected}
+              <div
+                class="rounded-lg border transition-all cursor-pointer"
+                class:bg-[#1a1a1a]={isSelected}
+                class:bg-[#0d0d0d]={!isSelected}
+                style="border-color: {isSelected ? '#2a2a2a' : '#1e1e1e'}"
+                onclick={() => { selectedStatsViewStatId = selectedStatsViewStatId === stat.id ? null : stat.id; }}
+              >
+                <div class="flex items-stretch gap-1.5 p-1.5">
+                  <div class="shrink-0 flex items-center justify-center">
+                    <IconComponent class="size-4 text-zinc-300" />
+                  </div>
+                  <div class="flex-1 min-w-0 flex items-center">
+                    <span class="font-medium text-xs truncate leading-none text-zinc-300">{stat.name}</span>
+                  </div>
+                  <div class="flex items-center gap-1.5 shrink-0">
+                    {#if stat.unit}
+                      <span class="text-[10px] uppercase text-zinc-500 leading-none">{stat.unit}</span>
+                    {/if}
+                    <input
+                      type="text"
+                      inputmode="decimal"
+                      autocomplete="off"
+                      placeholder={String(stat.start_value || 0)}
+                      class="prop-num-input w-14 h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
                     use:clampedNumericProp={{
                       kind: 'statLog',
                       getValue: () => {
@@ -8795,46 +8798,70 @@ function getStatIcon(id: number): typeof Dna {
 
               {#if isSelected}
                 {@const sid = selectedStatsViewStatId as string}
-                <div class="py-2" onclick={(e) => e.stopPropagation()}>
-                  <div class="border-t border-[#1e1e1e] pt-2">
-                    {#if statChartData.length === 0}
-                      <div class="text-center py-4 text-[10px] text-zinc-600">No history yet.</div>
-                    {:else}
+                <div class="pb-1.5 px-1.5" onclick={(e) => e.stopPropagation()}>
+                  <div class="border-t border-[#1e1e1e] pt-1.5">
+                      {#if true}
                       {@const editDate = statEditEntry ?? REAL_TODAY_STR}
-                      <div class="flex items-center gap-2 mb-3" onclick={(e) => e.stopPropagation()}>
-                        {#key editDate}
-                          <div class="bg-[#060606] border border-[#1e1e1e] rounded flex items-center gap-3 px-3 flex-1 min-w-0" style="height:34px;" onclick={(e) => e.stopPropagation()}>
-                            <div class="flex items-center justify-center h-full w-20 text-[9px] text-zinc-500 font-mono uppercase tracking-wide">{shortDateLabel(editDate)}</div>
-                            <div class="flex-1 flex items-center justify-center h-full">
-                              <input
-                                type="text"
-                                inputmode="decimal"
-                                autocomplete="off"
-                                class="prop-num-input w-full h-7 bg-transparent border-none text-center text-sm font-semibold text-white outline-none"
-                                use:clampedNumericProp={{
-                                  kind: 'statLog',
-                                  getValue: () => statLogs[sid]?.[editDate] ?? 0,
-                                  setValue: (v) => {
-                                    const prev = statLogs[sid] ?? {};
-                                    statLogs = {
-                                      ...statLogs,
-                                      [sid]: { ...prev, [editDate]: v },
-                                    };
-                                  },
-                                }}
-                                onblur={() => {
-                                  persistStatLogEntry(sid, editDate, statLogs[sid]?.[editDate] ?? 0);
-                                }}
-                                onkeydown={(e) => {
-                                  if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
-                                  if (e.key === 'Escape') { statEditEntry = REAL_TODAY_STR; }
-                                }}
-                              />
-                            </div>
+                      {@const containerW = 560}
+                      {@const containerH = 200}
+                      {@const padL = 40}
+                      {@const padR = 12}
+                      {@const padT = 12}
+                      {@const padB = 32}
+                      {@const plotW = containerW - padL - padR}
+                      {@const plotH = containerH - padT - padB}
+                      {@const msDay = 24 * 60 * 60 * 1000}
+                      {@const hasData = chartData.length > 0}
+                      {@const rangeStartDate = statRangeMode === '3weeks'
+                        ? new Date(REAL_TODAY.getTime() - 21 * msDay)
+                        : statRangeMode === '3m'
+                          ? new Date(REAL_TODAY.getFullYear(), REAL_TODAY.getMonth() - 3, REAL_TODAY.getDate())
+                          : statRangeMode === '6m'
+                            ? new Date(REAL_TODAY.getFullYear(), REAL_TODAY.getMonth() - 6, REAL_TODAY.getDate())
+                            : statRangeMode === 'ytd'
+                              ? new Date(REAL_TODAY.getFullYear() - 1, REAL_TODAY.getMonth(), REAL_TODAY.getDate())
+                              : hasData ? new Date(chartData[0].date + 'T00:00:00') : REAL_TODAY}
+                      {@const startDate = rangeStartDate}
+                      {@const endDate = REAL_TODAY}
+                      {@const totalDays = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / msDay) + 1)}
+                      {@const spacingX = totalDays > 1 ? plotW / Math.max(1, totalDays - 1) : 0}
+                      {@const xTickCount = Math.min(5, totalDays)}
+                      {@const xTicks = Array.from({length: xTickCount}, (_, i) => {
+                        const dayIdx = Math.round((i / Math.max(1, xTickCount - 1)) * Math.max(0, totalDays - 1));
+                        const dateStr = toDateStr(new Date(startDate.getTime() + dayIdx * msDay));
+                        return { dayIdx, x: padL + dayIdx * spacingX, date: dateStr };
+                      })}
+                      <div class="flex items-center gap-0 mb-2" onclick={(e) => e.stopPropagation()}>
+                        <div class="flex items-center gap-2 bg-[#060606] border border-[#1e1e1e] rounded-lg h-8 flex-1 min-w-0" onclick={(e) => e.stopPropagation()}>
+                          <div class="flex items-center gap-2 px-2.5 flex-1 min-w-0 h-full">
+                            <div class="w-[68px] text-[10px] text-zinc-500 font-mono uppercase tracking-wide text-center leading-none shrink-0">{shortDateLabel(editDate)}</div>
+                            <input
+                              type="text"
+                              inputmode="decimal"
+                              autocomplete="off"
+                              class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-none text-center text-xs font-semibold text-white outline-none"
+                              use:clampedNumericProp={{
+                                kind: 'statLog',
+                                getValue: () => statLogs[sid]?.[editDate] ?? 0,
+                                setValue: (v) => {
+                                  const prev = statLogs[sid] ?? {};
+                                  statLogs = {
+                                    ...statLogs,
+                                    [sid]: { ...prev, [editDate]: v },
+                                  };
+                                },
+                              }}
+                              onblur={() => {
+                                persistStatLogEntry(sid, editDate, statLogs[sid]?.[editDate] ?? 0);
+                              }}
+                              onkeydown={(e) => {
+                                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+                                if (e.key === 'Escape') { statEditEntry = REAL_TODAY_STR; }
+                              }}
+                            />
                             <button
                               type="button"
-                              class="shrink-0 flex items-center justify-center rounded text-zinc-400 hover:bg-red-700/10 hover:text-red-400 transition-colors"
-                              style="width:34px; height:34px;"
+                              class="w-6 h-6 shrink-0 flex items-center justify-center rounded text-zinc-500 hover:text-red-400 transition-colors"
                               onclick={() => {
                                 deleteStatLogEntry(sid, editDate);
                                 if (editDate !== REAL_TODAY_STR) statEditEntry = REAL_TODAY_STR;
@@ -8842,62 +8869,25 @@ function getStatIcon(id: number): typeof Dna {
                               aria-label="Delete entry"
                               title="Delete entry"
                             >
-                              <Trash2 class="size-3.5" />
+                              <Trash2 class="size-3" />
                             </button>
                           </div>
-                        {/key}
-                        <div class="relative grid grid-cols-3 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5 shrink-0" style="width: 180px;" role="group" aria-label="Chart range">
-                          <div
-                            class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(33.333%-4px)] rounded bg-white transition-transform duration-200 ease-out"
-                            style="transform: translateX({statRangeMode === '2weeks' ? '0' : statRangeMode === 'ytd' ? 'calc(100% + 4px)' : 'calc(200% + 8px)'})"
-                          ></div>
-                          {#each rangeModes as mode, idx}
-                            <button
-                              type="button"
-                              class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.12em] transition-colors {statRangeMode === mode ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
-                              onclick={(e) => { e.stopPropagation(); statRangeMode = mode; }}
-                            >{mode === '2weeks' ? '2W' : mode === 'ytd' ? 'YTD' : 'ALL'}</button>
-                          {/each}
+                          <div class="w-px h-5 bg-[#1e1e1e] shrink-0"></div>
+                          <div class="relative grid grid-cols-5 h-8 shrink-0 px-1" style="width: 220px;" role="group" aria-label="Chart range">
+                            <div
+                              class="pointer-events-none absolute top-0.5 bottom-0.5 rounded bg-white transition-transform duration-200 ease-out"
+                              style="width: calc(20% - 4px); transform: translateX({statRangeMode === '3weeks' ? '2px' : statRangeMode === '3m' ? 'calc(100% + 4px)' : statRangeMode === '6m' ? 'calc(200% + 8px)' : statRangeMode === 'ytd' ? 'calc(300% + 12px)' : 'calc(400% + 16px)'})"
+                            ></div>
+                            {#each rangeModes as mode, idx}
+                              <button
+                                type="button"
+                                class="relative z-10 h-full flex items-center justify-center text-[9px] font-black tracking-[0.12em] transition-colors {statRangeMode === mode ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                                onclick={(e) => { e.stopPropagation(); statRangeMode = mode; }}
+                              >{mode === '3weeks' ? '3W' : mode === '3m' ? '3M' : mode === '6m' ? '6M' : mode === 'ytd' ? 'YTD' : 'ALL'}</button>
+                            {/each}
+                          </div>
                         </div>
                       </div>
-                      {#if chartData.length === 0}
-                        <div class="text-center py-4 text-[10px] text-zinc-600">No data in selected range.</div>
-                      {:else}
-                        {@const values = chartData.map(d => d.value)}
-                        {@const rawMin = Math.min(...values)}
-                        {@const rawMax = Math.max(...values)}
-                        {@const targetVal = stat.has_target && stat.target_value != null ? stat.target_value : null}
-                        {@const minVal = targetVal !== null ? Math.min(rawMin, targetVal) : rawMin}
-                        {@const maxVal = targetVal !== null ? Math.max(rawMax, targetVal) : rawMax}
-                        {@const range = maxVal - minVal || 1}
-                        {@const containerW = 560}
-                        {@const containerH = 200}
-                        {@const padL = 40}
-                        {@const padR = 12}
-                        {@const padT = 12}
-                        {@const padB = 32}
-                        {@const plotW = containerW - padL - padR}
-                        {@const plotH = containerH - padT - padB}
-                        {@const numPoints = chartData.length}
-                        {@const msDay = 24 * 60 * 60 * 1000}
-                        {@const startDate = new Date(chartData[0].date + 'T00:00:00')}
-                        {@const endDate = new Date(chartData[numPoints - 1].date + 'T00:00:00')}
-                        {@const totalDays = Math.round((endDate.getTime() - startDate.getTime()) / msDay) + 1}
-                        {@const spacingX = totalDays > 1 ? plotW / (totalDays - 1) : 0}
-                        {@const targetY = targetVal !== null
-                          ? padT + plotH - ((targetVal - minVal) / range) * plotH
-                          : null}
-                        {@const yTickCount = 3}
-                        {@const yTicks = Array.from({length: yTickCount}, (_, i) => ({
-                          val: minVal + (i / (yTickCount - 1)) * range,
-                          y: padT + plotH - ((minVal + (i / (yTickCount - 1)) * range - minVal) / range) * plotH
-                        }))}
-                        {@const xTickCount = Math.min(5, totalDays)}
-                        {@const xTicks = Array.from({length: xTickCount}, (_, i) => {
-                          const dayIdx = Math.round((i / Math.max(1, xTickCount - 1)) * Math.max(0, totalDays - 1));
-                          const dateStr = toDateStr(new Date(startDate.getTime() + dayIdx * msDay));
-                          return { dayIdx, x: padL + dayIdx * spacingX, date: dateStr };
-                        })}
 
                         <div class="relative rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] overflow-hidden">
                           <svg viewBox="0 0 {containerW} {containerH}" width="100%" height="200" style="display: block;" onclick={(e) => {
@@ -8910,80 +8900,107 @@ function getStatIcon(id: number): typeof Dna {
                             statEditEntry = dateStr;
                           }}>
                             <rect x="0" y="0" width={containerW} height={containerH} fill="#0a0a0a" />
-                            {#if targetY !== null}
-                            <line x1={padL} y1={targetY} x2={containerW - padR} y2={targetY} stroke="#4ADE80" stroke-width="1" stroke-dasharray="4,4" opacity="0.6" />
-                            {/if}
-                            {#each chartData.slice(0, -1) as _, i}
-                            {@const d0 = chartData[i]}
-                            {@const d1 = chartData[i + 1]}
-                            {@const d0Date = new Date(d0.date + 'T00:00:00')}
-                            {@const d1Date = new Date(d1.date + 'T00:00:00')}
-                            {@const idx0 = Math.round((d0Date.getTime() - startDate.getTime()) / msDay)}
-                            {@const idx1 = Math.round((d1Date.getTime() - startDate.getTime()) / msDay)}
-                            {@const x0 = padL + idx0 * spacingX}
-                            {@const y0 = padT + plotH - ((d0.value - minVal) / range) * plotH}
-                            {@const x1 = padL + idx1 * spacingX}
-                            {@const y1 = padT + plotH - ((d1.value - minVal) / range) * plotH}
-                            {@const gapDays = idx1 - idx0}
-                            {#if gapDays > 1}
-                              {@const missingCount = gapDays - 1}
-                              {@const leftIdx = idx0 + 1}
-                              {@const rightIdx = idx1 - 1}
-                              {@const xLeft = padL + leftIdx * spacingX}
-                              {@const xRight = padL + rightIdx * spacingX}
-                              {#if missingCount === 1}
-                                <!-- Single missing day: draw a single dotted red line -->
-                                <line x1={xLeft} y1={padT} x2={xLeft} y2={padT + plotH} stroke="#ef4444" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
-                              {:else}
-                                {@const rectX = xLeft - spacingX/2}
-                                {@const rectW = (rightIdx - leftIdx + 1) * spacingX}
-                                <!-- translucent red fill for the missing area -->
-                                <rect x={rectX} y={padT} width={rectW} height={plotH} fill="#ef4444" fill-opacity="0.06" />
-                                <!-- dotted red borders at the edges -->
-                                <line x1={xLeft} y1={padT} x2={xLeft} y2={padT + plotH} stroke="#ef4444" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
-                                <line x1={xRight} y1={padT} x2={xRight} y2={padT + plotH} stroke="#ef4444" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
+                            {#if hasData}
+                              {@const values = chartData.map(d => d.value)}
+                              {@const rawMin = Math.min(...values)}
+                              {@const rawMax = Math.max(...values)}
+                              {@const targetVal = stat.has_target && stat.target_value != null ? stat.target_value : null}
+                              {@const minVal = targetVal !== null ? Math.min(rawMin, targetVal) : rawMin}
+                              {@const maxVal = targetVal !== null ? Math.max(rawMax, targetVal) : rawMax}
+                              {@const range = maxVal - minVal || 1}
+                              {@const targetY = targetVal !== null ? padT + plotH - ((targetVal - minVal) / range) * plotH : null}
+                              {@const yTickCount = 3}
+                              {@const yTicks = Array.from({length: yTickCount}, (_, i) => ({
+                                val: minVal + (i / (yTickCount - 1)) * range,
+                                y: padT + plotH - ((minVal + (i / (yTickCount - 1)) * range - minVal) / range) * plotH
+                              }))}
+                              {@const numPoints = chartData.length}
+                              {@const firstPtDate = new Date(chartData[0].date + 'T00:00:00')}
+                              {@const lastPtDate = new Date(chartData[numPoints - 1].date + 'T00:00:00')}
+                              {@const firstIdx = Math.round((firstPtDate.getTime() - startDate.getTime()) / msDay)}
+                              {@const lastIdx = Math.round((lastPtDate.getTime() - startDate.getTime()) / msDay)}
+                              {#if firstIdx > 0}
+                                {@const preW = firstIdx * spacingX}
+                                <rect x={padL} y={padT} width={preW} height={plotH} fill="#eab308" fill-opacity="0.04" />
+                                <line x1={padL + preW} y1={padT} x2={padL + preW} y2={padT + plotH} stroke="#eab308" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
                               {/if}
-                            {:else}
-                              {#if targetVal !== null && (d0.value <= targetVal) !== (d1.value <= targetVal)}
-                                {@const t = Math.abs((targetVal - d0.value) / (d1.value - d0.value))}
-                                {@const midX = x0 + t * (x1 - x0)}
-                                {@const midY = y0 + t * (y1 - y0)}
-                                {@const isD0Met = d0.value <= targetVal}
-                                <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={isD0Met ? '#4ADE80' : '#022c22'} stroke-width="2" stroke-linecap="round" />
-                                <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={isD0Met ? '#022c22' : '#4ADE80'} stroke-width="2" stroke-linecap="round" />
-                              {:else}
-                                {@const segColor = targetVal !== null && (d0.value <= targetVal && d1.value <= targetVal) ? '#4ADE80' : '#022c22'}
-                                <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={segColor} stroke-width="2" stroke-linecap="round" />
+                              {#if lastIdx < totalDays - 1}
+                                {@const postX = padL + (lastIdx + 1) * spacingX}
+                                {@const postW = (totalDays - 1 - lastIdx) * spacingX}
+                                <rect x={postX} y={padT} width={postW} height={plotH} fill="#eab308" fill-opacity="0.04" />
+                                <line x1={postX} y1={padT} x2={postX} y2={padT + plotH} stroke="#eab308" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
                               {/if}
+                              {#if targetY !== null}
+                              <line x1={padL} y1={targetY} x2={containerW - padR} y2={targetY} stroke="#4ADE80" stroke-width="1" stroke-dasharray="4,4" opacity="0.6" />
+                              {/if}
+                              {#each chartData.slice(0, -1) as _, i}
+                              {@const d0 = chartData[i]}
+                              {@const d1 = chartData[i + 1]}
+                              {@const d0Date = new Date(d0.date + 'T00:00:00')}
+                              {@const d1Date = new Date(d1.date + 'T00:00:00')}
+                              {@const idx0 = Math.round((d0Date.getTime() - startDate.getTime()) / msDay)}
+                              {@const idx1 = Math.round((d1Date.getTime() - startDate.getTime()) / msDay)}
+                              {@const x0 = padL + idx0 * spacingX}
+                              {@const y0 = padT + plotH - ((d0.value - minVal) / range) * plotH}
+                              {@const x1 = padL + idx1 * spacingX}
+                              {@const y1 = padT + plotH - ((d1.value - minVal) / range) * plotH}
+                              {@const gapDays = idx1 - idx0}
+                              {#if gapDays > 1}
+                                {@const missingCount = gapDays - 1}
+                                {@const leftIdx = idx0 + 1}
+                                {@const rightIdx = idx1 - 1}
+                                {@const xLeft = padL + leftIdx * spacingX}
+                                {@const xRight = padL + rightIdx * spacingX}
+                                {#if missingCount === 1}
+                                <line x1={xLeft} y1={padT} x2={xLeft} y2={padT + plotH} stroke="#eab308" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
+                                {:else}
+                                  {@const rectX = xLeft - spacingX/2}
+                                  {@const rectW = (rightIdx - leftIdx + 1) * spacingX}
+                                  <rect x={rectX} y={padT} width={rectW} height={plotH} fill="#eab308" fill-opacity="0.06" />
+                                  <line x1={xLeft} y1={padT} x2={xLeft} y2={padT + plotH} stroke="#eab308" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
+                                  <line x1={xRight} y1={padT} x2={xRight} y2={padT + plotH} stroke="#eab308" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
+                                {/if}
+                              {:else}
+                                {#if targetVal !== null && (d0.value <= targetVal) !== (d1.value <= targetVal)}
+                                  {@const t = Math.abs((targetVal - d0.value) / (d1.value - d0.value))}
+                                  {@const midX = x0 + t * (x1 - x0)}
+                                  {@const midY = y0 + t * (y1 - y0)}
+                                  {@const isD0Met = d0.value <= targetVal}
+                                  <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={isD0Met ? '#4ADE80' : '#022c22'} stroke-width="2" stroke-linecap="round" />
+                                  <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={isD0Met ? '#022c22' : '#4ADE80'} stroke-width="2" stroke-linecap="round" />
+                                {:else}
+                                  {@const segColor = targetVal !== null && (d0.value <= targetVal && d1.value <= targetVal) ? '#4ADE80' : '#022c22'}
+                                  <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={segColor} stroke-width="2" stroke-linecap="round" />
+                                {/if}
+                              {/if}
+                              {/each}
+                              {#each chartData as d, i}
+                              {@const dDate = new Date(d.date + 'T00:00:00')}
+                              {@const dayIdx = Math.round((dDate.getTime() - startDate.getTime()) / msDay)}
+                              {@const x = padL + dayIdx * spacingX}
+                              {@const y = padT + plotH - ((d.value - minVal) / range) * plotH}
+                              {@const isLatest = d.date === chartData[chartData.length - 1].date}
+                              {@const isPtSelected = statEditEntry === d.date}
+                              {@const ptColor = targetVal !== null && d.value <= targetVal ? '#4ADE80' : '#022c22'}
+                              {#if isPtSelected}
+                                <line x1={x} y1={padT} x2={x} y2={padT + plotH} stroke="#fff" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.5" />
+                              {/if}
+                              <g role="button" tabindex="0" style="cursor: pointer" onclick={(e) => { e.stopPropagation(); statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date; }} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date; } }}>
+                                <rect x={x - (isPtSelected ? 3.5 : isLatest ? 2.5 : 2)} y={y - (isPtSelected ? 3.5 : isLatest ? 2.5 : 2)} width={isPtSelected ? 7 : isLatest ? 5 : 4} height={isPtSelected ? 7 : isLatest ? 5 : 4} rx={isPtSelected ? 2 : isLatest ? 1.5 : 1.5} fill={ptColor} stroke={isPtSelected ? '#fff' : ptColor} stroke-width={isPtSelected ? 1.5 : 1} />
+                              </g>
+                              {/each}
+                              {#each yTicks as tick}
+                              <line x1={padL} y1={tick.y} x2={containerW - padR} y2={tick.y} stroke="#111" stroke-width="0.5" />
+                              <text x={padL - 6} y={tick.y + 4} text-anchor="end" fill="#555" font-size="11">{tick.val.toFixed(1)}</text>
+                              {/each}
                             {/if}
-                            {/each}
-                            {#each chartData as d, i}
-                            {@const dDate = new Date(d.date + 'T00:00:00')}
-                            {@const dayIdx = Math.round((dDate.getTime() - startDate.getTime()) / msDay)}
-                            {@const x = padL + dayIdx * spacingX}
-                            {@const y = padT + plotH - ((d.value - minVal) / range) * plotH}
-                            {@const isLatest = d.date === chartData[chartData.length - 1].date}
-                            {@const isPtSelected = statEditEntry === d.date}
-                            {@const ptColor = targetVal !== null && d.value <= targetVal ? '#4ADE80' : '#022c22'}
-                            {#if isPtSelected}
-                              <line x1={x} y1={padT} x2={x} y2={padT + plotH} stroke="#fff" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.5" />
-                            {/if}
-                            <g role="button" tabindex="0" style="cursor: pointer" onclick={(e) => { e.stopPropagation(); statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date; }} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date; } }}>
-                              <rect x={x - (isPtSelected ? 3.5 : isLatest ? 2.5 : 2)} y={y - (isPtSelected ? 3.5 : isLatest ? 2.5 : 2)} width={isPtSelected ? 7 : isLatest ? 5 : 4} height={isPtSelected ? 7 : isLatest ? 5 : 4} rx={isPtSelected ? 2 : isLatest ? 1.5 : 1.5} fill={ptColor} stroke={isPtSelected ? '#fff' : ptColor} stroke-width={isPtSelected ? 1.5 : 1} />
-                            </g>
-                            {/each}
-                            {#each yTicks as tick}
-                            <line x1={padL} y1={tick.y} x2={containerW - padR} y2={tick.y} stroke="#111" stroke-width="0.5" />
-                            <text x={padL - 6} y={tick.y + 4} text-anchor="end" fill="#555" font-size="11">{tick.val.toFixed(1)}</text>
-                            {/each}
                             {#each xTicks as tick}
                             <line x1={tick.x} y1={padT} x2={tick.x} y2={padT + plotH} stroke="#111" stroke-width="0.5" />
                             <text x={tick.x} y={padT + plotH + 18} text-anchor="middle" fill="#555" font-size="11">{shortDateLabel(tick.date)}</text>
                             {/each}
                           </svg>
                         </div>
-                    {/if}
-                    {/if}
+                      {/if}
                   </div>
                 </div>
               {/if}
@@ -8994,22 +9011,22 @@ function getStatIcon(id: number): typeof Dna {
     </div>
 
   {:else if currentView === 'edit_stats'}
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto no-scrollbar">
-      <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
+    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-2 flex-1 min-h-0 overflow-y-auto no-scrollbar">
+      <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2">
         <button
           type="button"
-          class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
+          class="w-7 h-7 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
           onclick={() => void exitStatsEditor()}
           disabled={editorExitSaving}
           title="Go back"
         >
-          <ArrowLeft class="size-4" />
+          <ArrowLeft class="size-3.5" />
         </button>
-        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">STAT EDITOR</span>
+        <span class="text-[11px] font-bold tracking-[0.15em] text-zinc-400 leading-none shrink-0">STAT EDITOR</span>
         <div class="flex-1 min-w-0 flex items-center">
           <input
             autocomplete="off"
-            class="w-full h-8 bg-black border border-[#1e1e1e] text-xs font-medium uppercase text-center px-2 rounded outline-none placeholder:text-zinc-600"
+            class="w-full h-7 bg-black border border-[#1e1e1e] text-[11px] font-medium uppercase text-center px-2 rounded-lg outline-none placeholder:text-zinc-600"
             placeholder="Stat name"
             disabled={!selectedDraftStatId}
             value={selectedDraftStatId ? (draftStatById(selectedDraftStatId)?.name ?? '') : ''}
@@ -9028,7 +9045,7 @@ function getStatIcon(id: number): typeof Dna {
           {@const StatIcon = getStatIcon(statIconId)}
           <button
             type="button"
-            class="w-8 h-8 rounded bg-black border border-[#1e1e1e] flex items-center justify-center transition-all group hover:border-zinc-400"
+            class="w-7 h-7 rounded-lg bg-black border border-[#1e1e1e] flex items-center justify-center transition-all group hover:border-zinc-400"
             onclick={() => {
               const next = (statIconId + 1) % 10;
               patchDraftStat(selectedDraftStatId, { icon: next });
@@ -9036,7 +9053,7 @@ function getStatIcon(id: number): typeof Dna {
             }}
             title="Click to cycle stat icon"
           >
-            <StatIcon class="size-5 text-zinc-300 transition-all group-active:scale-90" />
+            <StatIcon class="size-4 text-zinc-300 transition-all group-active:scale-90" />
           </button>
         {/if}
       </div>
@@ -9046,11 +9063,11 @@ function getStatIcon(id: number): typeof Dna {
   
       <div class="space-y-1.5">
         <div class="builder-editor-grid">
-          <div class="col-start-1 row-start-1 h-5 flex items-center">
-            <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">STATS</span>
+          <div class="col-start-1 row-start-1 h-6 flex items-center">
+            <span class="text-[10px] uppercase tracking-[2px] text-zinc-500 font-semibold leading-none">STATS</span>
           </div>
-          <div class="col-start-2 row-start-1 h-5 flex items-center border-l border-[#1e1e1e] pl-2">
-            <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">PROPERTIES</span>
+          <div class="col-start-2 row-start-1 h-6 flex items-center border-l border-[#1e1e1e] pl-2">
+            <span class="text-[10px] uppercase tracking-[2px] text-zinc-500 font-semibold leading-none">PROPERTIES</span>
           </div>
   
           <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
@@ -9158,7 +9175,7 @@ function getStatIcon(id: number): typeof Dna {
                   {#if stat}
                     {@const hasTarget = !!draftStatById(statId)?.has_target}
                     {@const prefersLower = draftStatById(statId)?.target_prefers_lower ?? true}
-                    <div class="grid grid-cols-[minmax(0,1.55fr)_minmax(0,0.85fr)] gap-x-1 gap-y-2 text-[9px]">
+                    <div class="grid grid-cols-[minmax(0,1.55fr)_minmax(0,0.85fr)] gap-x-1.5 gap-y-2.5 text-[10px]">
                       <div>
                         <span class="text-zinc-500 block mb-0.5 leading-none">Start</span>
                         <input
@@ -9220,7 +9237,7 @@ function getStatIcon(id: number): typeof Dna {
                           ></div>
                           <button
                             type="button"
-                            class="relative z-10 h-7 flex items-center justify-center text-[8px] font-black tracking-[0.1em] transition-colors {!hasTarget ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                            class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.1em] transition-colors {!hasTarget ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
                             onclick={() => {
                               patchDraftStat(statId, { has_target: false, target_value: null });
                               void persistTrackedStatsNow();
@@ -9228,7 +9245,7 @@ function getStatIcon(id: number): typeof Dna {
                           >OFF</button>
                           <button
                             type="button"
-                            class="relative z-10 h-7 flex items-center justify-center text-[8px] font-black tracking-[0.1em] transition-colors {hasTarget ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                            class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.1em] transition-colors {hasTarget ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
                             onclick={() => {
                               const current = draftStatById(statId);
                               const nextTarget =
@@ -9261,7 +9278,7 @@ function getStatIcon(id: number): typeof Dna {
                           ></div>
                           <button
                             type="button"
-                            class="relative z-10 h-7 flex items-center justify-center text-[8px] font-black tracking-[0.1em] transition-colors {prefersLower ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                            class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.1em] transition-colors {prefersLower ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
                             onclick={() => {
                               patchDraftStat(statId, { target_prefers_lower: true });
                               void persistTrackedStatsNow();
@@ -9269,7 +9286,7 @@ function getStatIcon(id: number): typeof Dna {
                           >UNDER</button>
                           <button
                             type="button"
-                            class="relative z-10 h-7 flex items-center justify-center text-[8px] font-black tracking-[0.1em] transition-colors {!prefersLower ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                            class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.1em] transition-colors {!prefersLower ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
                             onclick={() => {
                               patchDraftStat(statId, { target_prefers_lower: false });
                               void persistTrackedStatsNow();
@@ -9281,7 +9298,7 @@ function getStatIcon(id: number): typeof Dna {
                   {/if}
                 {/key}
               {:else}
-                <div class="flex-1 min-h-0 flex items-center justify-center text-center px-1 text-[9px] leading-snug text-zinc-500 border border-dashed border-[#1e1e1e] rounded">Select a stat to edit.</div>
+                <div class="flex-1 min-h-0 flex items-center justify-center text-center px-1 text-[10px] leading-snug text-zinc-500 border border-dashed border-[#1e1e1e] rounded">Select a stat to edit.</div>
               {/if}
             </div>
           </div>

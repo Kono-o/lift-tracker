@@ -2,9 +2,10 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { fade } from 'svelte/transition';
   import { PUBLIC_SUPABASE_URL } from '$env/static/public';
-  import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type TrackedStat, type StatLogSnapshotRow, type WorkoutHistory } from '$lib/db';
+  import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type TrackedStat, type StatLogSnapshotRow, type WorkoutHistory, type Routine, type RoutineWithOwner } from '$lib/db';
   import GeneratedAvatar from '$lib/components/GeneratedAvatar.svelte';
   import HeaderClock from '$lib/components/HeaderClock.svelte';
+  import RoutinesMenu from '$lib/components/RoutinesMenu.svelte';
   import { horizontalSwipe } from '$lib/horizontalSwipe';
   import { scrollEdgeFade } from '$lib/scrollEdgeFade';
   import { getDbActivitySnapshot, runDbActivityBatch, subscribeDbActivity, subscribeDbActivitySnapshot } from '$lib/dbActivity';
@@ -202,6 +203,15 @@ function getStatIcon(id: number): typeof Dna {
   let dbIoFlashTimer: ReturnType<typeof setTimeout> | null = null;
   let dbActivitySnapshot = $state(getDbActivitySnapshot());
   let showSettingsPanel = $state(false);
+  let activeRoutineId = $state<string | null>(null);
+  let preloadedRoutines = $state<Routine[]>([]);
+  let preloadedAllRoutines = $state<RoutineWithOwner[]>([]);
+  let preloadedBookmarkIds = $state<string[]>([]);
+  let activeRoutineName = $derived.by(() => {
+    if (!activeRoutineId) return 'NO ROUTINE ACTIVE';
+    const r = preloadedRoutines.find((r) => r.id === activeRoutineId);
+    return r?.name ?? 'ROUTINE';
+  });
 
   // Self-update (Android sideload only). Mirrors settings panel UX: centered + blur.
   let showUpdatePrompt = $state(false);
@@ -318,7 +328,7 @@ function getStatIcon(id: number): typeof Dna {
     const idx = Math.floor((y - firstRowOffset) / ROW_TOTAL);
     return Math.max(0, Math.min(maxIndex, idx));
   }
-  let currentView = $state<'track' | 'swap_template' | 'edit_template' | 'stats' | 'edit_stats'>('track');
+  let currentView = $state<'track' | 'swap_template' | 'edit_template' | 'stats' | 'edit_stats' | 'routines_menu'>('track');
   let templateEditorReturnView = $state<'track' | 'swap_template'>('track');
 
   // Persisted avatar seed from usernames table. Click the identicon in the user menu to shuffle to a new one.
@@ -493,8 +503,39 @@ function getStatIcon(id: number): typeof Dna {
     URL.revokeObjectURL(url);
   }
 
-  async function exportRoutineAsCsv() {
+  async function exportRoutineAsCsv(routineId?: string) {
     if (!templates || templates.length === 0) return;
+
+    let tplFilter: ((id: string) => boolean) | null = null;
+    let dayLookup: ((tplId: string) => string) | null = null;
+
+    // If a specific routine is requested, fetch its schedule and filter to those templates
+    if (routineId) {
+      try {
+        const { data: plan } = await supabase
+          .from('routine_schedules')
+          .select('day_of_week, template_id')
+          .eq('routine_id', routineId);
+        if (plan && plan.length > 0) {
+          const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          const tplDays = new Map<string, number[]>();
+          for (const s of plan) {
+            if (!s.template_id) continue;
+            if (!tplDays.has(s.template_id)) tplDays.set(s.template_id, []);
+            tplDays.get(s.template_id)!.push(s.day_of_week);
+          }
+          tplFilter = (id: string) => tplDays.has(id);
+          dayLookup = (tplId: string) => {
+            const days = tplDays.get(tplId);
+            if (!days || days.length === 0) return '\u2014';
+            days.sort((a, b) => a - b);
+            return days.map((d) => dayNames[d]).join(', ');
+          };
+        }
+      } catch (e) {
+        console.error('Failed to fetch routine schedule for export', e);
+      }
+    }
 
     // Idiomatic columns for easy routine reading:
     // The first 5 columns give you a scannable view of the whole program.
@@ -517,7 +558,8 @@ function getStatIcon(id: number): typeof Dna {
     const rows: string[][] = [headers];
 
     for (const tpl of templates) {
-      const daysStr = getAssignedDaysString(tpl.id);
+      if (tplFilter && !tplFilter(tpl.id)) continue;
+      const daysStr = dayLookup ? dayLookup(tpl.id) : getAssignedDaysString(tpl.id);
       for (let i = 0; i < (tpl.exercises?.length ?? 0); i++) {
         const ex = tpl.exercises[i];
         const isReps = ex.exercise_type === 'reps';
@@ -595,6 +637,7 @@ function getStatIcon(id: number): typeof Dna {
     templateErrorFading = false;
     editingRoutineTemplateNameId = null;
     routineTemplateNameEditOriginal = null;
+    refreshRoutinesPreload();
     const newAssignments: Record<number, string | null> = {};
     for (const s of schedule) {
       const tid = s.template_id ?? null;
@@ -1448,6 +1491,7 @@ function getStatIcon(id: number): typeof Dna {
     currentView === 'swap_template' ||
       currentView === 'edit_template' ||
       currentView === 'edit_stats' ||
+      currentView === 'routines_menu' ||
       (currentView === 'stats' && workoutState !== 'active'),
   );
   let ctaBarVisible = $derived(
@@ -1456,7 +1500,8 @@ function getStatIcon(id: number): typeof Dna {
         currentView === 'swap_template' ||
         currentView === 'edit_template' ||
         currentView === 'stats' ||
-        currentView === 'edit_stats') &&
+        currentView === 'edit_stats' ||
+        currentView === 'routines_menu') &&
       (isViewingToday ||
         viewedLog ||
         selectedDateStr > REAL_TODAY_STR ||
@@ -2938,6 +2983,67 @@ function getStatIcon(id: number): typeof Dna {
     void refreshSupabaseUsage();
   }
 
+  function openRoutinesMenu() {
+    currentView = 'routines_menu';
+    refreshRoutinesPreload();
+  }
+
+  function refreshRoutinesPreload() {
+    if (!currentUser) return;
+    db.getMyRoutines().then((r) => { preloadedRoutines = r; }).catch(() => {});
+    db.getAllUsersAndRoutines().then((r) => { preloadedAllRoutines = r; }).catch(() => {});
+    db.getUserBookmarks().then((r) => { preloadedBookmarkIds = r.map((b) => b.routine_id); }).catch(() => {});
+  }
+
+  function closeRoutinesMenu() {
+    templateError = null;
+    templateErrorFading = false;
+    const newAssignments: Record<number, string | null> = {};
+    for (const s of schedule) {
+      const tid = s.template_id ?? null;
+      if (tid) {
+        const tpl = templates.find((t) => t.id === tid);
+        newAssignments[s.day_of_week] = isTemplateAssignable(tpl) ? tid : null;
+      } else {
+        newAssignments[s.day_of_week] = null;
+      }
+    }
+    builderAssignments = newAssignments;
+    builderEditingDay = selectedWeekday;
+    currentView = 'swap_template';
+  }
+
+  async function onRoutineActivate(routineId: string) {
+    try {
+      const plan = await db.getRoutineSchedule(routineId);
+      const newSchedule = plan.map((s: { day_of_week: number; template_id: string | null }) => ({
+        user_id: currentUser?.id ?? '',
+        day_of_week: s.day_of_week,
+        template_id: s.template_id,
+        updated_at: new Date().toISOString(),
+      }));
+      schedule = newSchedule;
+      const newAssignments: Record<number, string | null> = {};
+      for (const s of newSchedule) {
+        const tid = s.template_id ?? null;
+        if (tid) {
+          const tpl = templates.find((t) => t.id === tid);
+          newAssignments[s.day_of_week] = isTemplateAssignable(tpl) ? tid : null;
+        } else {
+          newAssignments[s.day_of_week] = null;
+        }
+      }
+      builderAssignments = newAssignments;
+    } catch (e) {
+      console.error('Failed to update editor after routine activation', e);
+    }
+  }
+
+  function handleEditRoutineFromMenu(routineId: string) {
+    currentView = 'swap_template';
+    void onRoutineActivate(routineId).then(() => loadData());
+  }
+
   function closeSettingsPanel() {
     if (accountBusy) return;
     resetSettingsPanelUi();
@@ -3731,6 +3837,18 @@ function getStatIcon(id: number): typeof Dna {
 			trackedStats = stats;
 			statLogSnapshots = snapshots;
 			statLogs = statLogsFromSnapshots(snapshots);
+			activeRoutineId = await db.getActiveRoutineId();
+			if (!activeRoutineId) {
+				try {
+					const routines = await db.getMyRoutines();
+					if (routines.length > 0) {
+						await db.setActiveRoutine(routines[0].id);
+						activeRoutineId = routines[0].id;
+					}
+				} catch (e) {
+					console.error('Failed to auto-assign first routine as active', e);
+				}
+			}
 			if (isInitial) {
 				bootSections = buildBootSections(currentUser, schedule, templates, todayLog, recentLogs);
 				bootMessage = 'Almost ready…';
@@ -4960,6 +5078,12 @@ function getStatIcon(id: number): typeof Dna {
     builderAssignments = nextAssignments;
     try {
       await db.assignTemplatesToDays(patches);
+      if (activeRoutineId) {
+        void db.saveRoutineSchedule(activeRoutineId, schedule.map((s: any) => ({
+          day_of_week: s.day_of_week,
+          template_id: s.template_id,
+        }))).catch((e) => console.error('Failed to sync routine schedule', e));
+      }
     } catch (e) {
       console.error('clear template from schedule failed', e);
       void loadData({ preserveSession: true });
@@ -5001,6 +5125,16 @@ function getStatIcon(id: number): typeof Dna {
       routineTemplateNameEditOriginal = null;
     }
     await flushTemplateNamePersist();
+    if (activeRoutineId) {
+      try {
+        await db.saveRoutineSchedule(activeRoutineId, schedule.map((s: any) => ({
+          day_of_week: s.day_of_week,
+          template_id: s.template_id,
+        })));
+      } catch (e) {
+        console.error('Failed to sync routine schedule on editor exit', e);
+      }
+    }
   }
 
   function exitRoutineEditor() {
@@ -5043,7 +5177,14 @@ function getStatIcon(id: number): typeof Dna {
     if (effectiveId === priorEffective) return;
 
     applyLocalScheduleAssignment(dayOfWeek, effectiveId);
-    void db.assignTemplatesToDays([{ dayOfWeek, templateId: effectiveId }]).catch((e) => {
+    void db.assignTemplatesToDays([{ dayOfWeek, templateId: effectiveId }]).then(() => {
+      if (activeRoutineId) {
+        void db.saveRoutineSchedule(activeRoutineId, schedule.map((s: any) => ({
+          day_of_week: s.day_of_week,
+          template_id: s.template_id,
+        }))).catch((e) => console.error('Failed to sync routine schedule', e));
+      }
+    }).catch((e) => {
       console.error('Day assignment save failed', e);
       templateError = formatDbError(e);
       templateErrorFading = false;
@@ -5760,6 +5901,10 @@ function getStatIcon(id: number): typeof Dna {
         // Prioritize deepest "modal" first so saves happen exactly as arrow buttons do.
         if (currentView === 'edit_template') {
           void exitEditTemplate();
+          return;
+        }
+        if (currentView === 'routines_menu') {
+          closeRoutinesMenu();
           return;
         }
         if (currentView === 'swap_template') {
@@ -7933,6 +8078,7 @@ function getStatIcon(id: number): typeof Dna {
             routineTemplateNameEditOriginal = null;
             builderAssignments = {};
             builderEditingDay = selectedWeekday;
+            refreshRoutinesPreload();
           }}>
           CREATE ROUTINE
         </button>
@@ -8518,16 +8664,16 @@ function getStatIcon(id: number): typeof Dna {
         <div class="flex-1 min-w-0 flex items-center">
           <span
             class="w-full h-8 flex items-center justify-center px-2 rounded border border-[#2a2a2a] bg-black text-xs font-medium truncate leading-none text-center text-white"
-          >{builderDayAssignmentLabel}</span>
+          >{activeRoutineName}</span>
         </div>
         <button
           type="button"
-          class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-zinc-400 hover:text-white hover:bg-[#1a1a1a] flex items-center justify-center transition-colors disabled:opacity-40"
-          title="Export your full routine (all templates + schedule) as CSV"
-          onclick={() => void exportRoutineAsCsv()}
-          disabled={!templates || templates.length === 0}
+          class="h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-zinc-400 hover:text-white hover:bg-[#1a1a1a] flex items-center justify-center gap-1.5 px-2.5 transition-colors text-[10px] font-bold tracking-[1px]"
+          title="My Routines"
+          onclick={() => openRoutinesMenu()}
         >
-          <Download class="size-4" />
+          <List class="size-3.5" />
+          <span>MY ROUTINES</span>
         </button>
       </div>
 
@@ -9778,6 +9924,20 @@ function getStatIcon(id: number): typeof Dna {
         </div>
         </div>
       {/if}
+    </div>
+  {:else if currentView === 'routines_menu'}
+    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto no-scrollbar">
+      <RoutinesMenu
+        onBack={closeRoutinesMenu}
+        onEditRoutine={handleEditRoutineFromMenu}
+        onDownload={(id) => void exportRoutineAsCsv(id)}
+        onActivate={onRoutineActivate}
+        currentUserId={currentUser?.id ?? ''}
+        bind:activeRoutineId
+        initialRoutines={preloadedRoutines}
+        initialAllRoutines={preloadedAllRoutines}
+        initialBookmarkIds={preloadedBookmarkIds}
+      />
     </div>
   {/if}
   </div>

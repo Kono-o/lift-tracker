@@ -788,6 +788,43 @@ async function getExerciseAllTimeBest(exerciseId: string): Promise<number> {
 }
 
 // ============================================================
+// ROUTINE TYPES
+// ============================================================
+
+export interface Routine {
+	id: string;
+	user_id: string;
+	name: string;
+	created_at: string;
+	template_count?: number;
+}
+
+export interface RoutineSchedule {
+	routine_id: string;
+	day_of_week: number;
+	template_id: string | null;
+}
+
+export interface RoutineBookmark {
+	id: string;
+	user_id: string;
+	routine_id: string;
+	created_at: string;
+}
+
+export interface UserProfileRow {
+	username: string;
+	user_id: string;
+	avatar_seed: string | null;
+}
+
+export interface RoutineWithOwner extends Routine {
+	owner_username: string;
+	owner_avatar_seed: string | null;
+	schedule: Array<{ day_of_week: number; template_id: string | null }>;
+}
+
+// ============================================================
 // DB LAYER
 // ============================================================
 
@@ -1906,5 +1943,461 @@ export const db = {
 	/** Returns the best (heaviest) weight ever logged for a given exercise id. */
 	async getExercisePersonalBest(exerciseId: string): Promise<number> {
 		return getExerciseAllTimeBest(exerciseId);
+	},
+
+	/* ==================================================
+		 ROUTINES (multiple per user, one active)
+		 ================================================== */
+
+	/** List all routines owned by the current user. */
+	async getMyRoutines(): Promise<Routine[]> {
+		const uid = await requireUserId();
+		const { data, error } = await supabase
+			.from("routines")
+			.select("id, user_id, name, created_at, display_order, routine_schedules ( template_id )")
+			.eq("user_id", uid)
+			.order("display_order")
+			.order("created_at");
+		if (error) throw error;
+		return ((data ?? []) as any[]).map((r: any) => ({
+			id: r.id,
+			user_id: r.user_id,
+			name: r.name,
+			created_at: r.created_at,
+			template_count: Array.isArray(r.routine_schedules)
+				? r.routine_schedules.filter((s: any) => s.template_id != null).length
+				: 0,
+		}));
+	},
+
+	/** If the user has schedule entries but no routines yet, auto-create one. */
+	async ensureDefaultRoutine(): Promise<Routine | null> {
+		const uid = await requireUserId();
+		// Check if any routines already exist
+		const { data: existing, error: exErr } = await supabase
+			.from("routines")
+			.select("id")
+			.eq("user_id", uid)
+			.limit(1);
+		if (exErr) throw exErr;
+		if (existing && existing.length > 0) return null;
+		// No routines — check for schedule entries with templates
+		const { data: schedule, error: schErr } = await supabase
+			.from("schedule")
+			.select("day_of_week, template_id")
+			.eq("user_id", uid)
+			.not("template_id", "is", null)
+			.order("day_of_week");
+		if (schErr) throw schErr;
+		if (!schedule || schedule.length === 0) return null;
+		// Create a routine from the existing schedule
+		const { data: routine, error: insErr } = await supabase
+			.from("routines")
+			.insert({ user_id: uid, name: "MY ROUTINE", display_order: 0 })
+			.select("id, user_id, name, created_at")
+			.single();
+		if (insErr) throw insErr;
+		// Create routine_schedules entries
+		const { error: rsErr } = await supabase.from("routine_schedules").insert(
+			schedule.map((s: { day_of_week: number; template_id: string }) => ({
+				routine_id: routine.id,
+				day_of_week: s.day_of_week,
+				template_id: s.template_id,
+			})),
+		);
+		if (rsErr) throw rsErr;
+		// Set as active routine
+		await supabase
+			.from("usernames")
+			.update({ active_routine_id: routine.id })
+			.eq("user_id", uid);
+		return { ...routine, template_count: schedule.length } as Routine;
+	},
+
+	/** Create a new routine with the given name (appended at end of list). */
+	async createRoutine(name: string): Promise<Routine> {
+		const safeName = sanitizeTemplateName(name.trim()) || "NEW ROUTINE";
+		const uid = await requireUserId();
+		// Get next display_order
+		const { data: maxRow } = await supabase
+			.from("routines")
+			.select("display_order")
+			.eq("user_id", uid)
+			.order("display_order", { ascending: false })
+			.limit(1)
+			.maybeSingle();
+		const nextOrder = (maxRow?.display_order ?? -1) + 1;
+		const { data, error } = await supabase
+			.from("routines")
+			.insert({ user_id: uid, name: safeName, display_order: nextOrder })
+			.select("id, user_id, name, created_at")
+			.single();
+		if (error) throw error;
+		return { ...data, template_count: 0 } as Routine;
+	},
+
+	/** Rename a routine. */
+	async renameRoutine(routineId: string, name: string): Promise<void> {
+		const safeName = sanitizeTemplateName(name.trim()) || "ROUTINE";
+		const { error } = await supabase
+			.from("routines")
+			.update({ name: safeName })
+			.eq("id", routineId);
+		if (error) throw error;
+	},
+
+	/** Delete a routine and its schedules. Does NOT delete templates (they are global). */
+	async deleteRoutine(routineId: string): Promise<void> {
+		const uid = await requireUserId();
+		// Clear active_routine if this was the active one
+		await supabase
+			.from("usernames")
+			.update({ active_routine_id: null })
+			.eq("user_id", uid)
+			.eq("active_routine_id", routineId);
+		// Delete routine schedules
+		await supabase.from("routine_schedules").delete().eq("routine_id", routineId);
+		// Delete bookmarks pointing to this routine
+		await supabase.from("routine_bookmarks").delete().eq("routine_id", routineId);
+		// Delete the routine itself
+		const { error } = await supabase.from("routines").delete().eq("id", routineId);
+		if (error) throw error;
+	},
+
+	/** Set the active routine for the current user (only one can be active). */
+	async setActiveRoutine(routineId: string | null): Promise<void> {
+		const uid = await requireUserId();
+		const { error } = await supabase
+			.from("usernames")
+			.update({ active_routine_id: routineId })
+			.eq("user_id", uid);
+		if (error) throw error;
+
+		if (routineId) {
+			// Sync the schedule table with the active routine's weekly plan
+			const { data: plan, error: planErr } = await supabase
+				.from("routine_schedules")
+				.select("day_of_week, template_id")
+				.eq("routine_id", routineId);
+			if (planErr) throw planErr;
+
+			// Replace current schedule entries with this routine's plan
+			await supabase.from("schedule").delete().eq("user_id", uid);
+			if (plan && plan.length > 0) {
+				const { error: insertErr } = await supabase.from("schedule").insert(
+					plan.map((s: { day_of_week: number; template_id: string | null }) => ({
+						user_id: uid,
+						day_of_week: s.day_of_week,
+						template_id: s.template_id,
+					})),
+				);
+				if (insertErr) throw insertErr;
+			}
+		}
+	},
+
+	async getRoutineSchedule(routineId: string): Promise<RoutineSchedule[]> {
+		const { data, error } = await supabase
+			.from("routine_schedules")
+			.select("routine_id, day_of_week, template_id")
+			.eq("routine_id", routineId);
+		if (error) throw error;
+		return (data ?? []) as RoutineSchedule[];
+	},
+
+	/** Save weekly assignments to a routine. Replaces existing routine_schedules. */
+	async saveRoutineSchedule(
+		routineId: string,
+		schedule: Array<{ day_of_week: number; template_id: string | null }>,
+	): Promise<void> {
+		const { error: delErr } = await supabase
+			.from("routine_schedules")
+			.delete()
+			.eq("routine_id", routineId);
+		if (delErr) throw delErr;
+		if (schedule.length > 0) {
+			const { error: insErr } = await supabase
+				.from("routine_schedules")
+				.insert(
+					schedule.map((s) => ({
+						routine_id: routineId,
+						day_of_week: s.day_of_week,
+						template_id: s.template_id,
+					})),
+				);
+			if (insErr) throw insErr;
+		}
+	},
+
+	/** Persist reordered display_orders for the current user's routines. */
+	async updateRoutineDisplayOrders(orders: Array<{ id: string; display_order: number }>): Promise<void> {
+		const uid = await requireUserId();
+		const { error } = await supabase.from("routines").upsert(
+			orders.map((o) => ({ id: o.id, user_id: uid, display_order: o.display_order })),
+			{ onConflict: "id" },
+		);
+		if (error) throw error;
+	},
+
+	/** Get the active routine id for the current user. */
+	async getActiveRoutineId(): Promise<string | null> {
+		const uid = await requireUserId();
+		const { data, error } = await supabase
+			.from("usernames")
+			.select("active_routine_id")
+			.eq("user_id", uid)
+			.maybeSingle();
+		if (error) throw error;
+		return (data?.active_routine_id as string) ?? null;
+	},
+
+	/** List all users and their routines (for discovery browsing). */
+	async getAllUsersAndRoutines(): Promise<RoutineWithOwner[]> {
+		const [routinesRes, usersRes] = await Promise.all([
+			supabase
+				.from("routines")
+				.select("id, user_id, name, created_at, routine_schedules ( day_of_week, template_id )")
+				.order("created_at"),
+			supabase.from("usernames").select("username, user_id, avatar_seed"),
+		]);
+		if (routinesRes.error) throw routinesRes.error;
+		if (usersRes.error) throw usersRes.error;
+
+		const userMap = new Map(
+			((usersRes.data ?? []) as UserProfileRow[]).map((u) => [u.user_id, u]),
+		);
+
+		return ((routinesRes.data ?? []) as any[]).map((row) => {
+			const owner = userMap.get(row.user_id);
+			const sched = Array.isArray(row.routine_schedules) ? row.routine_schedules : [];
+			return {
+				id: row.id,
+				user_id: row.user_id,
+				name: row.name,
+				created_at: row.created_at,
+				owner_username: owner?.username ?? "unknown",
+				owner_avatar_seed: owner?.avatar_seed ?? null,
+				schedule: (sched as any[]).map((s: any) => ({
+					day_of_week: s.day_of_week,
+					template_id: s.template_id,
+				})),
+			};
+		});
+	},
+
+	/** Bookmark a routine for quick access. */
+	async bookmarkRoutine(routineId: string): Promise<RoutineBookmark> {
+		const uid = await requireUserId();
+		const { data, error } = await supabase
+			.from("routine_bookmarks")
+			.insert({ user_id: uid, routine_id: routineId })
+			.select("id, user_id, routine_id, created_at")
+			.single();
+		if (error) throw error;
+		return data as RoutineBookmark;
+	},
+
+	/** Remove a bookmark. */
+	async unbookmarkRoutine(bookmarkId: string): Promise<void> {
+		const { error } = await supabase
+			.from("routine_bookmarks")
+			.delete()
+			.eq("id", bookmarkId);
+		if (error) throw error;
+	},
+
+	/** Get all bookmarks for the current user, with routine + owner info. */
+	async getUserBookmarks(): Promise<
+		Array<RoutineBookmark & { routine_name: string; routine_owner_id: string; owner_username: string; owner_avatar_seed: string | null }>
+	> {
+		const uid = await requireUserId();
+		const [bmRes, routinesRes, usersRes] = await Promise.all([
+			supabase
+				.from("routine_bookmarks")
+				.select("id, user_id, routine_id, created_at")
+				.eq("user_id", uid),
+			supabase.from("routines").select("id, name, user_id"),
+			supabase.from("usernames").select("username, user_id, avatar_seed"),
+		]);
+		if (bmRes.error) throw bmRes.error;
+		if (routinesRes.error) throw routinesRes.error;
+		if (usersRes.error) throw usersRes.error;
+
+		const routineMap = new Map(
+			((routinesRes.data ?? []) as Routine[]).map((r) => [r.id, r]),
+		);
+		const userMap = new Map(
+			((usersRes.data ?? []) as UserProfileRow[]).map((u) => [u.user_id, u]),
+		);
+
+		return ((bmRes.data ?? []) as RoutineBookmark[]).map((bm) => {
+			const routine = routineMap.get(bm.routine_id);
+			const owner = routine ? userMap.get(routine.user_id) : null;
+			return {
+				...bm,
+				routine_name: routine?.name ?? "unknown",
+				routine_owner_id: routine?.user_id ?? "",
+				owner_username: owner?.username ?? "unknown",
+				owner_avatar_seed: owner?.avatar_seed ?? null,
+			};
+		});
+	},
+
+	/**
+	 * Deep copy a routine (owned by another user) into the current user's account.
+	 *
+	 * Copies: routine → new routine, templates → new templates, exercises → new exercises.
+	 * Exercises are copied because they are per-user global; the copying user needs
+	 * their own independent exercise rows to edit freely.
+	 *
+	 * Design decision: always creates fresh copies of exercises (no dedup by name).
+	 */
+	async copyRoutine(sourceRoutineId: string): Promise<Routine> {
+		const uid = await requireUserId();
+
+		// 1. Get the source routine
+		const { data: srcRoutine, error: routineErr } = await supabase
+			.from("routines")
+			.select("id, user_id, name")
+			.eq("id", sourceRoutineId)
+			.single();
+		if (routineErr) throw routineErr;
+		const src = srcRoutine as { id: string; user_id: string; name: string };
+
+		// 2. Get the source schedule
+		const { data: srcSched, error: schedErr } = await supabase
+			.from("routine_schedules")
+			.select("day_of_week, template_id")
+			.eq("routine_id", sourceRoutineId);
+		if (schedErr) throw schedErr;
+
+		// 3. Get the source templates (distinct template_ids from schedule)
+		const tIds = new Set(
+			((srcSched ?? []) as Array<{ template_id: string | null }>)
+				.filter((s) => s.template_id)
+				.map((s) => s.template_id as string),
+		);
+
+		// 4. For each template, get template info + exercises
+		const templateCopies: Array<{
+			oldId: string;
+			newId: string;
+			name: string;
+			color: number;
+		}> = [];
+		// Map old exercise id → new exercise id
+		const exIdMap = new Map<string, string>();
+
+		for (const oldTid of tIds) {
+			const { data: tpl, error: tplErr } = await supabase
+				.from("templates")
+				.select("id, name, color")
+				.eq("id", oldTid)
+				.single();
+			if (tplErr) throw tplErr;
+
+			// Get exercises linked to this template
+			const { data: links, error: linkErr } = await supabase
+				.from("template_exercises")
+				.select("exercise_id, display_order")
+				.eq("template_id", oldTid)
+				.order("display_order");
+			if (linkErr) throw linkErr;
+
+			// Clone the template
+			const { data: newTpl, error: newTplErr } = await supabase
+				.from("templates")
+				.insert({
+					user_id: uid,
+					name: tpl.name,
+					color: tpl.color ?? 0,
+					display_order: 0,
+				})
+				.select("id, user_id, name, color, display_order")
+				.single();
+			if (newTplErr) throw newTplErr;
+
+			templateCopies.push({
+				oldId: oldTid,
+				newId: newTpl.id,
+				name: newTpl.name,
+				color: (newTpl as any).color ?? 0,
+			});
+
+			// Clone exercises and create links
+			for (const link of links as Array<{ exercise_id: string; display_order: number }>) {
+				const oldExId = link.exercise_id;
+
+				if (!exIdMap.has(oldExId)) {
+					// Get the exercise
+					const { data: ex, error: exErr } = await supabase
+						.from("exercises")
+						.select("*")
+						.eq("id", oldExId)
+						.single();
+					if (exErr) throw exErr;
+
+					// Create a copy
+					const { data: newEx, error: newExErr } = await supabase
+						.from("exercises")
+						.insert({
+							user_id: uid,
+							name: ex.name,
+							exercise_type: ex.exercise_type,
+							target_sets: ex.target_sets,
+							target_reps: ex.target_reps,
+							target_minutes: ex.target_minutes,
+							target_seconds: ex.target_seconds,
+							rest_minutes: ex.rest_minutes,
+							rest_seconds: ex.rest_seconds,
+							increment: ex.increment,
+							current_weight: null,
+						})
+						.select()
+						.single();
+					if (newExErr) throw newExErr;
+					exIdMap.set(oldExId, newEx.id);
+				}
+
+				// Create template_exercise link
+				const { error: teErr } = await supabase
+					.from("template_exercises")
+					.insert({
+						template_id: newTpl.id,
+						exercise_id: exIdMap.get(oldExId)!,
+						user_id: uid,
+						display_order: link.display_order,
+					});
+				if (teErr) throw teErr;
+			}
+		}
+
+		// 5. Create the new routine
+		const cleanName = `${src.name} (copy)`;
+		const { data: newRoutine, error: newRoutineErr } = await supabase
+			.from("routines")
+			.insert({ user_id: uid, name: cleanName })
+			.select("id, user_id, name, created_at")
+			.single();
+		if (newRoutineErr) throw newRoutineErr;
+
+		// 6. Copy the schedule, mapping old template ids → new template ids
+		const tplIdMap = new Map(templateCopies.map((t) => [t.oldId, t.newId]));
+		const scheduleRows = ((srcSched ?? []) as Array<{ day_of_week: number; template_id: string | null }>)
+			.filter((s) => s.template_id && tplIdMap.has(s.template_id))
+			.map((s) => ({
+				routine_id: newRoutine.id,
+				day_of_week: s.day_of_week,
+				template_id: tplIdMap.get(s.template_id!)!,
+			}));
+
+		if (scheduleRows.length > 0) {
+			const { error: insSchedErr } = await supabase
+				.from("routine_schedules")
+				.insert(scheduleRows);
+			if (insSchedErr) throw insSchedErr;
+		}
+
+		return newRoutine as Routine;
 	},
 };

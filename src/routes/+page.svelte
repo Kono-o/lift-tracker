@@ -2995,9 +2995,10 @@ function getStatIcon(id: number): typeof Dna {
     db.getUserBookmarks().then((r) => { preloadedBookmarkIds = r.map((b) => b.routine_id); }).catch(() => {});
   }
 
-  function closeRoutinesMenu() {
+  async function closeRoutinesMenu() {
     templateError = null;
     templateErrorFading = false;
+    await loadData({ preserveSession: true });
     const byDay = new Map<number, string | null>();
     for (const s of schedule) byDay.set(s.day_of_week, s.template_id);
     const newAssignments: Record<number, string | null> = {};

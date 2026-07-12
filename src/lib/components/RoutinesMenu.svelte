@@ -231,8 +231,10 @@
     const deleted = myRoutines.filter((r) => r.id === id);
     myRoutines = myRoutines.filter((r) => r.id !== id);
     if (activeRoutineId === id) {
-      const prevIdx = Math.max(0, idx - 1);
-      const nextActive = myRoutines[prevIdx]?.id ?? myRoutines[0]?.id ?? null;
+      const realRoutines = myRoutines.filter((r) => !r.id.startsWith('temp-'));
+      const newIdx = realRoutines.findIndex((r) => r.id === id);
+      const prevIdx = Math.max(0, newIdx - 1);
+      const nextActive = realRoutines[prevIdx]?.id ?? realRoutines[0]?.id ?? null;
       if (nextActive) {
         activeRoutineId = nextActive;
         try {
@@ -316,6 +318,7 @@
   function handleRowClick(routine: Routine) {
     if (routineRowDragged) return;
     if (busyAction !== null) return;
+    if (routine.id.startsWith('temp-')) return;
     activateRoutine(routine.id);
   }
 </script>

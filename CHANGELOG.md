@@ -2,6 +2,27 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.11] - 2026-07-13
+
+**UI polish + reliability** — same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.
+
+### Workout tracking
+- Hardened active-session restore via localStorage (survive kill/background; fix local-only restore when no DB log yet)
+- CTA bar stays visible after finish/skip (STATS · WORKOUT COMPLETE · ERASE)
+- Soft breathing glow on **Start Workout**
+- Timer strip polish; dashed empty set bubbles; green/yellow exercise row outlines
+- Exercise list corner borders no longer clipped
+
+### Stats
+- Redesigned stats list + graph panel (range pills, min/max/latest chips)
+- Unit always shown next to values
+- Graph dimming respects OVER / UNDER goal preference
+
+### Editors & motion
+- List enter/exit motion (templates/exercises/stats/routines); stable row keys
+- Color picker HSV sliders stay smooth while dragging (quantize only on save)
+- Boot → app stage reveal crossfade
+
 ## [1.0.10] - 2026-07-13
 
 **Feature polish** — template colors, list UI, and routines editor entry. Same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.

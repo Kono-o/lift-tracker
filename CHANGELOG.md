@@ -2,6 +2,31 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.8] - 2026-07-13
+
+**Feature release** — multi-routines, bookmarks, discovery, import/export. Built and signed with the **exact same long-lived release key** (fingerprint 37:04:C3:...) as all prior 1.0.x releases so in-app updates continue to install cleanly.
+
+### Multi-routines
+- Multiple routines per account; assign one as active
+- Routines schedule templates across the week; templates hold exercises
+- Create, rename, reorder, delete owned routines (keep at least one owned)
+- Empty routines show an empty template list (no leftover from the previous assignment)
+
+### Bookmarks & discovery
+- Browse other users’ routines; **bookmark** (live read-only link) or **copy** (full editable duplicate)
+- Bookmarked routines appear in Your list as `NAME - USERNAME` with a green bookmark badge
+- Bookmarked = read-only in the editor; compact chip: `ROUTINE IS A BOOKMARK (READ ONLY) from @user`
+- Copy from a bookmark (or community list) to get your own editable routine
+- Bookmarked items are hidden from the community tree (they already live under Your routines)
+- All Users list is a username tree (one avatar per person, routines nested)
+
+### Import / export
+- Export the selected routine as CSV (metadata + week plan + templates/exercises)
+- Filename includes the routine name; import button loads exported CSVs as a new owned routine
+
+### Database
+- Hardening migration: `set_active_routine`, bookmark/unbookmark RPCs, safe delete, live resync for bookmarked active plans — no user data deleted
+
 ## [1.0.5] - 2026-06-10
 
 **Feature release** — new branding, reliable exercise editing, zero-increment support for timed work, and automatic workout duration estimates. Built and signed with the **exact same long-lived release key** (fingerprint 37:04:C3:...) as all prior 1.0.x releases so in-app updates continue to install cleanly.

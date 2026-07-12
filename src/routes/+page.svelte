@@ -2,7 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { fade } from 'svelte/transition';
   import { PUBLIC_SUPABASE_URL } from '$env/static/public';
-  import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type TrackedStat, type StatLogSnapshotRow, type WorkoutHistory, type Routine, type RoutineWithOwner } from '$lib/db';
+  import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type TrackedStat, type StatLogSnapshotRow, type WorkoutHistory, type RoutineWithOwner, type UserRoutineListItem } from '$lib/db';
   import GeneratedAvatar from '$lib/components/GeneratedAvatar.svelte';
   import HeaderClock from '$lib/components/HeaderClock.svelte';
   import RoutinesMenu from '$lib/components/RoutinesMenu.svelte';
@@ -105,6 +105,7 @@
     Ruler,
     Scale,
     Hash,
+    Bookmark,
   } from '@lucide/svelte';
   import AuthBrandIcon from '$lib/components/auth-brand-icons.svelte';
   import {
@@ -204,13 +205,57 @@ function getStatIcon(id: number): typeof Dna {
   let dbActivitySnapshot = $state(getDbActivitySnapshot());
   let showSettingsPanel = $state(false);
   let activeRoutineId = $state<string | null>(null);
-  let preloadedRoutines = $state<Routine[]>([]);
+  let preloadedRoutineList = $state<UserRoutineListItem[]>([]);
   let preloadedAllRoutines = $state<RoutineWithOwner[]>([]);
   let preloadedBookmarkIds = $state<string[]>([]);
+  let activeRoutineIsReadonly = $derived.by(() => {
+    if (!activeRoutineId) return false;
+    const r = preloadedRoutineList.find((r) => r.id === activeRoutineId);
+    return r?.is_readonly === true || r?.source === 'bookmarked';
+  });
+  let activeBookmarkedOwner = $derived.by(() => {
+    if (!activeRoutineId) return null;
+    const r = preloadedRoutineList.find((r) => r.id === activeRoutineId);
+    if (r?.source === 'bookmarked' && r.owner_username) return r.owner_username;
+    return null;
+  });
   let activeRoutineName = $derived.by(() => {
     if (!activeRoutineId) return 'NO ROUTINE ACTIVE';
-    const r = preloadedRoutines.find((r) => r.id === activeRoutineId);
-    return r?.name ?? 'ROUTINE';
+    const r = preloadedRoutineList.find((r) => r.id === activeRoutineId);
+    if (r) {
+      if (r.source === 'bookmarked' && r.owner_username) {
+        return `${r.name} @${r.owner_username}`;
+      }
+      return r.name;
+    }
+    return 'ROUTINE';
+  });
+  /**
+   * Templates newly created while editing the active routine (not yet on any day).
+   * Cleared on routine switch so empty routines don't inherit the previous list.
+   */
+  let routineEditorExtraTemplateIds = $state<Set<string>>(new Set());
+
+  /**
+   * Templates shown in the routine builder for the *active* routine only:
+   * schedule assignments + in-session creates. Empty routine ⇒ empty list
+   * (does not show templates from the previously assigned routine).
+   */
+  let builderTemplates = $derived.by(() => {
+    const ids = new Set<string>();
+    for (const s of schedule) {
+      if (s.template_id) ids.add(s.template_id);
+    }
+    for (const tid of Object.values(builderAssignments)) {
+      if (tid) ids.add(tid);
+    }
+    for (const id of routineEditorExtraTemplateIds) {
+      ids.add(id);
+    }
+    return templates
+      .filter((t) => ids.has(t.id))
+      .slice()
+      .sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
   });
 
   // Self-update (Android sideload only). Mirrors settings panel UX: centered + blur.
@@ -504,125 +549,58 @@ function getStatIcon(id: number): typeof Dna {
   }
 
   async function exportRoutineAsCsv(routineId?: string) {
-    if (!templates || templates.length === 0) return;
+    const id = routineId ?? activeRoutineId;
+    if (!id) {
+      templateError = 'Select a routine to export';
+      templateErrorFading = false;
+      return;
+    }
+    try {
+      const { csv, filename } = await db.exportRoutineToCsv(id);
+      await downloadCsv(filename, csv);
+      const successMsg = 'Routine CSV exported';
+      templateError = successMsg;
+      templateErrorFading = false;
+      window.setTimeout(() => {
+        if (templateError === successMsg) {
+          templateError = null;
+          templateErrorFading = false;
+        }
+      }, 2000);
+    } catch (e) {
+      console.error('exportRoutineAsCsv failed', e);
+      templateError = formatDbError(e) || 'Failed to export routine';
+      templateErrorFading = false;
+    }
+  }
 
-    let tplFilter: ((id: string) => boolean) | null = null;
-    let dayLookup: ((tplId: string) => string) | null = null;
-
-    // If a specific routine is requested, fetch its schedule and filter to those templates
-    if (routineId) {
+  async function importRoutineFromFile(file: File) {
+    try {
+      const text = await file.text();
+      const created = await runDbActivityBatch(() => db.importRoutineFromCsv(text));
+      await db.setActiveRoutine(created.id);
+      activeRoutineId = created.id;
       try {
-        const { data: plan } = await supabase
-          .from('routine_schedules')
-          .select('day_of_week, template_id')
-          .eq('routine_id', routineId);
-        if (plan && plan.length > 0) {
-          const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-          const tplDays = new Map<string, number[]>();
-          for (const s of plan) {
-            if (!s.template_id) continue;
-            if (!tplDays.has(s.template_id)) tplDays.set(s.template_id, []);
-            tplDays.get(s.template_id)!.push(s.day_of_week);
-          }
-          tplFilter = (id: string) => tplDays.has(id);
-          dayLookup = (tplId: string) => {
-            const days = tplDays.get(tplId);
-            if (!days || days.length === 0) return '\u2014';
-            days.sort((a, b) => a - b);
-            return days.map((d) => dayNames[d]).join(', ');
-          };
-        }
-      } catch (e) {
-        console.error('Failed to fetch routine schedule for export', e);
+        preloadedRoutineList = await db.getUserRoutineList();
+      } catch {
+        /* ignore */
       }
+      await onRoutineActivate(created.id);
+      void loadData({ preserveSession: true });
+      const successMsg = `Imported “${created.name}”`;
+      templateError = successMsg;
+      templateErrorFading = false;
+      window.setTimeout(() => {
+        if (templateError === successMsg) {
+          templateError = null;
+          templateErrorFading = false;
+        }
+      }, 2400);
+      return created;
+    } catch (e) {
+      console.error('importRoutineFromFile failed', e);
+      throw e;
     }
-
-    // Idiomatic columns for easy routine reading:
-    // The first 5 columns give you a scannable view of the whole program.
-    // "Prescription" is the primary human-friendly column ("4 × 8 @ 82.5kg (+2.5)" or "3 × 1:30").
-    const headers = [
-      'Template',
-      'Assigned Days',
-      'Exercise #',
-      'Exercise',
-      'Prescription',
-      'Type',
-      'Sets',
-      'Reps',
-      'Duration',
-      'Rest (mm:ss)',
-      'Load (kg)',
-      'Progress (+kg)',
-    ];
-
-    const rows: string[][] = [headers];
-
-    for (const tpl of templates) {
-      if (tplFilter && !tplFilter(tpl.id)) continue;
-      const daysStr = dayLookup ? dayLookup(tpl.id) : getAssignedDaysString(tpl.id);
-      for (let i = 0; i < (tpl.exercises?.length ?? 0); i++) {
-        const ex = tpl.exercises[i];
-        const isReps = ex.exercise_type === 'reps';
-        const sets = ex.target_sets || 0;
-
-        // Build a nice, at-a-glance prescription string
-        let prescription = '';
-        if (isReps) {
-          const reps = ex.target_reps || '';
-          if (reps) {
-            let p = sets ? `${sets} × ${reps}` : `${reps}`;
-            if (ex.current_weight != null) {
-              p += ` @ ${ex.current_weight}kg`;
-              if (ex.increment) p += ` (+${ex.increment})`;
-            }
-            prescription = p;
-          }
-        } else {
-          const m = ex.target_minutes || 0;
-          const s = ex.target_seconds || 0;
-          const time = `${m}:${String(s).padStart(2, '0')}`;
-          prescription = sets ? `${sets} × ${time}` : time;
-        }
-
-        // Duration as a single friendly value (only for timed exercises)
-        let duration = '';
-        if (!isReps) {
-          const m = ex.target_minutes || 0;
-          const s = ex.target_seconds || 0;
-          if (m || s) duration = `${m}:${String(s).padStart(2, '0')}`;
-        }
-
-        const restMin = ex.rest_minutes ?? 0;
-        const restSec = ex.rest_seconds ?? 0;
-        const restDisplay = restMin || restSec ? `${restMin}:${String(restSec).padStart(2, '0')}` : '';
-        rows.push([
-          tpl.name ?? '',
-          daysStr,
-          String(i + 1),
-          ex.name ?? '',
-          prescription,
-          ex.exercise_type ?? '',
-          sets ? String(sets) : '',
-          isReps ? String(ex.target_reps ?? '') : '',
-          duration,
-          restDisplay,
-          ex.current_weight != null ? String(ex.current_weight) : '',
-          ex.increment ? String(ex.increment) : '',
-        ]);
-      }
-
-      // Visual separator between templates (blank row in the CSV/spreadsheet)
-      // Makes the routine much easier to scan when opened.
-      const isLastTpl = templates.indexOf(tpl) === templates.length - 1;
-      if (tpl.exercises?.length && !isLastTpl) {
-        rows.push(Array(headers.length).fill(''));
-      }
-    }
-
-    const csv = rows.map((row) => row.map(escapeCsv).join(',')).join('\r\n');
-    const date = new Date().toISOString().slice(0, 10);
-    const filename = `lift-tracker-routine-${date}.csv`;
-    await downloadCsv(filename, csv);
   }
 
   let isLoading = $state(true);
@@ -2990,62 +2968,121 @@ function getStatIcon(id: number): typeof Dna {
 
   function refreshRoutinesPreload() {
     if (!currentUser) return;
-    db.getMyRoutines().then((r) => { preloadedRoutines = r; }).catch(() => {});
+    db.getUserRoutineList().then((r) => { preloadedRoutineList = r; }).catch(() => {});
     db.getAllUsersAndRoutines().then((r) => { preloadedAllRoutines = r; }).catch(() => {});
     db.getUserBookmarks().then((r) => { preloadedBookmarkIds = r.map((b) => b.routine_id); }).catch(() => {});
   }
 
-  async function closeRoutinesMenu() {
-    templateError = null;
-    templateErrorFading = false;
-    // Refresh schedule and templates via getAppData
-    if (currentUser?.id) {
-      try {
-        const app = await db.getAppData(currentUser.id);
-        schedule = app.schedule;
-        templates = app.templates;
-      } catch (e) {
-        console.error('closeRoutinesMenu refresh failed', e);
-      }
-    }
+  function handleRoutineListChange(list: UserRoutineListItem[], activeId: string | null) {
+    preloadedRoutineList = list;
+    preloadedBookmarkIds = list.filter((r) => r.source === 'bookmarked').map((r) => r.id);
+    if (activeId !== undefined) activeRoutineId = activeId;
+  }
+
+  function emptyWeekAssignments(): Record<number, string | null> {
+    const a: Record<number, string | null> = {};
+    for (let dow = 0; dow < 7; dow++) a[dow] = null;
+    return a;
+  }
+
+  function emptyWeekSchedule(uid: string): Array<{ user_id: string; day_of_week: number; template_id: string | null; updated_at: string }> {
+    const now = new Date().toISOString();
+    return Array.from({ length: 7 }, (_, dow) => ({
+      user_id: uid,
+      day_of_week: dow,
+      template_id: null,
+      updated_at: now,
+    }));
+  }
+
+  function syncBuilderAssignmentsFromSchedule(
+    sched: Array<{ day_of_week: number; template_id: string | null }>,
+  ) {
     const byDay = new Map<number, string | null>();
-    for (const s of schedule) byDay.set(s.day_of_week, s.template_id);
+    for (const s of sched) byDay.set(s.day_of_week, s.template_id);
     const newAssignments: Record<number, string | null> = {};
     for (let dow = 0; dow < 7; dow++) {
       const tid = byDay.has(dow) ? byDay.get(dow)! : null;
       if (tid) {
         const tpl = templates.find((t) => t.id === tid);
+        // Only mark day assigned when template has exercises; keep id for list via schedule
         newAssignments[dow] = isTemplateAssignable(tpl) ? tid : null;
       } else {
         newAssignments[dow] = null;
       }
     }
     builderAssignments = newAssignments;
+  }
+
+  /** Navigate back immediately; refresh schedule in the background (no await on click). */
+  function closeRoutinesMenu() {
+    templateError = null;
+    templateErrorFading = false;
     builderEditingDay = selectedWeekday;
+    syncBuilderAssignmentsFromSchedule(schedule);
     currentView = 'swap_template';
+
+    if (!currentUser?.id) return;
+    const uid = currentUser.id;
+    void (async () => {
+      try {
+        const app = await db.getAppData(uid);
+        // Only apply if still in routine editor flow
+        if (currentView !== 'swap_template' && currentView !== 'edit_template') return;
+        schedule = app.schedule;
+        templates = app.templates;
+        exerciseLibrary = app.exerciseLibrary ?? [];
+        const active = await db.getActiveRoutineId();
+        if (active != null) activeRoutineId = active;
+        syncBuilderAssignmentsFromSchedule(schedule);
+      } catch (e) {
+        console.error('closeRoutinesMenu background refresh failed', e);
+      }
+    })();
   }
 
   async function onRoutineActivate(routineId: string) {
+    activeRoutineId = routineId;
+    // Never carry previous routine's editor-only templates into the next one
+    routineEditorExtraTemplateIds = new Set();
+
+    const uid = currentUser?.id ?? '';
+    const preview = preloadedRoutineList.find((r) => r.id === routineId);
+    const looksEmpty = !preview || (preview.template_count ?? 0) === 0;
+    if (looksEmpty) {
+      // Instant empty UI — do not wait on network with the previous routine's list
+      schedule = emptyWeekSchedule(uid);
+      builderAssignments = emptyWeekAssignments();
+    }
+
     try {
+      // Light path first: only this routine's week plan (scopes template list correctly)
       const plan = await db.getRoutineSchedule(routineId);
       const byDay = new Map<number, string | null>();
       for (const s of plan) byDay.set(s.day_of_week, s.template_id);
-      const newSchedule: Array<{ user_id: string; day_of_week: number; template_id: string | null; updated_at: string }> = [];
-      const newAssignments: Record<number, string | null> = {};
-      const uid = currentUser?.id ?? '';
       const now = new Date().toISOString();
-      for (let dow = 0; dow < 7; dow++) {
-        const tid = byDay.has(dow) ? byDay.get(dow)! : null;
-        newSchedule.push({ user_id: uid, day_of_week: dow, template_id: tid, updated_at: now });
-        if (tid) {
-          const tpl = templates.find((t) => t.id === tid);
-          newAssignments[dow] = isTemplateAssignable(tpl) ? tid : null;
-        } else {
-          newAssignments[dow] = null;
-        }
+      schedule = Array.from({ length: 7 }, (_, dow) => ({
+        user_id: uid,
+        day_of_week: dow,
+        template_id: byDay.has(dow) ? byDay.get(dow)! : null,
+        updated_at: now,
+      }));
+      syncBuilderAssignmentsFromSchedule(schedule);
+
+      // Full reload only when we need template bodies we don't have (e.g. bookmarked / foreign)
+      const neededIds = [
+        ...new Set(
+          schedule.map((s) => s.template_id).filter((id): id is string => !!id),
+        ),
+      ];
+      const missing = neededIds.filter((id) => !templates.some((t) => t.id === id));
+      if (missing.length > 0 && currentUser?.id) {
+        const app = await db.getAppData(currentUser.id);
+        schedule = app.schedule;
+        templates = app.templates;
+        exerciseLibrary = app.exerciseLibrary ?? [];
+        syncBuilderAssignmentsFromSchedule(schedule);
       }
-      schedule = newSchedule;
-      builderAssignments = newAssignments;
     } catch (e) {
       console.error('Failed to update editor after routine activation', e);
     }
@@ -3053,7 +3090,12 @@ function getStatIcon(id: number): typeof Dna {
 
   function handleEditRoutineFromMenu(routineId: string) {
     currentView = 'swap_template';
-    void onRoutineActivate(routineId).then(() => loadData());
+    void onRoutineActivate(routineId);
+  }
+
+  function handleViewRoutineFromMenu(routineId: string) {
+    currentView = 'swap_template';
+    void onRoutineActivate(routineId);
   }
 
   function closeSettingsPanel() {
@@ -3850,12 +3892,26 @@ function getStatIcon(id: number): typeof Dna {
 			statLogSnapshots = snapshots;
 			statLogs = statLogsFromSnapshots(snapshots);
 			activeRoutineId = await db.getActiveRoutineId();
+			try {
+				preloadedRoutineList = await db.getUserRoutineList();
+			} catch (e) {
+				console.warn('Failed to preload routine list', e);
+			}
 			if (!activeRoutineId) {
 				try {
-					const routines = await db.getMyRoutines();
-					if (routines.length > 0) {
-						await db.setActiveRoutine(routines[0].id);
-						activeRoutineId = routines[0].id;
+					const list = preloadedRoutineList.length
+						? preloadedRoutineList
+						: await db.getUserRoutineList();
+					preloadedRoutineList = list;
+					const first = list.find((r) => r.source === 'owned') ?? list[0];
+					if (first) {
+						await db.setActiveRoutine(first.id);
+						activeRoutineId = first.id;
+						// Reload schedule/templates after activation
+						const refreshed = await db.getAppData(currentUser?.id);
+						schedule = refreshed.schedule;
+						templates = refreshed.templates;
+						exerciseLibrary = refreshed.exerciseLibrary ?? [];
 					}
 				} catch (e) {
 					console.error('Failed to auto-assign first routine as active', e);
@@ -5077,6 +5133,7 @@ function getStatIcon(id: number): typeof Dna {
   }
 
   async function clearTemplateFromAllDays(templateId: string) {
+    if (activeRoutineIsReadonly) return;
     const affected = schedule.filter((s) => s.template_id === templateId);
     if (!affected.length) return;
     const patches = affected.map((s) => ({ dayOfWeek: s.day_of_week, templateId: null as string | null }));
@@ -5089,13 +5146,8 @@ function getStatIcon(id: number): typeof Dna {
     }
     builderAssignments = nextAssignments;
     try {
+      // assign_schedule_days dual-writes owned active routine_schedules
       await db.assignTemplatesToDays(patches);
-      if (activeRoutineId) {
-        void db.saveRoutineSchedule(activeRoutineId, schedule.map((s: any) => ({
-          day_of_week: s.day_of_week,
-          template_id: s.template_id,
-        }))).catch((e) => console.error('Failed to sync routine schedule', e));
-      }
     } catch (e) {
       console.error('clear template from schedule failed', e);
       void loadData({ preserveSession: true });
@@ -5126,6 +5178,10 @@ function getStatIcon(id: number): typeof Dna {
   }
 
   async function saveRoutineEditorDraft() {
+    if (activeRoutineIsReadonly) {
+      // Bookmarked routines are live links — never write back to source
+      return;
+    }
     if (editingRoutineTemplateNameId) {
       const pending = templates.find((t) => t.id === editingRoutineTemplateNameId);
       if (pending) {
@@ -5188,15 +5244,14 @@ function getStatIcon(id: number): typeof Dna {
     const priorEffective = effectiveAssignmentTemplateId(priorRow?.template_id ?? null);
     if (effectiveId === priorEffective) return;
 
+    if (activeRoutineIsReadonly) {
+      templateError = 'Bookmarked routines are read-only. Copy to edit.';
+      templateErrorFading = false;
+      return;
+    }
     applyLocalScheduleAssignment(dayOfWeek, effectiveId);
-    void db.assignTemplatesToDays([{ dayOfWeek, templateId: effectiveId }]).then(() => {
-      if (activeRoutineId) {
-        void db.saveRoutineSchedule(activeRoutineId, schedule.map((s: any) => ({
-          day_of_week: s.day_of_week,
-          template_id: s.template_id,
-        }))).catch((e) => console.error('Failed to sync routine schedule', e));
-      }
-    }).catch((e) => {
+    // assign_schedule_days dual-writes to owned active routine_schedules
+    void db.assignTemplatesToDays([{ dayOfWeek, templateId: effectiveId }]).catch((e) => {
       console.error('Day assignment save failed', e);
       templateError = formatDbError(e);
       templateErrorFading = false;
@@ -5227,6 +5282,8 @@ function getStatIcon(id: number): typeof Dna {
       const nextOrder = templates.length;
       const optimistic: Template = { id: tempId, user_id: uid, name, color: 0, display_order: nextOrder, exercises: [] };
       templates = [...templates, optimistic];
+      // Scope new templates to this routine so the list is not empty after create
+      routineEditorExtraTemplateIds = new Set([...routineEditorExtraTemplateIds, tempId]);
       newTemplateName = '';
       if (openAfterCreate) {
         openTemplateEditor(tempId);
@@ -5244,6 +5301,11 @@ function getStatIcon(id: number): typeof Dna {
             return null;
           }
           templates = templates.map((t) => (t.id === tempId ? template : t));
+          // Swap temp id → real id in routine-scoped set
+          const extras = new Set(routineEditorExtraTemplateIds);
+          extras.delete(tempId);
+          extras.add(template.id);
+          routineEditorExtraTemplateIds = extras;
 
           // Update any builder assignments that were pointing to the old temp ID
           // so selection/assignment "sticks" immediately after optimistic creation
@@ -6181,10 +6243,20 @@ function getStatIcon(id: number): typeof Dna {
   }
 
   function createTemplateFromRoutineBuilder() {
+    if (activeRoutineIsReadonly) {
+      templateError = 'Bookmarked routines are read-only. Copy to edit.';
+      templateErrorFading = false;
+      return;
+    }
     void handleCreateTemplate('New Template', false);
   }
 
   function assignTemplateToBuilderDay(templateId: string | null) {
+    if (activeRoutineIsReadonly) {
+      templateError = 'Bookmarked routines are read-only. Copy to edit.';
+      templateErrorFading = false;
+      return;
+    }
     const priorEffective = effectiveAssignmentTemplateId(
       builderAssignments[builderEditingDay] ?? null,
     );
@@ -6232,6 +6304,7 @@ function getStatIcon(id: number): typeof Dna {
   }
 
   function beginRoutineTemplateNameEdit(templateId: string) {
+    if (activeRoutineIsReadonly) return;
     // Focus/select this row in the list (for edit/delete buttons) even if empty
     builderAssignments = { ...builderAssignments, [builderEditingDay]: templateId };
     const tpl = templates.find((t) => t.id === templateId);
@@ -6244,6 +6317,7 @@ function getStatIcon(id: number): typeof Dna {
 
   async function persistTemplateNameById(templateId: string, rawName: string) {
     if (templateId.startsWith('temp-')) return;
+    if (activeRoutineIsReadonly || isForeignTemplate(templateId)) return;
 
     const tpl = templates.find((t) => t.id === templateId);
     if (!tpl) return;
@@ -6375,6 +6449,12 @@ function getStatIcon(id: number): typeof Dna {
     // Kept for any legacy call sites on view exit etc.
   }
 
+  function isForeignTemplate(templateId: string | null | undefined): boolean {
+    if (!templateId || !currentUser?.id) return false;
+    const tpl = templates.find((t) => t.id === templateId);
+    return !!tpl && tpl.user_id !== currentUser.id;
+  }
+
   function openTemplateEditor(templateId?: string) {
     if (!templateId && !showHeaderEditActions) return;
     const id = templateId ?? activeTemplate?.id;
@@ -6488,6 +6568,10 @@ function getStatIcon(id: number): typeof Dna {
   async function persistTemplateExercisesNow() {
     const templateId = editingTemplateId;
     if (!templateId || templateId.startsWith('temp-')) return;
+    if (activeRoutineIsReadonly || isForeignTemplate(templateId)) {
+      templateSaveError = 'This template is read-only (bookmarked). Copy the routine to edit.';
+      return;
+    }
 
     if (templateDraftSaveInFlight) {
       templateDraftSavePending = true;
@@ -6535,6 +6619,7 @@ function getStatIcon(id: number): typeof Dna {
   async function persistTemplateColorNow() {
     const templateId = editingTemplateId;
     if (!templateId || templateId.startsWith('temp-')) return;
+    if (activeRoutineIsReadonly || isForeignTemplate(templateId)) return;
 
     const tpl = templates.find((t) => t.id === templateId);
     const prevColor = tpl?.color ?? 0;
@@ -8672,7 +8757,8 @@ function getStatIcon(id: number): typeof Dna {
         >
           <ArrowLeft class="size-4" />
         </button>
-        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">ROUTINE EDITOR</span>
+        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0 hidden xs:inline sm:inline">{activeRoutineIsReadonly ? 'ROUTINE (VIEW)' : 'ROUTINE EDITOR'}</span>
+        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0 sm:hidden">{activeRoutineIsReadonly ? 'VIEW' : 'EDITOR'}</span>
         <div class="flex-1 min-w-0 flex items-center">
           <span
             class="w-full h-8 flex items-center justify-center px-2 rounded border border-[#2a2a2a] bg-black text-xs font-medium truncate leading-none text-center text-white"
@@ -8685,11 +8771,24 @@ function getStatIcon(id: number): typeof Dna {
           onclick={() => openRoutinesMenu()}
         >
           <List class="size-3.5" />
-          <span>MY ROUTINES</span>
+          <span class="hidden sm:inline">MY ROUTINES</span>
         </button>
       </div>
-
-      <div class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none text-center">CLICK DAY TO ASSIGN</div>
+      <div class="relative flex items-center justify-center min-h-[18px]">
+        <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none text-center">
+          {activeRoutineIsReadonly ? 'WEEK OVERVIEW' : 'CLICK DAY TO ASSIGN'}
+        </span>
+        {#if activeRoutineIsReadonly}
+          <span class="absolute right-0 top-1/2 -translate-y-1/2 max-w-[56%] truncate inline-flex items-center gap-1 text-[10px] font-normal uppercase tracking-wide leading-none px-2 py-1.5 rounded border border-emerald-900/50 bg-emerald-950/40 text-emerald-300/90">
+            <span class="truncate">ROUTINE IS A BOOKMARK</span>
+            <Bookmark class="size-3.5 shrink-0 text-emerald-400" fill="currentColor" strokeWidth={2} />
+            <span class="shrink-0">(READ ONLY)</span>
+            {#if activeBookmarkedOwner}
+              <span class="font-normal normal-case tracking-normal text-emerald-400/75 truncate">from @{activeBookmarkedOwner}</span>
+            {/if}
+          </span>
+        {/if}
+      </div>
       <div class="grid grid-cols-7 gap-1">
         {#each DAYS as d, i}
           {@const hasTemplate = !!effectiveAssignmentTemplateId(builderAssignments[i] ?? null)}
@@ -8744,18 +8843,18 @@ function getStatIcon(id: number): typeof Dna {
             </button>
           </div>
 
-          <div class="flex flex-col gap-1" role="list" bind:this={templateListBody} ondrop={handleTemplateDrop} ondragover={handleTemplateDragOver}>
-          {#each templates as template, index (template.id)}
+          <div class="flex flex-col gap-1" role="list" bind:this={templateListBody} ondrop={activeRoutineIsReadonly ? undefined : handleTemplateDrop} ondragover={activeRoutineIsReadonly ? undefined : handleTemplateDragOver}>
+          {#each builderTemplates as template, index (template.id)}
             {@const isEmpty = template.exercises.length === 0}
             {@const rawSelectedId = builderAssignments[builderEditingDay] ?? null}
             {@const isSelected = rawSelectedId === template.id}
             {@const isRealAssigned = builderAssignedTemplateId === template.id}
             {@const tColor = getTemplateColor(template.color ?? 0)}
             <div
-              class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing"
-              style="transform: translateY({dragShift(templateDraggedIndex, templateDragOverIndex, index)}px); transition: transform 150ms ease; {templateDraggedIndex === index ? 'opacity: 0.25;' : ''}"
-              draggable="true"
-              ondragstart={(e) => handleTemplateDragStart(e, index)}
+              class="flex items-stretch gap-1 h-8 {activeRoutineIsReadonly ? '' : 'cursor-grab active:cursor-grabbing'}"
+              style="transform: translateY({activeRoutineIsReadonly ? 0 : dragShift(templateDraggedIndex, templateDragOverIndex, index)}px); transition: transform 150ms ease; {templateDraggedIndex === index ? 'opacity: 0.25;' : ''}"
+              draggable={!activeRoutineIsReadonly}
+              ondragstart={(e) => { if (!activeRoutineIsReadonly) handleTemplateDragStart(e, index); }}
               ondragend={handleTemplateDragEnd}
             >
               <button
@@ -8821,7 +8920,7 @@ function getStatIcon(id: number): typeof Dna {
                   {:else if isEmpty}
                     <span class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none" style={isSelected ? `background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;` : `background-color: #1e1e1e; border-color: #2a2a2a; color: #aaa;`}>EMPTY</span>
                   {/if}
-                  {#if isSelected}
+                  {#if isSelected && !activeRoutineIsReadonly}
                     <button
                       type="button"
                       class="w-6 h-6 shrink-0 flex items-center justify-center rounded border transition-colors"
@@ -8839,6 +8938,16 @@ function getStatIcon(id: number): typeof Dna {
                     >
                       <Trash2 class="size-3 pointer-events-none" />
                     </button>
+                  {:else if isSelected && activeRoutineIsReadonly}
+                    <button
+                      type="button"
+                      class="w-6 h-6 shrink-0 flex items-center justify-center rounded border transition-colors"
+                      style={`background-color: color-mix(in srgb, white 20%, #1e1e1e); color: white; border-color: white;`}
+                      title="View template (read-only)"
+                      onclick={(e) => { e.stopPropagation(); openTemplateEditor(template.id); }}
+                    >
+                      <Pencil class="size-3 pointer-events-none" />
+                    </button>
                   {/if}
                 </div>
               </div>
@@ -8847,16 +8956,18 @@ function getStatIcon(id: number): typeof Dna {
           </div>
         </div>
 
-        <button
-          type="button"
-          class="w-full h-7 shrink-0 mt-1.5 rounded border border-[#1e1e1e] bg-white flex items-center justify-center text-black hover:bg-zinc-100 hover:border-[#2a2a2a] transition disabled:opacity-50"
-          onclick={createTemplateFromRoutineBuilder}
-          disabled={!currentUser}
-          title="Create template"
-          aria-label="Create template"
-        >
-          <Plus class="size-4" strokeWidth={2.5} />
-        </button>
+        {#if !activeRoutineIsReadonly}
+          <button
+            type="button"
+            class="w-full h-7 shrink-0 mt-1.5 rounded border border-[#1e1e1e] bg-white flex items-center justify-center text-black hover:bg-zinc-100 hover:border-[#2a2a2a] transition disabled:opacity-50"
+            onclick={createTemplateFromRoutineBuilder}
+            disabled={!currentUser}
+            title="Create template"
+            aria-label="Create template"
+          >
+            <Plus class="size-4" strokeWidth={2.5} />
+          </button>
+        {/if}
       </div>
     </div>
 
@@ -9942,11 +10053,14 @@ function getStatIcon(id: number): typeof Dna {
       <RoutinesMenu
         onBack={closeRoutinesMenu}
         onEditRoutine={handleEditRoutineFromMenu}
+        onViewRoutine={handleViewRoutineFromMenu}
         onDownload={(id) => void exportRoutineAsCsv(id)}
+        onImport={(file) => importRoutineFromFile(file)}
         onActivate={onRoutineActivate}
+        onListChange={handleRoutineListChange}
         currentUserId={currentUser?.id ?? ''}
         bind:activeRoutineId
-        initialRoutines={preloadedRoutines}
+        initialList={preloadedRoutineList}
         initialAllRoutines={preloadedAllRoutines}
         initialBookmarkIds={preloadedBookmarkIds}
       />

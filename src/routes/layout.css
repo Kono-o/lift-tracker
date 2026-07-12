@@ -1369,6 +1369,59 @@ input.prop-num-input::-webkit-outer-spin-button {
 	white-space: nowrap;
 }
 
+.tpl-name-stack {
+	justify-self: center;
+}
+
+/* Template color underline: 6 segments, each breathes independently (noise-like) */
+.tpl-name-color-segs {
+	--tpl-underline-color: #ffbf00;
+}
+
+.tpl-name-color-seg {
+	--seg-i: 0;
+	background-color: var(--tpl-underline-color);
+	/* Stagger phase + period so segments feel independent */
+	animation: tpl-name-seg-glow calc(2.1s + var(--seg-i) * 0.37s) ease-in-out infinite;
+	animation-delay: calc(var(--seg-i) * -0.73s);
+}
+
+@keyframes tpl-name-seg-glow {
+	0%,
+	100% {
+		opacity: 0.28;
+		box-shadow: 0 0 2px color-mix(in srgb, var(--tpl-underline-color) 25%, transparent);
+	}
+	18% {
+		opacity: 0.55;
+		box-shadow: 0 0 5px color-mix(in srgb, var(--tpl-underline-color) 45%, transparent);
+	}
+	42% {
+		opacity: 1;
+		box-shadow:
+			0 0 6px color-mix(in srgb, var(--tpl-underline-color) 80%, transparent),
+			0 0 12px color-mix(in srgb, var(--tpl-underline-color) 40%, transparent);
+	}
+	61% {
+		opacity: 0.4;
+		box-shadow: 0 0 3px color-mix(in srgb, var(--tpl-underline-color) 35%, transparent);
+	}
+	79% {
+		opacity: 0.85;
+		box-shadow:
+			0 0 5px color-mix(in srgb, var(--tpl-underline-color) 70%, transparent),
+			0 0 10px color-mix(in srgb, var(--tpl-underline-color) 30%, transparent);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.tpl-name-color-seg {
+		animation: none;
+		opacity: 0.9;
+		box-shadow: 0 0 4px color-mix(in srgb, var(--tpl-underline-color) 55%, transparent);
+	}
+}
+
 .tpl-workout-timer {
 	display: inline-flex;
 	flex: 0 0 auto;
@@ -1845,6 +1898,12 @@ input.prop-num-input::-webkit-outer-spin-button {
 .auth-confirm-reveal__inner {
 	overflow: hidden;
 	min-height: 0;
+}
+
+/* Squircle color chip before template names in routine editor list */
+.template-list-color-squircle {
+	border-radius: 28%;
+	flex-shrink: 0;
 }
 
 /* Soft pulse while a routine copy is in progress */

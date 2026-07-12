@@ -6,6 +6,8 @@
   import GeneratedAvatar from '$lib/components/GeneratedAvatar.svelte';
   import HeaderClock from '$lib/components/HeaderClock.svelte';
   import RoutinesMenu from '$lib/components/RoutinesMenu.svelte';
+  import TemplateColorPicker from '$lib/components/TemplateColorPicker.svelte';
+  import { clampTemplateColor, DEFAULT_TEMPLATE_COLOR, getTemplateColor } from '$lib/templateColor';
   import { horizontalSwipe } from '$lib/horizontalSwipe';
   import { scrollEdgeFade } from '$lib/scrollEdgeFade';
   import { getDbActivitySnapshot, runDbActivityBatch, subscribeDbActivity, subscribeDbActivitySnapshot } from '$lib/dbActivity';
@@ -106,6 +108,7 @@
     Scale,
     Hash,
     Bookmark,
+    Search,
   } from '@lucide/svelte';
   import AuthBrandIcon from '$lib/components/auth-brand-icons.svelte';
   import {
@@ -131,18 +134,6 @@
   // Constants
   const DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
   const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-const TEMPLATE_COLORS: string[] = [
-  '#4ADE80', // green (was orange)
-  '#afe64f', // saturated lime (25% less saturated, slightly brighter)
-  '#65c7e9', // sky blue (25% less saturated, slightly brighter)
-  '#9173eb', // blurple (25% less saturated, slightly brighter)
-  '#eb7393', // pink (25% less saturated, slightly brighter)
-];
-
-function getTemplateColor(id: number): string {
-  return TEMPLATE_COLORS[Math.max(0, Math.min(4, Math.floor(id || 0)))];
-}
 
 const STAT_ICONS = [
   Dna,
@@ -325,12 +316,13 @@ function getStatIcon(id: number): typeof Dna {
   let supabaseHealthPollTimer: ReturnType<typeof setInterval> | null = null;
 
   function flashDbIoIndicator() {
+    // Longer pulse so coalesced boot/refocus traffic reads as one calm blink
     dbIoFlash = true;
     if (dbIoFlashTimer) clearTimeout(dbIoFlashTimer);
     dbIoFlashTimer = setTimeout(() => {
       dbIoFlash = false;
       dbIoFlashTimer = null;
-    }, 100);
+    }, 380);
   }
 
   // State
@@ -1205,6 +1197,8 @@ function getStatIcon(id: number): typeof Dna {
 
   let deleteTemplateHoldTimer: any = null;
   let deleteTemplateProgress = $state(0);
+  /** Which template id is currently being hold-to-deleted (builder / editor). */
+  let deleteTemplateHoldId = $state<string | null>(null);
   let eraseHoldTimer: any = null;
   let eraseProgress = $state(0);
   let eraseTapPulseActive = $state(false);
@@ -1290,7 +1284,9 @@ function getStatIcon(id: number): typeof Dna {
   /** Preserves reps/time fields across type toggles (DB nulls inactive type columns). */
   let exerciseTypeFieldStash = $state<Record<string, ExerciseTypeFieldStash>>({});
   let draftTemplateName = $state('');
-  let draftTemplateColor = $state(0); // 0-4 (5 colors)
+  let draftTemplateColor = $state(DEFAULT_TEMPLATE_COLOR); // 0-255 quantized HSV spectrum (#FFBF00 default)
+  let showTemplateColorPicker = $state(false);
+  let templateColorBtnEl = $state<HTMLButtonElement | undefined>();
   let selectedExerciseId = $state<string | null>(null);
   let editingExerciseNameId = $state<string | null>(null);
   let showExerciseLibraryPicker = $state(false);
@@ -1298,6 +1294,7 @@ function getStatIcon(id: number): typeof Dna {
   const LIBRARY_PICKER_MS = 220;
   let selectedLibraryExerciseId = $state<string | null>(null);
   let deletedLibraryExerciseIds = $state(new Set<string>());
+  let librarySearchQuery = $state('');
 
   function isLibraryExerciseId(id: string | null | undefined): boolean {
     return !!id && !id.startsWith('temp-');
@@ -1331,11 +1328,22 @@ function getStatIcon(id: number): typeof Dna {
     return libraryExercisesAvailable.filter((ex) => !deletedLibraryExerciseIds.has(ex.id));
   });
 
+  let filteredLibraryForPicker = $derived.by(() => {
+    const q = librarySearchQuery.trim().toLowerCase();
+    if (!q) return availableLibraryForPicker;
+    return availableLibraryForPicker.filter((ex) => {
+      const name = (ex.name ?? '').toLowerCase();
+      const type = (ex.exercise_type ?? '').toLowerCase();
+      return name.includes(q) || type.includes(q);
+    });
+  });
+
   function closeLibraryPicker() {
     if (!showExerciseLibraryPicker || libraryPickerClosing) return;
     libraryPickerClosing = true;
     selectedLibraryExerciseId = null;
     deletedLibraryExerciseIds = new Set();
+    librarySearchQuery = '';
     setTimeout(() => {
       showExerciseLibraryPicker = false;
       libraryPickerClosing = false;
@@ -3089,11 +3097,13 @@ function getStatIcon(id: number): typeof Dna {
   }
 
   function handleEditRoutineFromMenu(routineId: string) {
+    activeRoutineId = routineId;
     currentView = 'swap_template';
     void onRoutineActivate(routineId);
   }
 
   function handleViewRoutineFromMenu(routineId: string) {
+    activeRoutineId = routineId;
     currentView = 'swap_template';
     void onRoutineActivate(routineId);
   }
@@ -3874,44 +3884,39 @@ function getStatIcon(id: number): typeof Dna {
 			if (isInitial && currentUser) {
 				bootSections = buildAuthBootSections(currentUser, 'syncing');
 			}
-			const [data, recentLogs, stats, snapshots] = await Promise.all([
-				db.getAppData(currentUser?.id),
-				db.getRecentHistory(21).catch((e) => {
-					console.error('Recent history fetch failed', e);
-					return [] as WorkoutHistory[];
+			// One coordinated bootstrap (parallel queries + single activity-light flash)
+			const boot = await runDbActivityBatch(() =>
+				db.getSessionBootstrap(currentUser?.id, {
+					historyDays: 21,
+					statDays: 90,
+					includeRoutines: true,
+					includeStats: true,
 				}),
-				db.getTrackedStats().catch(() => [] as TrackedStat[]),
-				db.getStatLogSnapshots(90).catch(() => [] as StatLogSnapshotRow[]),
-			]);
-			schedule = data.schedule;
-			templates = data.templates;
-			exerciseLibrary = data.exerciseLibrary ?? [];
+			);
+			schedule = boot.schedule;
+			templates = boot.templates;
+			exerciseLibrary = boot.exerciseLibrary ?? [];
 			deletedLibraryExerciseIds = new Set(); // server state is now authoritative
-			todayLog = data.todayLog || null;
-			trackedStats = stats;
-			statLogSnapshots = snapshots;
-			statLogs = statLogsFromSnapshots(snapshots);
-			activeRoutineId = await db.getActiveRoutineId();
-			try {
-				preloadedRoutineList = await db.getUserRoutineList();
-			} catch (e) {
-				console.warn('Failed to preload routine list', e);
-			}
+			todayLog = boot.todayLog || null;
+			const recentLogs = boot.recentLogs ?? [];
+			trackedStats = boot.trackedStats ?? [];
+			statLogSnapshots = boot.statLogSnapshots ?? [];
+			statLogs = statLogsFromSnapshots(statLogSnapshots);
+			activeRoutineId = boot.activeRoutineId;
+			preloadedRoutineList = boot.routineList ?? [];
 			if (!activeRoutineId) {
 				try {
-					const list = preloadedRoutineList.length
-						? preloadedRoutineList
-						: await db.getUserRoutineList();
-					preloadedRoutineList = list;
+					const list = preloadedRoutineList;
 					const first = list.find((r) => r.source === 'owned') ?? list[0];
 					if (first) {
-						await db.setActiveRoutine(first.id);
-						activeRoutineId = first.id;
-						// Reload schedule/templates after activation
-						const refreshed = await db.getAppData(currentUser?.id);
-						schedule = refreshed.schedule;
-						templates = refreshed.templates;
-						exerciseLibrary = refreshed.exerciseLibrary ?? [];
+						await runDbActivityBatch(async () => {
+							await db.setActiveRoutine(first.id);
+							activeRoutineId = first.id;
+							const refreshed = await db.getAppData(currentUser?.id);
+							schedule = refreshed.schedule;
+							templates = refreshed.templates;
+							exerciseLibrary = refreshed.exerciseLibrary ?? [];
+						});
 					}
 				} catch (e) {
 					console.error('Failed to auto-assign first routine as active', e);
@@ -4178,6 +4183,7 @@ function getStatIcon(id: number): typeof Dna {
     skipProgress = 0;
     cancelProgress = 0;
     deleteTemplateProgress = 0;
+    deleteTemplateHoldId = null;
     eraseProgress = 0;
     justFinishedStatus = null;
     workoutTimer = setInterval(() => {
@@ -4235,6 +4241,7 @@ function getStatIcon(id: number): typeof Dna {
     skipProgress = 0;
     cancelProgress = 0;
     deleteTemplateProgress = 0;
+    deleteTemplateHoldId = null;
     eraseProgress = 0;
     justFinishedStatus = null;
   }
@@ -4251,6 +4258,7 @@ function getStatIcon(id: number): typeof Dna {
     skipProgress = 0;
     cancelProgress = 0;
     deleteTemplateProgress = 0;
+    deleteTemplateHoldId = null;
     eraseProgress = 0;
 
     const elapsed = workoutElapsedSeconds();
@@ -4955,27 +4963,43 @@ function getStatIcon(id: number): typeof Dna {
     cancelTapPulseActive = false;
   }
 
-  function startDeleteTemplateHold(e: Event) {
+  function startDeleteTemplateHold(e: Event, templateId?: string) {
     if (e.cancelable) e.preventDefault();
-    const templateId =
-      currentView === 'edit_template' ? editingTemplateId : activeTemplate?.id;
-    if (!templateId) return;
-    let startTime = Date.now();
+    (e as Event & { stopPropagation?: () => void }).stopPropagation?.();
+    const id =
+      templateId ??
+      (currentView === 'edit_template' ? editingTemplateId : activeTemplate?.id) ??
+      null;
+    if (!id || activeRoutineIsReadonly) return;
+    clearInterval(deleteTemplateHoldTimer);
+    deleteTemplateHoldId = id;
+    const startTime = Date.now();
     deleteTemplateHoldTimer = setInterval(() => {
-      deleteTemplateProgress = Math.min(((Date.now() - startTime) / 1000) * 100, 100);
+      deleteTemplateProgress = Math.min(((Date.now() - startTime) / HOLD_CONFIRM_MS) * 100, 100);
       if (deleteTemplateProgress >= 100) {
         clearInterval(deleteTemplateHoldTimer);
         deleteTemplateHoldTimer = null;
         deleteTemplateProgress = 0;
+        const deletedId = deleteTemplateHoldId;
+        deleteTemplateHoldId = null;
+        if (!deletedId) return;
+
+        if (currentView === 'swap_template') {
+          const tpl = templates.find((t) => t.id === deletedId);
+          if (tpl) void deleteTemplateInBuilder(tpl);
+          return;
+        }
+
+        // Template editor: delete and leave editor
         const returnView = templateEditorReturnView;
         templateEditorReturnView = 'track';
         void flushTemplateNamePersist();
         editingTemplateId = '';
         draftExercises = [];
         draftTemplateName = '';
+        showTemplateColorPicker = false;
         currentView = returnView;
-        if (!templateId.startsWith('temp-')) {
-          const deletedId = templateId;
+        if (!deletedId.startsWith('temp-')) {
           templates = templates.filter((t) => t.id !== deletedId);
           void clearTemplateFromAllDays(deletedId);
           void db.deleteTemplate(deletedId).catch((err) => {
@@ -4987,7 +5011,13 @@ function getStatIcon(id: number): typeof Dna {
       }
     }, 20);
   }
-  function stopDeleteTemplateHold() { clearInterval(deleteTemplateHoldTimer); deleteTemplateProgress = 0; }
+  function stopDeleteTemplateHold(e?: Event) {
+    e?.stopPropagation?.();
+    clearInterval(deleteTemplateHoldTimer);
+    deleteTemplateHoldTimer = null;
+    deleteTemplateProgress = 0;
+    deleteTemplateHoldId = null;
+  }
 
   function startEraseHold(e: Event) {
     if (e.cancelable) e.preventDefault();
@@ -5280,7 +5310,7 @@ function getStatIcon(id: number): typeof Dna {
 
       const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const nextOrder = templates.length;
-      const optimistic: Template = { id: tempId, user_id: uid, name, color: 0, display_order: nextOrder, exercises: [] };
+      const optimistic: Template = { id: tempId, user_id: uid, name, color: DEFAULT_TEMPLATE_COLOR, display_order: nextOrder, exercises: [] };
       templates = [...templates, optimistic];
       // Scope new templates to this routine so the list is not empty after create
       routineEditorExtraTemplateIds = new Set([...routineEditorExtraTemplateIds, tempId]);
@@ -6456,29 +6486,49 @@ function getStatIcon(id: number): typeof Dna {
   }
 
   function openTemplateEditor(templateId?: string) {
-    if (!templateId && !showHeaderEditActions) return;
-    const id = templateId ?? activeTemplate?.id;
-    if (!id) return;
-    const tpl = templates.find((t) => t.id === id);
-    if (!tpl) return;
-    editingTemplateId = id;
-    exerciseTypeFieldStash = {};
-    draftExercises = tpl.exercises.map((e) => {
-      const copy = { ...e };
-      normalizeDraftExercise(copy);
-      return copy;
-    });
-    draftTemplateName = sanitizeTemplateName(tpl.name);
-    draftTemplateColor = (tpl as any).color ?? 0;
-    selectedExerciseId = draftExercises.length > 0 ? draftExercises[0].id : null;
-    editingExerciseNameId = null;
-    templateSaveError = null;
-    resetNewExerciseForm();
-    // Library picker is closed by default. User can open it explicitly with the LIBRARY button.
-    showExerciseLibraryPicker = false;
-    // Remember where we came from so we can return there on close (supports nesting: routine editor → template editor)
-    templateEditorReturnView = currentView === 'swap_template' ? 'swap_template' : 'track';
-    currentView = 'edit_template';
+    try {
+      // From routine editor / list always allow when an id is passed; header pencil needs edit mode.
+      if (!templateId && !showHeaderEditActions) return;
+      const id = templateId ?? activeTemplate?.id;
+      if (!id) return;
+      const tpl =
+        templates.find((t) => t.id === id) ??
+        builderTemplates.find((t) => t.id === id);
+      if (!tpl) {
+        console.warn('openTemplateEditor: template not found', id);
+        templateError = 'Template not found';
+        templateErrorFading = false;
+        return;
+      }
+      editingTemplateId = id;
+      exerciseTypeFieldStash = {};
+      const sourceEx = Array.isArray(tpl.exercises) ? tpl.exercises : [];
+      draftExercises = sourceEx.map((e) => {
+        const copy = { ...e };
+        normalizeDraftExercise(copy);
+        return copy;
+      });
+      draftTemplateName = sanitizeTemplateName(tpl.name);
+      draftTemplateColor = clampTemplateColor(
+        typeof tpl.color === 'number' ? tpl.color : DEFAULT_TEMPLATE_COLOR,
+      );
+      selectedExerciseId = draftExercises.length > 0 ? draftExercises[0].id : null;
+      editingExerciseNameId = null;
+      templateSaveError = null;
+      showTemplateColorPicker = false;
+      resetNewExerciseForm();
+      // Library picker is closed by default. User can open it explicitly with the LIBRARY button.
+      showExerciseLibraryPicker = false;
+      // Remember where we came from so we can return there on close (supports nesting: routine editor → template editor)
+      templateEditorReturnView =
+        currentView === 'swap_template' || currentView === 'routines_menu'
+          ? 'swap_template'
+          : 'track';
+      currentView = 'edit_template';
+    } catch (e) {
+      console.error('openTemplateEditor failed', e);
+      templateSaveError = formatDbError(e) || 'Could not open template editor';
+    }
   }
 
   function patchTemplateInCache(
@@ -6656,6 +6706,7 @@ function getStatIcon(id: number): typeof Dna {
   function exitEditTemplate() {
     if (editorExitSaving) return;
     editorExitSaving = true;
+    showTemplateColorPicker = false;
     const returnView = templateEditorReturnView;
     templateEditorReturnView = 'track';
     currentView = returnView;
@@ -6664,7 +6715,7 @@ function getStatIcon(id: number): typeof Dna {
         draftExercises = [];
         exerciseTypeFieldStash = {};
         draftTemplateName = '';
-        draftTemplateColor = 0;
+        draftTemplateColor = DEFAULT_TEMPLATE_COLOR;
         selectedExerciseId = null;
         editingExerciseNameId = null;
         editingTemplateId = '';
@@ -6900,6 +6951,13 @@ function getStatIcon(id: number): typeof Dna {
   let templateListBody = $state<HTMLDivElement | undefined>();
 
   function handleTemplateDragStart(e: DragEvent, index: number) {
+    // Don't start row-drag when interacting with edit/delete controls
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.('button, input, a, [data-no-drag]')) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     templateDraggedIndex = index;
     templateDragOverIndex = index;
     if (e.dataTransfer) {
@@ -8266,6 +8324,14 @@ function getStatIcon(id: number): typeof Dna {
           : headerSurfaceStatus === 'yellow'
             ? 'tpl-workout-timer--yellow'
             : 'tpl-workout-timer--neutral'}
+      {@const liveTplForColor = dispTemplate?.id ? templates.find((t) => t.id === dispTemplate.id) : null}
+      {@const dispTplColorHex = getTemplateColor(
+        typeof liveTplForColor?.color === 'number'
+          ? liveTplForColor.color
+          : typeof dispTemplate?.color === 'number'
+            ? dispTemplate.color
+            : DEFAULT_TEMPLATE_COLOR,
+      )}
       <div class="track-workout-shell app-stack-gap flex flex-col flex-1 min-h-0 overflow-hidden">
       <div class="track-workout-header app-stack-gap shrink-0 flex flex-col">
       {#if templateSaveError}
@@ -8317,7 +8383,23 @@ function getStatIcon(id: number): typeof Dna {
                 >{headerTimerMinutes}</span>
               {/if}
             </div>
-            <span class="tpl-name min-w-0 text-xl font-semibold tracking-tight leading-none text-center {headerSkipped ? 'w-fg-skipped' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-white'}">[ {dispTemplate?.name || 'Workout'} ]</span>
+            <div class="tpl-name-stack inline-flex flex-col items-stretch min-w-0 max-w-full gap-[3px]">
+              <span class="tpl-name min-w-0 text-xl font-semibold tracking-tight leading-none text-center {headerSkipped ? 'w-fg-skipped' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-white'}">[ {dispTemplate?.name || 'Workout'} ]</span>
+              {#if dispTemplate}
+                <div
+                  class="tpl-name-color-segs flex gap-[1px] h-[3px] w-full shrink-0"
+                  style="--tpl-underline-color: {dispTplColorHex}"
+                  aria-hidden="true"
+                >
+                  {#each Array(6) as _, i}
+                    <div
+                      class="tpl-name-color-seg flex-1 min-w-0 rounded-[1px]"
+                      style="--seg-i: {i}"
+                    ></div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
             <div class="tpl-toolbar-side tpl-toolbar-side--end">
               {#if showHeaderTimers}
                 <span
@@ -8842,6 +8924,10 @@ function getStatIcon(id: number): typeof Dna {
               class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center gap-1 cursor-pointer transition-colors text-zinc-400 hover:border-[#2a2a2a] {builderAssignedTemplateId === null ? 'bg-[#1e1e1e] border-[#2a2a2a] hover:bg-[#141414]' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414]'}"
               onclick={() => assignTemplateToBuilderDay(null)}
             >
+              <span
+                class="template-list-color-squircle shrink-0 w-3.5 h-3.5 bg-white"
+                aria-hidden="true"
+              ></span>
               <span class="font-medium truncate leading-none flex-1 min-w-0 text-left">[ REST DAY ]</span>
               {#if builderAssignedTemplateId === null}
                 <span class="text-[9px] shrink-0 bg-[#1e1e1e] px-1.5 py-0.5 rounded border border-[#2a2a2a] text-zinc-500 leading-none">ASSIGNED</span>
@@ -8855,7 +8941,7 @@ function getStatIcon(id: number): typeof Dna {
             {@const rawSelectedId = builderAssignments[builderEditingDay] ?? null}
             {@const isSelected = rawSelectedId === template.id}
             {@const isRealAssigned = builderAssignedTemplateId === template.id}
-            {@const tColor = getTemplateColor(template.color ?? 0)}
+            {@const tColor = getTemplateColor(template.color ?? DEFAULT_TEMPLATE_COLOR)}
             <div
               class="flex items-stretch gap-1 h-8 {activeRoutineIsReadonly ? '' : 'cursor-grab active:cursor-grabbing'}"
               style="transform: translateY({activeRoutineIsReadonly ? 0 : dragShift(templateDraggedIndex, templateDragOverIndex, index)}px); transition: transform 150ms ease; {templateDraggedIndex === index ? 'opacity: 0.25;' : ''}"
@@ -8883,6 +8969,12 @@ function getStatIcon(id: number): typeof Dna {
                 onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); assignTemplateToBuilderDay(template.id); } }}
               >
                 <div class="flex items-center gap-1 min-w-0 flex-1">
+                  <span
+                    class="template-list-color-squircle shrink-0 w-3.5 h-3.5"
+                    style="background-color: {tColor}"
+                    title="Template color"
+                    aria-hidden="true"
+                  ></span>
                   {#if editingRoutineTemplateNameId === template.id}
                     <span class="shrink-0" style={isSelected ? `color: white` : `color: #aaa`}>[</span>
                     <input
@@ -8929,28 +9021,55 @@ function getStatIcon(id: number): typeof Dna {
                   {#if isSelected && !activeRoutineIsReadonly}
                     <button
                       type="button"
+                      data-no-drag
                       class="w-6 h-6 shrink-0 flex items-center justify-center rounded border transition-colors"
                       style={`background-color: color-mix(in srgb, white 20%, #1e1e1e); color: white; border-color: white;`}
                       title="Edit template"
-                      onclick={(e) => { e.stopPropagation(); openTemplateEditor(template.id); }}
+                      onmousedown={(e) => e.stopPropagation()}
+                      onclick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        openTemplateEditor(template.id);
+                      }}
                     >
                       <Pencil class="size-3 pointer-events-none" />
                     </button>
                     <button
                       type="button"
-                      class="w-6 h-6 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
-                      title="Delete template"
-                      onclick={(e) => { e.stopPropagation(); deleteTemplateInBuilder(template); }}
+                      data-no-drag
+                      class="relative overflow-hidden w-6 h-6 shrink-0 flex items-center justify-center rounded border transition-colors {deleteTemplateHoldId === template.id && deleteTemplateProgress > 0
+                        ? 'border-red-500 text-red-300'
+                        : 'border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800'}"
+                      title="Hold to delete template"
+                      onmousedown={(e) => startDeleteTemplateHold(e, template.id)}
+                      onmouseup={stopDeleteTemplateHold}
+                      onmouseleave={stopDeleteTemplateHold}
+                      ontouchstart={(e) => startDeleteTemplateHold(e, template.id)}
+                      ontouchend={stopDeleteTemplateHold}
+                      ontouchcancel={stopDeleteTemplateHold}
+                      onclick={(e) => e.stopPropagation()}
                     >
-                      <Trash2 class="size-3 pointer-events-none" />
+                      {#if deleteTemplateHoldId === template.id && deleteTemplateProgress > 0}
+                        <div
+                          class="absolute inset-0 z-0 bg-red-900/50 transition-all duration-[20ms]"
+                          style="width: {deleteTemplateProgress}%;"
+                        ></div>
+                      {/if}
+                      <Trash2 class="size-3 pointer-events-none relative z-10" />
                     </button>
                   {:else if isSelected && activeRoutineIsReadonly}
                     <button
                       type="button"
+                      data-no-drag
                       class="w-6 h-6 shrink-0 flex items-center justify-center rounded border transition-colors"
                       style={`background-color: color-mix(in srgb, white 20%, #1e1e1e); color: white; border-color: white;`}
                       title="View template (read-only)"
-                      onclick={(e) => { e.stopPropagation(); openTemplateEditor(template.id); }}
+                      onmousedown={(e) => e.stopPropagation()}
+                      onclick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        openTemplateEditor(template.id);
+                      }}
                     >
                       <Pencil class="size-3 pointer-events-none" />
                     </button>
@@ -9599,7 +9718,7 @@ function getStatIcon(id: number): typeof Dna {
           <input
             autocomplete="off"
             class="w-full h-8 bg-black border text-xs font-medium uppercase text-center px-2 rounded outline-none placeholder:text-zinc-600"
-            style={`border-color: ${templateEditorColor}; color: ${templateEditorColor}`}
+            style={`border-color: ${templateEditorColor}; color: ${templateEditorColor}; transition: none;`}
             placeholder="Template name"
             disabled={!editingTemplate}
             use:clampedTemplateNameProp={{
@@ -9612,16 +9731,26 @@ function getStatIcon(id: number): typeof Dna {
         </div>
         <button
           type="button"
-          class="w-8 h-8 rounded bg-black border flex items-center justify-center transition-all group"
-          style="border-color: {templateEditorColor}"
+          bind:this={templateColorBtnEl}
+          class="w-8 h-8 rounded bg-black border flex items-center justify-center relative"
+          style="border-color: {templateEditorColor}; transition: none;"
           onclick={() => {
-            draftTemplateColor = (draftTemplateColor + 1) % 5;
+            showTemplateColorPicker = !showTemplateColorPicker;
+          }}
+          title="Pick template color"
+        >
+          <div class="w-5 h-5 rounded" style="background-color: {templateEditorColor}; transition: none;"></div>
+        </button>
+        <TemplateColorPicker
+          bind:open={showTemplateColorPicker}
+          colorIndex={draftTemplateColor}
+          anchorEl={templateColorBtnEl ?? null}
+          onChange={(idx) => {
+            // Single write path so name border + swatch update together
+            draftTemplateColor = clampTemplateColor(idx);
             void persistTemplateColorNow();
           }}
-          title="Click to cycle template color"
-        >
-          <div class="w-5 h-5 rounded transition-all group-active:scale-95" style="background-color: {templateEditorColor}"></div>
-        </button>
+        />
       </div>
       {#if templateSaveError && currentView === 'edit_template'}
         <p class="text-[10px] text-red-300 leading-snug">{templateSaveError}</p>
@@ -9769,58 +9898,76 @@ function getStatIcon(id: number): typeof Dna {
               class:library-picker-panel--open={showExerciseLibraryPicker && !libraryPickerClosing}
             >
               <div class="library-picker-panel__inner {(showExerciseLibraryPicker && !libraryPickerClosing) ? '' : 'pointer-events-none'}">
-                <div class="mt-1.5 rounded border border-[#1e1e1e] bg-[#0d0d0d] p-1.5 space-y-1 max-h-48 overflow-y-auto no-scrollbar">
-                  {#if availableLibraryForPicker.length === 0}
-                    <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
-                      {exerciseLibrary.length === 0
-                        ? 'No saved exercises yet. Create one with NEW.'
-                        : 'All your exercises are already in this template.'}
-                    </p>
-                  {:else}
-                    {#each availableLibraryForPicker as libraryEx (libraryEx.id)}
-                      {@const isReps = libraryEx.exercise_type === 'reps'}
-                      {@const isSelectedLib = selectedLibraryExerciseId === libraryEx.id}
-                      {@const summary = isReps
-                        ? `${libraryEx.target_sets || 0}×${libraryEx.target_reps || 0}`
-                        : `${libraryEx.target_sets || 0}× ${libraryEx.target_minutes || 0}m${String(libraryEx.target_seconds || 0).padStart(2, '0')}s`}
-                      {@const weight = isReps && libraryEx.current_weight != null ? ` · ${libraryEx.current_weight}kg` : ''}
-                      <div
-                        class="w-full h-7 min-w-0 px-1.5 rounded border text-xs transition flex items-center gap-1.5 cursor-pointer {isSelectedLib 
-                          ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-200' 
-                          : 'bg-[#141414] border-[#1e1e1e] text-zinc-500 hover:bg-[#1a1a1a] hover:border-[#2a2a2a] hover:text-zinc-400'}"
-                        onclick={() => selectLibraryExercise(libraryEx.id)}
-                        title={isSelectedLib ? '' : 'Select to move or delete'}
-                      >
-                        <div class="flex items-center gap-1.5 flex-1 min-w-0">
-                          {#if isReps}
-                            <Dumbbell class="size-3 shrink-0 text-zinc-400" />
-                          {:else}
-                            <Timer class="size-3 shrink-0 text-zinc-400" />
+                <div class="mt-1.5 rounded border border-[#1e1e1e] bg-[#0d0d0d] p-1.5 space-y-1.5 max-h-52 flex flex-col min-h-0">
+                  <div class="relative shrink-0">
+                    <Search class="size-3 absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+                    <input
+                      type="search"
+                      autocomplete="off"
+                      spellcheck="false"
+                      placeholder=""
+                      class="w-full h-7 pl-7 pr-2 rounded border border-[#1e1e1e] bg-[#141414] text-xs text-zinc-200 outline-none focus:border-[#2a2a2a]"
+                      bind:value={librarySearchQuery}
+                      onclick={(e) => e.stopPropagation()}
+                    />
+                  </div>
+                  <div class="space-y-1 max-h-40 overflow-y-auto no-scrollbar min-h-0">
+                    {#if availableLibraryForPicker.length === 0}
+                      <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
+                        {exerciseLibrary.length === 0
+                          ? 'No saved exercises yet. Create one with NEW.'
+                          : 'All your exercises are already in this template.'}
+                      </p>
+                    {:else if filteredLibraryForPicker.length === 0}
+                      <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
+                        No exercises match “{librarySearchQuery.trim()}”.
+                      </p>
+                    {:else}
+                      {#each filteredLibraryForPicker as libraryEx (libraryEx.id)}
+                        {@const isReps = libraryEx.exercise_type === 'reps'}
+                        {@const isSelectedLib = selectedLibraryExerciseId === libraryEx.id}
+                        {@const summary = isReps
+                          ? `${libraryEx.target_sets || 0}×${libraryEx.target_reps || 0}`
+                          : `${libraryEx.target_sets || 0}× ${libraryEx.target_minutes || 0}m${String(libraryEx.target_seconds || 0).padStart(2, '0')}s`}
+                        {@const weight = isReps && libraryEx.current_weight != null ? ` · ${libraryEx.current_weight}kg` : ''}
+                        <div
+                          class="w-full h-7 min-w-0 px-1.5 rounded border text-xs transition flex items-center gap-1.5 cursor-pointer {isSelectedLib 
+                            ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-200' 
+                            : 'bg-[#141414] border-[#1e1e1e] text-zinc-500 hover:bg-[#1a1a1a] hover:border-[#2a2a2a] hover:text-zinc-400'}"
+                          onclick={() => selectLibraryExercise(libraryEx.id)}
+                          title={isSelectedLib ? '' : 'Select to move or delete'}
+                        >
+                          <div class="flex items-center gap-1.5 flex-1 min-w-0">
+                            {#if isReps}
+                              <Dumbbell class="size-3 shrink-0 text-zinc-400" />
+                            {:else}
+                              <Timer class="size-3 shrink-0 text-zinc-400" />
+                            {/if}
+                            <span class="truncate leading-none text-left font-medium">{libraryEx.name}</span>
+                            <span class="ml-auto text-[10px] text-zinc-500 tabular-nums shrink-0">{summary}{weight}</span>
+                          </div>
+                          {#if isSelectedLib}
+                            <button
+                              type="button"
+                              class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-[#2a2a2a] bg-[#1e1e1e] text-zinc-400 hover:text-white hover:border-[#3a3a3a] transition-colors"
+                              onclick={(e) => { e.stopPropagation(); moveLibraryExerciseToTemplate(libraryEx); }}
+                              title="Move into this template"
+                            >
+                              <ChevronUp class="size-3 pointer-events-none" />
+                            </button>
+                            <button
+                              type="button"
+                              class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-red-900/70 bg-red-950/40 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
+                              onclick={(e) => { e.stopPropagation(); deleteLibraryExercise(libraryEx); }}
+                              title="Delete from library (removes from all templates)"
+                            >
+                              <Trash2 class="size-3 pointer-events-none" />
+                            </button>
                           {/if}
-                          <span class="truncate leading-none text-left font-medium">{libraryEx.name}</span>
-                          <span class="ml-auto text-[10px] text-zinc-500 tabular-nums shrink-0">{summary}{weight}</span>
                         </div>
-                        {#if isSelectedLib}
-                          <button
-                            type="button"
-                            class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-[#2a2a2a] bg-[#1e1e1e] text-zinc-400 hover:text-white hover:border-[#3a3a3a] transition-colors"
-                            onclick={(e) => { e.stopPropagation(); moveLibraryExerciseToTemplate(libraryEx); }}
-                            title="Move into this template"
-                          >
-                            <ChevronUp class="size-3 pointer-events-none" />
-                          </button>
-                          <button
-                            type="button"
-                            class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-red-900/70 bg-red-950/40 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
-                            onclick={(e) => { e.stopPropagation(); deleteLibraryExercise(libraryEx); }}
-                            title="Delete from library (removes from all templates)"
-                          >
-                            <Trash2 class="size-3 pointer-events-none" />
-                          </button>
-                        {/if}
-                      </div>
-                    {/each}
-                  {/if}
+                      {/each}
+                    {/if}
+                  </div>
                 </div>
               </div>
             </div>

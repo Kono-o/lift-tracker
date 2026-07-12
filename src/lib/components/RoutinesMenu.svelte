@@ -577,15 +577,18 @@
   /** Open routine editor (owned) or read-only view (bookmarked). */
   function handleEdit(routineId: string) {
     const item = myList.find((r) => r.id === routineId);
-    if (!item || item.id.startsWith('temp-')) return;
-    if (busyAction !== null) return;
-    void activateRoutine(routineId).then(() => {
-      if (item.source === 'bookmarked') {
-        onViewRoutine(routineId);
-      } else {
-        onEditRoutine(routineId);
-      }
-    });
+    if (!item || item.id.startsWith('temp-') || item.id.startsWith('temp-copy-')) return;
+    // Open editor immediately; activate/sync schedule in the background
+    activeRoutineId = routineId;
+    emitListChange();
+    if (item.source === 'bookmarked') {
+      onViewRoutine(routineId);
+    } else {
+      onEditRoutine(routineId);
+    }
+    if (busyAction === null) {
+      void activateRoutine(routineId);
+    }
   }
 
   function displayRoutineName(routine: UserRoutineListItem): string {
@@ -802,8 +805,8 @@
                       type="button"
                       class="w-7 h-7 shrink-0 flex items-center justify-center rounded border transition-colors"
                       style="background-color: color-mix(in srgb, white 20%, #1e1e1e); color: white; border-color: white;"
-                      title="Rename routine"
-                      onclick={(e) => { e.stopPropagation(); renameRoutine(routine.id); }}
+                      title="Open routine editor"
+                      onclick={(e) => { e.stopPropagation(); handleEdit(routine.id); }}
                       disabled={busyAction !== null}
                     >
                       <Pencil class="size-3 pointer-events-none" />

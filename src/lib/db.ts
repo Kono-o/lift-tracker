@@ -20,6 +20,7 @@ import {
 } from "./statSanitize";
 import { createDbTrackingFetch, pulseDbActivity } from "./dbActivity";
 import { getNativeOAuthRedirectUrl, isNativeApp } from "./native";
+import { clampTemplateColor } from "./templateColor";
 
 export const supabase = createClient(
 	PUBLIC_SUPABASE_URL,
@@ -541,7 +542,7 @@ export interface Template {
 	id: string;
 	user_id: string;
 	name: string;
-	color?: number; // 0-4 (5 colors), defaults to 0
+	color?: number; // 0-255 quantized HSV spectrum index
 	display_order?: number;
 	exercises: Exercise[];
 }
@@ -1269,115 +1270,36 @@ export const db = {
 		 APP LOAD
 		 ================================================== */
 
-	async getAppData(userId?: string | null) {
-		// Live-follow: if the active routine is a bookmark, resync schedule from source first.
-		if (userId) {
-			try {
-				await supabase.rpc("resync_active_bookmarked_routine");
-			} catch (e) {
-				console.warn("resync_active_bookmarked_routine failed", e);
-			}
-		}
-
-		const [scheduleRes, ownTemplatesRes, libraryRes, linksRes, todayRes] =
-			await Promise.all([
-				supabase.from("schedule").select("*").order("day_of_week"),
-				(() => {
-					const q = supabase
-						.from("templates")
-						.select("id, user_id, name, color, display_order")
-						.order("display_order")
-						.order("created_at");
-					if (userId) q.eq("user_id", userId);
-					return q;
-				})(),
-				(() => {
-					const q = supabase
-						.from("exercises")
-						.select(
-							"id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, created_at",
-						)
-						.order("created_at");
-					if (userId) q.eq("user_id", userId);
-					return q;
-				})(),
-				supabase
-					.from("template_exercises")
-					.select("template_id, exercise_id, display_order")
-					.order("display_order"),
-				supabase
-					.from("workout_history")
-					.select("*")
-					.eq("workout_date", todayDateString())
-					.maybeSingle(),
-			]);
-
-		if (scheduleRes.error) throw scheduleRes.error;
-		if (ownTemplatesRes.error) throw ownTemplatesRes.error;
-		if (libraryRes.error) throw libraryRes.error;
-		if (linksRes.error) throw linksRes.error;
-		if (todayRes.error) throw todayRes.error;
-
-		const schedule = (scheduleRes.data ?? []) as ScheduleRow[];
-		const ownTemplateIds = new Set(
-			((ownTemplatesRes.data ?? []) as Array<{ id: string }>).map((t) => t.id),
-		);
-		// Templates referenced by schedule that are not owned (bookmarked active routine)
-		const foreignScheduleIds = [
-			...new Set(
-				schedule
-					.map((s) => s.template_id)
-					.filter((id): id is string => !!id && !ownTemplateIds.has(id)),
-			),
-		];
-
-		let foreignTemplatesData: any[] = [];
-		let foreignExerciseRows: Exercise[] = [];
-		if (foreignScheduleIds.length > 0) {
-			const { data: ft, error: ftErr } = await supabase
-				.from("templates")
-				.select("id, user_id, name, color, display_order")
-				.in("id", foreignScheduleIds);
-			if (ftErr) throw ftErr;
-			foreignTemplatesData = ft ?? [];
-
-			const foreignLinks = ((linksRes.data ?? []) as Array<{
-				template_id: string;
-				exercise_id: string;
-			}>).filter((l) => foreignScheduleIds.includes(l.template_id));
-			const foreignExIds = [
-				...new Set(foreignLinks.map((l) => l.exercise_id)),
-			];
-			if (foreignExIds.length > 0) {
-				const { data: fex, error: fexErr } = await supabase
-					.from("exercises")
-					.select(
-						"id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, created_at",
-					)
-					.in("id", foreignExIds);
-				if (fexErr) throw fexErr;
-				foreignExerciseRows = (fex ?? []) as Exercise[];
-			}
-		}
-
+	/**
+	 * Build templates + exercise library from raw rows (shared by getAppData / bootstrap).
+	 */
+	_assembleAppCore(args: {
+		schedule: ScheduleRow[];
+		ownTemplates: any[];
+		ownExercises: Exercise[];
+		links: Array<{ template_id: string; exercise_id: string; display_order: number }>;
+		foreignTemplates?: any[];
+		foreignExercises?: Exercise[];
+	}): {
+		schedule: ScheduleRow[];
+		templates: Template[];
+		exerciseLibrary: Exercise[];
+	} {
+		const {
+			schedule,
+			ownTemplates,
+			ownExercises,
+			links,
+			foreignTemplates = [],
+			foreignExercises = [],
+		} = args;
+		const ownTemplateIds = new Set(ownTemplates.map((t) => t.id as string));
 		const exerciseLibrary = [
-			...((libraryRes.data ?? []) as Exercise[]),
-			...foreignExerciseRows.filter(
-				(e) =>
-					!(libraryRes.data ?? []).some((o: any) => o.id === e.id),
-			),
+			...ownExercises,
+			...foreignExercises.filter((e) => !ownExercises.some((o) => o.id === e.id)),
 		].map(normalizeExerciseFromDb);
-
-		const links = (linksRes.data ?? []) as Array<{
-			template_id: string;
-			exercise_id: string;
-			display_order: number;
-		}>;
-
-		// Build lookup for current exercises
 		const exById = new Map(exerciseLibrary.map((e) => [e.id, e] as const));
 
-		// Legacy index: for pre-migration data where exercises still carry template_id + display_order
 		const legacyByTpl = new Map<string, Exercise[]>();
 		for (const ex of exerciseLibrary as any[]) {
 			const tid = ex?.template_id;
@@ -1389,12 +1311,11 @@ export const db = {
 		}
 
 		const allTemplateRows = [
-			...(ownTemplatesRes.data ?? []),
-			...foreignTemplatesData.filter((t) => !ownTemplateIds.has(t.id)),
+			...ownTemplates,
+			...foreignTemplates.filter((t) => !ownTemplateIds.has(t.id)),
 		];
 
 		const templates: Template[] = allTemplateRows.map((t: any) => {
-			// Preferred path: use template_exercises links (post-migration model)
 			let exs: Exercise[] = links
 				.filter((l) => l.template_id === t.id)
 				.sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0))
@@ -1405,8 +1326,6 @@ export const db = {
 				})
 				.filter((e): e is Exercise => !!e);
 
-			// Legacy fallback for accounts that never ran the shared exercise library migration.
-			// Exercises may still have a template_id column pointing at the template.
 			if (exs.length === 0) {
 				const leg = legacyByTpl.get(t.id) || [];
 				exs = leg
@@ -1425,11 +1344,350 @@ export const db = {
 			};
 		});
 
+		return { schedule, templates, exerciseLibrary };
+	},
+
+	async getAppData(userId?: string | null) {
+		const boot = await this.getSessionBootstrap(userId, {
+			historyDays: 0,
+			statDays: 0,
+			includeRoutines: false,
+			includeStats: false,
+		});
 		return {
+			schedule: boot.schedule,
+			templates: boot.templates,
+			exerciseLibrary: boot.exerciseLibrary,
+			todayLog: boot.todayLog,
+		};
+	},
+
+	/**
+	 * One coordinated load for app start / tab refocus: parallel fetches + one activity flash.
+	 * Prefer this over many sequential getX() calls.
+	 */
+	async getSessionBootstrap(
+		userId?: string | null,
+		opts: {
+			historyDays?: number;
+			statDays?: number;
+			includeRoutines?: boolean;
+			includeStats?: boolean;
+		} = {},
+	): Promise<{
+		schedule: ScheduleRow[];
+		templates: Template[];
+		exerciseLibrary: Exercise[];
+		todayLog: WorkoutHistory | null;
+		recentLogs: WorkoutHistory[];
+		trackedStats: TrackedStat[];
+		statLogSnapshots: StatLogSnapshotRow[];
+		activeRoutineId: string | null;
+		routineList: UserRoutineListItem[];
+	}> {
+		const historyDays = opts.historyDays ?? 21;
+		const statDays = opts.statDays ?? 90;
+		const includeRoutines = opts.includeRoutines !== false;
+		const includeStats = opts.includeStats !== false;
+
+		const sinceHistory = new Date();
+		sinceHistory.setDate(sinceHistory.getDate() - historyDays);
+		const sinceHistoryStr = sinceHistory.toISOString().slice(0, 10);
+		const sinceStats = new Date();
+		sinceStats.setDate(sinceStats.getDate() - statDays);
+		const sinceStatsStr = sinceStats.toISOString().slice(0, 10);
+		const todayStr = todayDateString();
+
+		const templatesQ = supabase
+			.from("templates")
+			.select("id, user_id, name, color, display_order")
+			.order("display_order")
+			.order("created_at");
+		if (userId) templatesQ.eq("user_id", userId);
+
+		const exercisesQ = supabase
+			.from("exercises")
+			.select(
+				"id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, created_at",
+			)
+			.order("created_at");
+		if (userId) exercisesQ.eq("user_id", userId);
+
+		const ownedRoutinesQ = userId
+			? supabase
+					.from("routines")
+					.select(
+						"id, user_id, name, created_at, display_order, routine_schedules ( template_id )",
+					)
+					.eq("user_id", userId)
+					.order("display_order")
+					.order("created_at")
+			: null;
+		const bookmarksQ = userId
+			? supabase
+					.from("routine_bookmarks")
+					.select("id, user_id, routine_id, created_at, display_order")
+					.eq("user_id", userId)
+					.order("display_order")
+					.order("created_at")
+			: null;
+
+		// Wave 1: everything independent in parallel
+		const [
+			scheduleRes,
+			ownTemplatesRes,
+			libraryRes,
+			linksRes,
+			todayRes,
+			recentRes,
+			statsRes,
+			snapshotsRes,
+			profileRes,
+			ownedRoutinesRes,
+			bookmarksRes,
+			usersRes,
+		] = await Promise.all([
+			supabase.from("schedule").select("*").order("day_of_week"),
+			templatesQ,
+			exercisesQ,
+			supabase
+				.from("template_exercises")
+				.select("template_id, exercise_id, display_order")
+				.order("display_order"),
+			supabase
+				.from("workout_history")
+				.select("*")
+				.eq("workout_date", todayStr)
+				.maybeSingle(),
+			historyDays > 0
+				? supabase
+						.from("workout_history")
+						.select("*")
+						.gte("workout_date", sinceHistoryStr)
+						.order("workout_date", { ascending: false })
+				: Promise.resolve({ data: [], error: null }),
+			includeStats
+				? supabase
+						.from("tracked_stats")
+						.select(
+							"id, user_id, name, unit, display_order, start_value, has_target, target_value, icon",
+						)
+						.order("display_order")
+						.order("created_at")
+				: Promise.resolve({ data: [], error: null }),
+			includeStats
+				? supabase
+						.from("stat_logs")
+						.select(
+							"stat_id, log_date, value, stat_name_snapshot, stat_unit_snapshot",
+						)
+						.gte("log_date", sinceStatsStr)
+						.order("log_date", { ascending: false })
+				: Promise.resolve({ data: [], error: null }),
+			userId
+				? supabase
+						.from("usernames")
+						.select("user_id, username, avatar_seed, active_routine_id")
+						.eq("user_id", userId)
+						.maybeSingle()
+				: Promise.resolve({ data: null, error: null }),
+			includeRoutines && ownedRoutinesQ
+				? ownedRoutinesQ
+				: Promise.resolve({ data: [], error: null }),
+			includeRoutines && bookmarksQ
+				? bookmarksQ
+				: Promise.resolve({ data: [], error: null }),
+			includeRoutines
+				? supabase.from("usernames").select("username, user_id, avatar_seed")
+				: Promise.resolve({ data: [], error: null }),
+		]);
+
+		if (scheduleRes.error) throw scheduleRes.error;
+		if (ownTemplatesRes.error) throw ownTemplatesRes.error;
+		if (libraryRes.error) throw libraryRes.error;
+		if (linksRes.error) throw linksRes.error;
+		if (todayRes.error) throw todayRes.error;
+
+		let schedule = (scheduleRes.data ?? []) as ScheduleRow[];
+		let activeRoutineId =
+			(profileRes.data?.active_routine_id as string | undefined) ?? null;
+
+		// Live-follow bookmarked active routine (one RPC + optional schedule refresh)
+		if (userId && activeRoutineId) {
+			const ownedIds = new Set(
+				((ownedRoutinesRes.data ?? []) as Array<{ id: string }>).map((r) => r.id),
+			);
+			const isOwnedActive = ownedIds.has(activeRoutineId);
+			if (!isOwnedActive) {
+				try {
+					await supabase.rpc("resync_active_bookmarked_routine");
+					const { data: sched2, error: s2 } = await supabase
+						.from("schedule")
+						.select("*")
+						.order("day_of_week");
+					if (!s2 && sched2) schedule = sched2 as ScheduleRow[];
+				} catch (e) {
+					console.warn("resync_active_bookmarked_routine failed", e);
+				}
+			}
+		}
+
+		const ownTemplates = ownTemplatesRes.data ?? [];
+		const ownTemplateIds = new Set(ownTemplates.map((t: any) => t.id as string));
+		const foreignScheduleIds = [
+			...new Set(
+				schedule
+					.map((s) => s.template_id)
+					.filter((id): id is string => !!id && !ownTemplateIds.has(id)),
+			),
+		];
+
+		let foreignTemplatesData: any[] = [];
+		let foreignExerciseRows: Exercise[] = [];
+		const links = (linksRes.data ?? []) as Array<{
+			template_id: string;
+			exercise_id: string;
+			display_order: number;
+		}>;
+
+		if (foreignScheduleIds.length > 0) {
+			const foreignLinks = links.filter((l) =>
+				foreignScheduleIds.includes(l.template_id),
+			);
+			const foreignExIds = [...new Set(foreignLinks.map((l) => l.exercise_id))];
+			const [ftRes, fexRes] = await Promise.all([
+				supabase
+					.from("templates")
+					.select("id, user_id, name, color, display_order")
+					.in("id", foreignScheduleIds),
+				foreignExIds.length > 0
+					? supabase
+							.from("exercises")
+							.select(
+								"id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, created_at",
+							)
+							.in("id", foreignExIds)
+					: Promise.resolve({ data: [], error: null }),
+			]);
+			if (ftRes.error) throw ftRes.error;
+			if (fexRes.error) throw fexRes.error;
+			foreignTemplatesData = ftRes.data ?? [];
+			foreignExerciseRows = (fexRes.data ?? []) as Exercise[];
+		}
+
+		const core = this._assembleAppCore({
 			schedule,
-			templates,
-			exerciseLibrary,
+			ownTemplates,
+			ownExercises: (libraryRes.data ?? []) as Exercise[],
+			links,
+			foreignTemplates: foreignTemplatesData,
+			foreignExercises: foreignExerciseRows,
+		});
+
+		// Routines list (owned + bookmarked) from already-fetched rows + one optional batch
+		let routineList: UserRoutineListItem[] = [];
+		if (includeRoutines && userId) {
+			const userMap = new Map(
+				((usersRes.data ?? []) as UserProfileRow[]).map((u) => [u.user_id, u]),
+			);
+			const ownedItems: UserRoutineListItem[] = (
+				(ownedRoutinesRes.data ?? []) as any[]
+			).map((r) => ({
+				id: r.id,
+				user_id: r.user_id,
+				name: r.name,
+				created_at: r.created_at,
+				display_order: r.display_order ?? 0,
+				template_count: Array.isArray(r.routine_schedules)
+					? r.routine_schedules.filter((s: any) => s.template_id != null).length
+					: 0,
+				source: "owned" as const,
+				is_readonly: false,
+				owner_username: userMap.get(r.user_id)?.username,
+				owner_avatar_seed: userMap.get(r.user_id)?.avatar_seed ?? null,
+			}));
+
+			const bookmarks = (bookmarksRes.data ?? []) as RoutineBookmark[];
+			let bookmarkedItems: UserRoutineListItem[] = [];
+			if (bookmarks.length > 0) {
+				const ids = bookmarks.map((b) => b.routine_id);
+				const { data: remoteRoutines, error: rrErr } = await supabase
+					.from("routines")
+					.select(
+						"id, user_id, name, created_at, display_order, routine_schedules ( template_id )",
+					)
+					.in("id", ids);
+				if (rrErr) throw rrErr;
+				const rMap = new Map(
+					((remoteRoutines ?? []) as any[]).map((r) => [r.id, r]),
+				);
+				for (const bm of bookmarks) {
+					const r = rMap.get(bm.routine_id);
+					if (!r) continue;
+					const owner = userMap.get(r.user_id);
+					bookmarkedItems.push({
+						id: r.id,
+						user_id: r.user_id,
+						name: r.name,
+						created_at: r.created_at,
+						display_order: bm.display_order ?? 0,
+						template_count: Array.isArray(r.routine_schedules)
+							? r.routine_schedules.filter((s: any) => s.template_id != null)
+									.length
+							: 0,
+						source: "bookmarked",
+						is_readonly: true,
+						owner_username: owner?.username ?? "unknown",
+						owner_avatar_seed: owner?.avatar_seed ?? null,
+						bookmark_id: bm.id,
+					});
+				}
+			}
+			routineList = [...ownedItems, ...bookmarkedItems];
+		}
+
+		let trackedStats: TrackedStat[] = [];
+		if (includeStats && !statsRes.error) {
+			trackedStats = (statsRes.data ?? []).map((row: any, i: number) =>
+				toTrackedStat(row, i),
+			);
+		} else if (includeStats && statsRes.error) {
+			// legacy columns fallback once
+			trackedStats = await this.getTrackedStats().catch(() => []);
+		}
+
+		let statLogSnapshots: StatLogSnapshotRow[] = [];
+		if (includeStats && !snapshotsRes.error) {
+			statLogSnapshots = ((snapshotsRes.data ?? []) as any[])
+				.filter(
+					(row) =>
+						row.stat_id &&
+						row.log_date &&
+						typeof row.value === "number" &&
+						row.stat_name_snapshot,
+				)
+				.map((row) => ({
+					stat_id: row.stat_id as string,
+					log_date: row.log_date as string,
+					value: row.value as number,
+					name: row.stat_name_snapshot as string,
+					unit: (row.stat_unit_snapshot as string | null) ?? "",
+				}));
+		}
+
+		const recentLogs =
+			historyDays > 0 && !recentRes.error
+				? ((recentRes.data as WorkoutHistory[]) ?? [])
+				: [];
+
+		return {
+			...core,
 			todayLog: (todayRes.data as WorkoutHistory) ?? null,
+			recentLogs,
+			trackedStats,
+			statLogSnapshots,
+			activeRoutineId,
+			routineList,
 		};
 	},
 
@@ -1706,7 +1964,7 @@ export const db = {
 	},
 
 	async updateTemplateColor(templateId: string, color: number) {
-		const c = Math.max(0, Math.min(4, Math.floor(color || 0)));
+		const c = clampTemplateColor(color);
 		const { error } = await supabase
 			.from("templates")
 			.update({ color: c })
@@ -1723,7 +1981,7 @@ export const db = {
 			patch.name = sanitizeTemplateName(fields.name.trim());
 		}
 		if (fields.color != null) {
-			patch.color = Math.max(0, Math.min(4, Math.floor(fields.color || 0)));
+			patch.color = clampTemplateColor(fields.color);
 		}
 		if (Object.keys(patch).length === 0) return;
 
@@ -3027,7 +3285,7 @@ function parseRoutineExportCsv(csvText: string): ParsedRoutineExport {
 				const colorRaw = cell(cols, iColor);
 				pack = {
 					name: sanitizeTemplateName(tname) || tname,
-					color: Math.max(0, Math.min(4, parseInt(colorRaw || "0", 10) || 0)),
+					color: Math.max(0, Math.min(255, parseInt(colorRaw || "0", 10) || 0)),
 					exercises: [],
 					assignedDays: [],
 				};

@@ -2,7 +2,7 @@
 	"name": "lift-tracker",
 	"description": "Workout logging app with templates, timed exercises, stats, and Supabase sync",
 	"private": true,
-	"version": "1.0.9",
+	"version": "1.0.10",
 	"homepage": "https://lift-tracker-self.vercel.app",
 	"repository": {
 		"type": "git",

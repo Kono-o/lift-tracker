@@ -64,11 +64,11 @@ create table public.templates (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
   name text not null,
-  color smallint not null default 0,
+  color smallint not null default 242, -- 0–255 spectrum; 242 = #FFBF00
   display_order integer not null default 0,
   created_at timestamptz not null default now(),
   constraint templates_name_not_empty check (char_length(trim(name)) > 0),
-  constraint templates_color_range check (color >= 0 and color <= 4),
+  constraint templates_color_range check (color >= 0 and color <= 255),
   constraint templates_display_order_nonneg check (display_order >= 0)
 );
 
@@ -1146,7 +1146,7 @@ begin
   where t.user_id = uid;
 
   insert into public.templates (user_id, name, color, display_order)
-  values (uid, safe_name, 0, next_order)
+  values (uid, safe_name, 242, next_order)
   returning * into row;
 
   return to_jsonb(row);

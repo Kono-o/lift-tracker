@@ -2,6 +2,28 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.10] - 2026-07-13
+
+**Feature polish** — template colors, list UI, and routines editor entry. Same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.
+
+### Template colors
+- Each template has a color (palette index 0–255 → quantized HSV spectrum)
+- Default new-template color is amber gold `#FFBF00`
+- HSV color picker (hue / saturation / value sliders + hue squircles)
+- **Editable hex field** — type or paste `#RGB` / `#RRGGBB`; snaps to nearest palette entry
+- Copy hex button retained
+- Color swatches on template lists; rest day uses a white squircle
+- Template name underline: six glowing segments in the chosen color
+
+### Routines UX
+- Pencil on a routine in the list opens the **routine editor** (not only activate)
+- Hold-to-delete for templates (safer accidental delete)
+- Faster session bootstrap (batched fetches)
+
+### Database
+- Template color range 0–255; default index for new templates maps to `#FFBF00`
+- No user data deleted by migrations
+
 ## [1.0.9] - 2026-07-13
 
 **Polish release** on multi-routines. Same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.

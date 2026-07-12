@@ -19,6 +19,9 @@ let snapshot: DbActivitySnapshot = {
 
 let flashBatchDepth = 0;
 let flashBatchPending = false;
+/** Trailing debounce so a burst of Supabase calls = one indicator flash. */
+let flashDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+const FLASH_COALESCE_MS = 320;
 
 function notifyFlashListeners(): void {
 	for (const listener of listeners) {
@@ -26,7 +29,15 @@ function notifyFlashListeners(): void {
 	}
 }
 
-/** Coalesce multiple DB pulses into one indicator flash (e.g. editor exit save). */
+function scheduleCoalescedFlash(): void {
+	if (flashDebounceTimer) clearTimeout(flashDebounceTimer);
+	flashDebounceTimer = setTimeout(() => {
+		flashDebounceTimer = null;
+		notifyFlashListeners();
+	}, FLASH_COALESCE_MS);
+}
+
+/** Coalesce multiple DB pulses into one indicator flash (e.g. editor exit save / app boot). */
 export async function runDbActivityBatch<T>(fn: () => Promise<T>): Promise<T> {
 	flashBatchDepth++;
 	try {
@@ -35,7 +46,8 @@ export async function runDbActivityBatch<T>(fn: () => Promise<T>): Promise<T> {
 		flashBatchDepth = Math.max(0, flashBatchDepth - 1);
 		if (flashBatchDepth === 0 && flashBatchPending) {
 			flashBatchPending = false;
-			notifyFlashListeners();
+			// Single flash after the whole batch settles
+			scheduleCoalescedFlash();
 		}
 	}
 }
@@ -67,7 +79,8 @@ export function pulseDbActivity(requestLabel?: string): void {
 		flashBatchPending = true;
 		return;
 	}
-	notifyFlashListeners();
+	// Outside explicit batches: still coalesce rapid-fire requests (boot / tab focus)
+	scheduleCoalescedFlash();
 }
 
 function isTrackedRequest(input: RequestInfo | URL): boolean {

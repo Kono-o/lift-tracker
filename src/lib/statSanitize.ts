@@ -1,5 +1,8 @@
 /** Limits and sanitizers for tracked stat editor fields. */
 
+import { clampItemIcon, DEFAULT_ITEM_ICON } from "./itemIcons";
+import { clampTemplateColor, DEFAULT_TEMPLATE_COLOR } from "./templateColor";
+
 export const MAX_STATS = 20;
 export const MAX_STAT_NAME_LEN = 24;
 export const MAX_STAT_UNIT_LEN = 6;
@@ -16,6 +19,7 @@ export type DraftStatLike = {
 	target_value?: number | null;
 	target_prefers_lower?: boolean;
 	icon?: number;
+	color?: number;
 };
 
 function clampInt(n: number, min: number, max: number): number {
@@ -134,7 +138,10 @@ export function normalizeDraftStat(stat: DraftStatLike): void {
 		: null;
 	// New: whether the user's goal is to be at-or-below the target (true) or at-or-above (false)
 	stat.target_prefers_lower = stat.target_prefers_lower !== undefined ? !!stat.target_prefers_lower : true;
-	stat.icon = stat.icon ?? 0;
+	stat.icon = clampItemIcon(stat.icon ?? DEFAULT_ITEM_ICON);
+	stat.color = clampTemplateColor(
+		typeof stat.color === "number" ? stat.color : DEFAULT_TEMPLATE_COLOR,
+	);
 }
 
 export function sanitizeStatRowForDb(stat: DraftStatLike): DraftStatLike {
@@ -154,6 +161,7 @@ export type TrackedStatLike = {
 	target_value?: number | null;
 	target_prefers_lower?: boolean | null;
 	icon?: number | null;
+	color?: number | null;
 };
 
 export function toTrackedStat(row: TrackedStatLike, fallbackOrder = 0) {
@@ -168,7 +176,10 @@ export function toTrackedStat(row: TrackedStatLike, fallbackOrder = 0) {
 		has_target,
 		target_value: has_target ? (row.target_value ?? null) : null,
 		target_prefers_lower: row.target_prefers_lower ?? true,
-		icon: row.icon ?? 0,
+		icon: clampItemIcon(row.icon ?? DEFAULT_ITEM_ICON),
+		color: clampTemplateColor(
+			typeof row.color === "number" ? row.color : DEFAULT_TEMPLATE_COLOR,
+		),
 	};
 }
 

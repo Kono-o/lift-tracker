@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import {
     db,
+    formatDbError,
     type Routine,
     type RoutineWithOwner,
     type UserRoutineListItem,
@@ -15,6 +16,7 @@
     Trash2,
     Bookmark,
     Copy,
+    Check,
     Download,
     BookmarkX,
     Upload,
@@ -25,7 +27,8 @@
     onEditRoutine = (_routineId: string) => {},
     onViewRoutine = (_routineId: string) => {},
     onDownload = (_routineId: string) => {},
-    onImport = async (_file: File) => {},
+    /** Called after a successful import + activate so parent can refresh templates. */
+    onImported = (_routineId: string) => {},
     onActivate = (_routineId: string) => {},
     onListChange = (_list: UserRoutineListItem[], _activeId: string | null) => {},
     currentUserId = '',
@@ -38,7 +41,7 @@
     onEditRoutine?: (routineId: string) => void;
     onViewRoutine?: (routineId: string) => void;
     onDownload?: (routineId: string) => void;
-    onImport?: (file: File) => void | Promise<void>;
+    onImported?: (routineId: string) => void;
     onActivate?: (routineId: string) => void;
     onListChange?: (list: UserRoutineListItem[], activeId: string | null) => void;
     currentUserId?: string;
@@ -65,10 +68,27 @@
 
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
   let destroyed = false;
+  /**
+   * Bumped on every local list mutation. In-flight reloads that started before the
+   * bump must not apply — that was flashing deleted/old rows after create/delete.
+   */
+  let listGen = 0;
+
+  /** Match template delete hold duration */
+  const HOLD_DELETE_MS = 800;
+  let deleteRoutineHoldTimer: ReturnType<typeof setInterval> | null = null;
+  let deleteRoutineHoldProgress = $state(0);
+  let deleteRoutineHoldId = $state<string | null>(null);
+
+  function bumpListGen(): number {
+    listGen += 1;
+    return listGen;
+  }
 
   const ROW_TOTAL = 40;
-  let draggedRoutineIndex = $state<number | null>(null);
-  let dragOverRoutineIndex = $state<number | null>(null);
+  /** Index into ownedRoutines (not myList — bookmarks break 1:1 mapping). */
+  let draggedOwnedIndex = $state<number | null>(null);
+  let dragOverOwnedIndex = $state<number | null>(null);
   let routineListBody = $state<HTMLDivElement | undefined>();
   let routineRowDragged = $state(false);
 
@@ -124,58 +144,88 @@
     return 0;
   }
 
-  function computeRowIndex(e: DragEvent, container: HTMLElement, maxIndex: number, firstRowOffset = 0): number {
+  /** Drop target from real owned-row geometry. */
+  function computeOwnedDropIndex(e: DragEvent, container: HTMLElement, ownedCount: number): number {
+    if (ownedCount <= 0) return 0;
+    const maxIndex = ownedCount - 1;
+    const ownedRows = Array.from(container.children).filter(
+      (el): el is HTMLElement =>
+        el instanceof HTMLElement && el.getAttribute('data-routine-source') === 'owned',
+    );
+
+    if (ownedRows.length > 0) {
+      const y = e.clientY;
+      for (let i = 0; i < ownedRows.length; i++) {
+        const r = ownedRows[i].getBoundingClientRect();
+        if (y < r.top + r.height / 2) return Math.max(0, Math.min(maxIndex, i));
+      }
+      return maxIndex;
+    }
     const rect = container.getBoundingClientRect();
     const y = e.clientY - rect.top;
-    const idx = Math.floor((y - firstRowOffset) / ROW_TOTAL);
+    const idx = Math.floor(y / ROW_TOTAL);
     return Math.max(0, Math.min(maxIndex, idx));
   }
 
-  function handleDragStart(e: DragEvent, index: number, item: UserRoutineListItem) {
-    // Only owned routines are reorderable among owned block
-    if (item.source !== 'owned') {
+  function handleDragStart(e: DragEvent, _listIndex: number, item: UserRoutineListItem) {
+    if (item.source !== 'owned' || item.id.startsWith('temp-')) {
       e.preventDefault();
       return;
     }
-    draggedRoutineIndex = index;
-    dragOverRoutineIndex = index;
+    const ownedIdx = ownedRoutines.findIndex((r) => r.id === item.id);
+    if (ownedIdx < 0) {
+      e.preventDefault();
+      return;
+    }
+    draggedOwnedIndex = ownedIdx;
+    dragOverOwnedIndex = ownedIdx;
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', index.toString());
+      e.dataTransfer.setData('text/plain', item.id);
     }
   }
 
   function handleDragOver(e: DragEvent) {
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    if (!routineListBody || draggedRoutineIndex === null) return;
-    // Only reorder within owned prefix
-    const ownedCount = ownedRoutines.length;
-    const idx = computeRowIndex(e, routineListBody, Math.max(0, ownedCount - 1));
-    if (dragOverRoutineIndex !== idx) dragOverRoutineIndex = idx;
+    if (!routineListBody || draggedOwnedIndex === null) return;
+    const idx = computeOwnedDropIndex(e, routineListBody, ownedRoutines.length);
+    if (dragOverOwnedIndex !== idx) dragOverOwnedIndex = idx;
   }
 
   async function handleDrop(e: DragEvent) {
     e.preventDefault();
-    dragOverRoutineIndex = null;
-    if (draggedRoutineIndex === null || !routineListBody) {
-      draggedRoutineIndex = null;
+    dragOverOwnedIndex = null;
+    if (draggedOwnedIndex === null || !routineListBody) {
+      draggedOwnedIndex = null;
       return;
     }
-    const ownedCount = ownedRoutines.length;
-    const targetIndex = computeRowIndex(e, routineListBody, Math.max(0, ownedCount - 1));
-    if (draggedRoutineIndex === targetIndex || draggedRoutineIndex >= ownedCount) {
-      draggedRoutineIndex = null;
+    const ownedAll = [...ownedRoutines];
+    const targetIndex = computeOwnedDropIndex(e, routineListBody, ownedAll.length);
+    const from = draggedOwnedIndex;
+    draggedOwnedIndex = null;
+
+    if (from < 0 || from >= ownedAll.length || targetIndex < 0 || targetIndex >= ownedAll.length) {
       return;
     }
-    const owned = [...ownedRoutines];
+    if (from === targetIndex) return;
+
+    const nextOwned = [...ownedAll];
+    const [moved] = nextOwned.splice(from, 1);
+    if (!moved || moved.source !== 'owned') {
+      // Bad splice would insert undefined and look like a deleted row
+      return;
+    }
+    nextOwned.splice(targetIndex, 0, moved);
+
     const bookmarked = myList.filter((r) => r.source === 'bookmarked');
-    const [moved] = owned.splice(draggedRoutineIndex, 1);
-    owned.splice(targetIndex, 0, moved);
-    myList = [...owned, ...bookmarked];
-    draggedRoutineIndex = null;
+    myList = [...nextOwned, ...bookmarked];
     emitListChange();
-    const orders = owned.map((r, i) => ({ id: r.id, display_order: i }));
+
+    const orders = nextOwned
+      .filter((r) => !r.id.startsWith('temp-'))
+      .map((r, i) => ({ id: r.id, display_order: i }));
+    if (orders.length === 0) return;
     try {
       await runDbActivityBatch(() => db.updateRoutineDisplayOrders(orders));
     } catch (err) {
@@ -186,9 +236,9 @@
   }
 
   function handleDragEnd() {
-    const wasDragging = draggedRoutineIndex !== null;
-    draggedRoutineIndex = null;
-    dragOverRoutineIndex = null;
+    const wasDragging = draggedOwnedIndex !== null;
+    draggedOwnedIndex = null;
+    dragOverOwnedIndex = null;
     if (wasDragging) {
       routineRowDragged = true;
       setTimeout(() => { routineRowDragged = false; }, 100);
@@ -196,12 +246,24 @@
   }
 
   async function reloadList() {
-    // Don't clobber in-flight copy/create optimistic rows
+    // Don't clobber in-flight copy/create/delete optimistic rows
     if (busyAction !== null) return;
+    const gen = listGen;
     try {
       const list = await db.getUserRoutineList();
-      if (destroyed || busyAction !== null) return;
-      myList = list;
+      if (destroyed || busyAction !== null || gen !== listGen) return;
+      // Preserve in-progress pending rows (should be none when busy is null, but be safe)
+      const pending = myList.filter(
+        (r) =>
+          r.id.startsWith('temp-') ||
+          r.name.startsWith('COPYING ') ||
+          r.name.startsWith('IMPORTING '),
+      );
+      const serverIds = new Set(list.map((r) => r.id));
+      myList = [
+        ...list,
+        ...pending.filter((p) => !serverIds.has(p.id)),
+      ];
       bookmarks = new Set(list.filter((r) => r.source === 'bookmarked').map((r) => r.id));
       emitListChange();
     } catch (e) {
@@ -211,12 +273,13 @@
 
   async function loadAllUsersSection() {
     if (busyAction !== null) return;
+    const gen = listGen;
     try {
       const [routines, bm] = await Promise.all([
         db.getAllUsersAndRoutines(),
         db.getUserBookmarks(),
       ]);
-      if (destroyed || busyAction !== null) return;
+      if (destroyed || busyAction !== null || gen !== listGen) return;
       allRoutines = currentUserId
         ? routines.filter((r) => r.user_id !== currentUserId)
         : routines;
@@ -232,20 +295,25 @@
   }
 
   async function loadAll() {
-    loading = true;
+    const hadRows = myList.length > 0;
+    if (!hadRows) loading = true;
     errorMsg = null;
+    const gen = listGen;
     try {
       let list = await db.getUserRoutineList();
+      if (destroyed || gen !== listGen || busyAction !== null) return;
       if (list.filter((r) => r.source === 'owned').length === 0) {
         const created = await db.ensureDefaultRoutine();
+        if (destroyed || gen !== listGen || busyAction !== null) return;
         if (created) {
           list = await db.getUserRoutineList();
+          if (destroyed || gen !== listGen || busyAction !== null) return;
           if (!activeRoutineId) {
             activeRoutineId = created.id;
           }
         }
       }
-      if (destroyed) return;
+      if (destroyed || gen !== listGen || busyAction !== null) return;
       myList = list;
       bookmarks = new Set(list.filter((r) => r.source === 'bookmarked').map((r) => r.id));
       emitListChange();
@@ -259,8 +327,15 @@
   }
 
   onMount(() => {
-    void loadAll();
+    // Prefer soft refresh when parent already preloaded — avoids empty→full flash
+    if (initialList.length > 0) {
+      void reloadList();
+      void loadAllUsersSection();
+    } else {
+      void loadAll();
+    }
     refreshTimer = setInterval(() => {
+      if (busyAction !== null) return;
       void loadAllUsersSection();
     }, 15000);
   });
@@ -268,11 +343,14 @@
   onDestroy(() => {
     destroyed = true;
     if (refreshTimer) clearInterval(refreshTimer);
+    stopDeleteRoutineHold();
   });
 
   async function addRoutine() {
     if (busyAction !== null) return;
     errorMsg = null;
+    busyAction = 'create';
+    bumpListGen();
     const optimistic: UserRoutineListItem = {
       id: 'temp-' + Date.now(),
       user_id: currentUserId,
@@ -283,19 +361,30 @@
       is_readonly: false,
     };
     myList = [...myList, optimistic];
+    emitListChange();
     try {
       const r = await runDbActivityBatch(() => db.createRoutine('NEW ROUTINE'));
-      myList = myList.map((x) =>
-        x.id === optimistic.id
-          ? { ...r, source: 'owned' as const, is_readonly: false }
-          : x,
-      );
+      if (destroyed) return;
+      // Replace optimistic row in place (same position); never full-list swap
+      const stillThere = myList.some((x) => x.id === optimistic.id);
+      if (stillThere) {
+        myList = myList.map((x) =>
+          x.id === optimistic.id
+            ? { ...r, source: 'owned' as const, is_readonly: false }
+            : x,
+        );
+      } else if (!myList.some((x) => x.id === r.id)) {
+        myList = [...myList, { ...r, source: 'owned' as const, is_readonly: false }];
+      }
       emitListChange();
       renameRoutine(r.id);
     } catch (e) {
       myList = myList.filter((x) => x.id !== optimistic.id);
+      emitListChange();
       errorMsg = 'Failed to create routine';
       console.error(e);
+    } finally {
+      busyAction = null;
     }
   }
 
@@ -328,85 +417,127 @@
     }
   }
 
+  function stopDeleteRoutineHold(e?: Event) {
+    e?.stopPropagation?.();
+    if (deleteRoutineHoldTimer) clearInterval(deleteRoutineHoldTimer);
+    deleteRoutineHoldTimer = null;
+    deleteRoutineHoldProgress = 0;
+    deleteRoutineHoldId = null;
+  }
+
+  function startDeleteRoutineHold(e: Event, id: string) {
+    if (e.cancelable) e.preventDefault();
+    (e as Event & { stopPropagation?: () => void }).stopPropagation?.();
+    if (busyAction !== null) return;
+    if (id.startsWith('temp-')) return;
+    stopDeleteRoutineHold();
+    deleteRoutineHoldId = id;
+    const startTime = Date.now();
+    deleteRoutineHoldTimer = setInterval(() => {
+      deleteRoutineHoldProgress = Math.min(
+        ((Date.now() - startTime) / HOLD_DELETE_MS) * 100,
+        100,
+      );
+      if (deleteRoutineHoldProgress >= 100) {
+        if (deleteRoutineHoldTimer) clearInterval(deleteRoutineHoldTimer);
+        deleteRoutineHoldTimer = null;
+        deleteRoutineHoldProgress = 0;
+        const rid = deleteRoutineHoldId;
+        deleteRoutineHoldId = null;
+        if (rid) void deleteOwnedRoutine(rid);
+      }
+    }, 16);
+  }
+
   async function deleteOwnedRoutine(id: string) {
+    if (busyAction !== null) return;
     const item = myList.find((r) => r.id === id);
     if (!item || item.source !== 'owned') return;
+    if (item.id.startsWith('temp-')) return;
     if (ownedRoutines.length <= 1) {
       errorMsg = 'Keep at least one owned routine, or create a new one first';
       return;
     }
     errorMsg = null;
-    const snapshot = myList;
+    stopDeleteRoutineHold();
+    busyAction = 'delete:' + id;
+    bumpListGen();
+    const snapshot = [...myList];
+    const prevActive = activeRoutineId;
+    // Optimistic remove first so UI never waits on network with the old row
     myList = myList.filter((r) => r.id !== id);
-
-    if (activeRoutineId === id) {
-      const nextOwned = myList.find((r) => r.source === 'owned' && !r.id.startsWith('temp-'));
-      const nextAny = myList.find((r) => !r.id.startsWith('temp-'));
-      const nextActive = nextOwned?.id ?? nextAny?.id ?? null;
-      activeRoutineId = nextActive;
-      if (nextActive) {
-        try {
-          await runDbActivityBatch(() => db.setActiveRoutine(nextActive));
-          onActivate(nextActive);
-        } catch (e) {
-          console.error('Failed to activate fallback routine', e);
-        }
-      } else {
-        try {
-          await runDbActivityBatch(() => db.setActiveRoutine(null));
-        } catch (e) {
-          console.error(e);
-        }
-      }
-    }
     emitListChange();
 
     try {
-      await runDbActivityBatch(() => db.deleteRoutine(id));
-    } catch (e) {
-      myList = snapshot;
-      emitListChange();
-      errorMsg = 'Failed to delete routine';
-      console.error(e);
-    }
-  }
-
-  /** Bookmarked routines: remove from list only — never delete source. */
-  async function removeBookmark(routineId: string) {
-    errorMsg = null;
-    const snapshot = myList;
-    const wasActive = activeRoutineId === routineId;
-    myList = myList.filter((r) => !(r.source === 'bookmarked' && r.id === routineId));
-    bookmarks.delete(routineId);
-    bookmarks = new Set(bookmarks);
-
-    if (wasActive) {
-      const nextOwned = myList.find((r) => r.source === 'owned' && !r.id.startsWith('temp-'));
-      const nextAny = myList.find((r) => !r.id.startsWith('temp-'));
-      const nextActive = nextOwned?.id ?? nextAny?.id ?? null;
-      activeRoutineId = nextActive;
-      try {
+      if (activeRoutineId === id) {
+        const nextOwned = myList.find((r) => r.source === 'owned' && !r.id.startsWith('temp-'));
+        const nextAny = myList.find((r) => !r.id.startsWith('temp-'));
+        const nextActive = nextOwned?.id ?? nextAny?.id ?? null;
+        activeRoutineId = nextActive;
+        emitListChange();
         if (nextActive) {
           await runDbActivityBatch(() => db.setActiveRoutine(nextActive));
           onActivate(nextActive);
         } else {
           await runDbActivityBatch(() => db.setActiveRoutine(null));
         }
-      } catch (e) {
-        console.error('Failed to reassign after unbookmark', e);
       }
+      await runDbActivityBatch(() => db.deleteRoutine(id));
+      // Ensure deleted id stays gone even if something partial reappeared
+      if (myList.some((r) => r.id === id)) {
+        myList = myList.filter((r) => r.id !== id);
+        emitListChange();
+      }
+    } catch (e) {
+      myList = snapshot;
+      activeRoutineId = prevActive;
+      emitListChange();
+      errorMsg = 'Failed to delete routine';
+      console.error(e);
+    } finally {
+      busyAction = null;
     }
+  }
+
+  /** Bookmarked routines: remove from list only — never delete source. */
+  async function removeBookmark(routineId: string) {
+    if (busyAction !== null) return;
+    errorMsg = null;
+    busyAction = 'unbookmark:' + routineId;
+    bumpListGen();
+    const snapshot = [...myList];
+    const prevActive = activeRoutineId;
+    const wasActive = activeRoutineId === routineId;
+    myList = myList.filter((r) => !(r.source === 'bookmarked' && r.id === routineId));
+    bookmarks.delete(routineId);
+    bookmarks = new Set(bookmarks);
     emitListChange();
 
     try {
+      if (wasActive) {
+        const nextOwned = myList.find((r) => r.source === 'owned' && !r.id.startsWith('temp-'));
+        const nextAny = myList.find((r) => !r.id.startsWith('temp-'));
+        const nextActive = nextOwned?.id ?? nextAny?.id ?? null;
+        activeRoutineId = nextActive;
+        emitListChange();
+        if (nextActive) {
+          await runDbActivityBatch(() => db.setActiveRoutine(nextActive));
+          onActivate(nextActive);
+        } else {
+          await runDbActivityBatch(() => db.setActiveRoutine(null));
+        }
+      }
       await runDbActivityBatch(() => db.removeBookmarkFromList(routineId));
     } catch (e) {
       myList = snapshot;
       bookmarks.add(routineId);
       bookmarks = new Set(bookmarks);
+      activeRoutineId = prevActive;
       emitListChange();
       errorMsg = 'Failed to remove bookmark';
       console.error(e);
+    } finally {
+      busyAction = null;
     }
   }
 
@@ -472,6 +603,36 @@
     }
   }
 
+  /** Status label while copy/import runs, e.g. "COPYING [PUSH PULL]…" */
+  function pendingActionLabel(kind: 'COPYING' | 'IMPORTING', rawName: string): string {
+    const n = (rawName || 'ROUTINE').trim().toUpperCase() || 'ROUTINE';
+    return `${kind} [${n}]…`;
+  }
+
+  /** Best-effort name from a routine file before full import (JSON or legacy CSV). */
+  function peekRoutineNameFromText(text: string): string {
+    const t = String(text ?? '').replace(/^\uFEFF/, '').trim();
+    if (!t) return 'ROUTINE';
+    if (t.startsWith('{')) {
+      try {
+        const j = JSON.parse(t) as { meta?: { name?: string }; name?: string };
+        const n = j?.meta?.name ?? j?.name;
+        if (n != null && String(n).trim()) return String(n).trim();
+      } catch {
+        /* fall through */
+      }
+    }
+    const m = t.match(/^#\s*name\s*,\s*(.+)$/im);
+    if (m) {
+      let v = m[1].trim();
+      if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
+        v = v.slice(1, -1).replace(/""/g, '"');
+      }
+      if (v) return v;
+    }
+    return 'ROUTINE';
+  }
+
   async function copyRoutine(routineId: string) {
     if (busyAction !== null) return;
     errorMsg = null;
@@ -479,25 +640,33 @@
       bookmarks.has(routineId) ||
       myList.some((r) => r.id === routineId && r.source === 'bookmarked');
     const existingBm = myList.find((r) => r.id === routineId && r.source === 'bookmarked');
+    const sourceRow = myList.find((r) => r.id === routineId);
+    const sourceName = sourceRow?.name ?? existingBm?.name ?? 'ROUTINE';
     const snapshot = [...myList];
     const bookmarksSnapshot = new Set(bookmarks);
     const prevActive = activeRoutineId;
     const tempId = 'temp-copy-' + Date.now();
     busyAction = 'copy:' + routineId;
 
+    const pendingRow: UserRoutineListItem = {
+      id: tempId,
+      user_id: currentUserId,
+      name: pendingActionLabel('COPYING', sourceName),
+      created_at: '',
+      template_count: 0,
+      source: 'owned',
+      is_readonly: false,
+    };
+
     if (existingBm) {
       // Replace the bookmarked row in place (no extra row)
       myList = myList.map((r) =>
         r.id === routineId
           ? {
-              id: tempId,
-              user_id: currentUserId,
-              name: 'COPYING…',
+              ...pendingRow,
               created_at: r.created_at,
               template_count: r.template_count ?? 0,
               display_order: r.display_order,
-              source: 'owned' as const,
-              is_readonly: false,
             }
           : r,
       );
@@ -505,18 +674,19 @@
       bookmarks = new Set(bookmarks);
       if (activeRoutineId === routineId) activeRoutineId = tempId;
     } else {
-      myList = [
-        ...myList,
-        {
-          id: tempId,
-          user_id: currentUserId,
-          name: 'COPYING…',
-          created_at: '',
-          template_count: 0,
-          source: 'owned' as const,
-          is_readonly: false,
-        },
-      ];
+      // Duplicate owned (or other): insert COPYING… right after the source row
+      const srcIdx = myList.findIndex((r) => r.id === routineId);
+      if (srcIdx >= 0) {
+        const src = myList[srcIdx];
+        pendingRow.template_count = src.template_count ?? 0;
+        myList = [
+          ...myList.slice(0, srcIdx + 1),
+          pendingRow,
+          ...myList.slice(srcIdx + 1),
+        ];
+      } else {
+        myList = [...myList, pendingRow];
+      }
     }
     emitListChange();
 
@@ -577,7 +747,7 @@
   /** Open routine editor (owned) or read-only view (bookmarked). */
   function handleEdit(routineId: string) {
     const item = myList.find((r) => r.id === routineId);
-    if (!item || item.id.startsWith('temp-') || item.id.startsWith('temp-copy-')) return;
+    if (!item || item.id.startsWith('temp-')) return;
     // Open editor immediately; activate/sync schedule in the background
     activeRoutineId = routineId;
     emitListChange();
@@ -591,11 +761,13 @@
     }
   }
 
+  /** List display: routine names always shown as [NAME] (or [NAME - USER] for bookmarks). */
   function displayRoutineName(routine: UserRoutineListItem): string {
     if (routine.source === 'bookmarked' && routine.owner_username) {
-      return `${routine.name} - ${routine.owner_username}`.toUpperCase();
+      return `[${routine.name} - ${routine.owner_username}]`.toUpperCase();
     }
-    return routine.name;
+    const n = (routine.name || 'ROUTINE').trim() || 'ROUTINE';
+    return `[${n}]`.toUpperCase();
   }
 
   const activeRoutine = $derived(
@@ -606,36 +778,85 @@
   );
 
   let importInputEl = $state<HTMLInputElement | undefined>();
-  let importBusy = $state(false);
 
   function openImportPicker() {
-    if (importBusy || busyAction !== null) return;
+    if (busyAction !== null) return;
     importInputEl?.click();
   }
 
+  /**
+   * Import a routine file (JSON v2 / legacy CSV) with the same optimistic UX as copy:
+   * append IMPORTING NAME… row (breathe), batch-create, swap in real row, activate.
+   */
   async function onImportFileChange(e: Event) {
     const input = e.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
     input.value = '';
     if (!file) return;
-    importBusy = true;
+    if (busyAction !== null) return;
+
     errorMsg = null;
+    const snapshot = [...myList];
+    const prevActive = activeRoutineId;
+    const tempId = 'temp-import-' + Date.now();
+    busyAction = 'import:' + tempId;
+
+    let text = '';
     try {
-      await onImport(file);
-      await reloadList();
-      // Parent may have activated the imported routine
-      try {
-        const active = await db.getActiveRoutineId();
-        if (active) activeRoutineId = active;
-      } catch {
-        /* ignore */
+      text = await file.text();
+    } catch (err) {
+      busyAction = null;
+      errorMsg = 'Could not read file';
+      console.error(err);
+      return;
+    }
+    if (!String(text ?? '').trim()) {
+      busyAction = null;
+      errorMsg = 'File is empty';
+      return;
+    }
+
+    const peekName = peekRoutineNameFromText(text);
+    myList = [
+      ...myList,
+      {
+        id: tempId,
+        user_id: currentUserId,
+        name: pendingActionLabel('IMPORTING', peekName),
+        created_at: '',
+        template_count: 0,
+        source: 'owned' as const,
+        is_readonly: false,
+      },
+    ];
+    emitListChange();
+
+    try {
+      const result = await db.importRoutineFromText(text);
+      const ownedItem: UserRoutineListItem = {
+        ...result,
+        source: 'owned',
+        is_readonly: false,
+      };
+      myList = myList.map((r) => (r.id === tempId ? ownedItem : r));
+      if (!myList.some((r) => r.id === result.id)) {
+        myList = [...myList, ownedItem];
       }
       emitListChange();
+
+      // Clear busy before activate (activate no-ops while busy)
+      busyAction = null;
+      await activateRoutine(result.id);
+      onImported(result.id);
     } catch (err) {
-      console.error(err);
-      errorMsg = err instanceof Error ? err.message : 'Failed to import routine CSV';
+      myList = snapshot;
+      activeRoutineId = prevActive;
+      emitListChange();
+      errorMsg = formatDbError(err) || 'Failed to import routine';
+      console.error('import routine failed', err);
+      busyAction = null;
     } finally {
-      importBusy = false;
+      if (busyAction?.startsWith('import:')) busyAction = null;
     }
   }
 </script>
@@ -655,7 +876,7 @@
     <input
       bind:this={importInputEl}
       type="file"
-      accept=".csv,text/csv"
+      accept=".lift.json,application/json,.json,text/json,.csv,text/csv,text/plain,*/*"
       class="hidden"
       onchange={onImportFileChange}
     />
@@ -664,9 +885,10 @@
         type="button"
         class="h-8 max-w-[min(100%,12rem)] shrink min-w-0 rounded-lg border border-[#1e1e1e] bg-transparent text-zinc-400 hover:text-white hover:bg-[#1a1a1a] flex items-center justify-center gap-1.5 px-2 transition-colors"
         title={activeDownloadLabel
-          ? `Export ${activeDownloadLabel} as CSV`
-          : 'Export selected routine as CSV'}
+          ? `Export ${activeDownloadLabel} (.lift.json)`
+          : 'Export selected routine (.lift.json)'}
         onclick={() => onDownload(activeRoutineId)}
+        disabled={busyAction !== null}
       >
         <span class="text-[10px] font-bold tracking-wide truncate leading-none min-w-0 uppercase">
           {activeDownloadLabel ?? 'ROUTINE'}
@@ -677,9 +899,9 @@
     <button
       type="button"
       class="h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-zinc-400 hover:text-white hover:bg-[#1a1a1a] flex items-center justify-center gap-1.5 px-2 transition-colors disabled:opacity-50"
-      title="Import routine from CSV"
+      title="Import routine (.lift.json or legacy CSV)"
       onclick={openImportPicker}
-      disabled={importBusy || busyAction !== null}
+      disabled={busyAction !== null}
     >
       <Download class="size-4 shrink-0" />
       <span class="text-[10px] font-bold tracking-wide leading-none shrink-0">IMPORT</span>
@@ -712,11 +934,19 @@
           {@const isActive = activeRoutineId === routine.id}
           {@const isOwned = routine.source === 'owned'}
           {@const isBookmarked = routine.source === 'bookmarked'}
+          {@const isPending =
+            routine.id.startsWith('temp-copy-') ||
+            routine.id.startsWith('temp-import-') ||
+            routine.name.startsWith('COPYING ') ||
+            routine.name.startsWith('IMPORTING ')}
+          {@const ownedIdx = isOwned ? ownedRoutines.findIndex((r) => r.id === routine.id) : -1}
           {@const tc = Number(routine.template_count) || 0}
           <div
-            class="flex items-stretch gap-1 h-9 min-w-0 {isOwned ? 'cursor-grab active:cursor-grabbing' : ''}"
-            style="transform: translateY({isOwned ? dragShift(draggedRoutineIndex, dragOverRoutineIndex, index) : 0}px); transition: transform 150ms ease; {draggedRoutineIndex === index ? 'opacity: 0.25;' : ''}"
-            draggable={isOwned}
+            class="flex items-stretch gap-1 h-9 min-w-0 {isOwned && !isPending ? 'cursor-grab active:cursor-grabbing' : ''}"
+            data-routine-source={routine.source}
+            data-list-row
+            style="transform: translateY({isOwned && !isPending && ownedIdx >= 0 ? dragShift(draggedOwnedIndex, dragOverOwnedIndex, ownedIdx) : 0}px); transition: transform 150ms ease; {draggedOwnedIndex !== null && ownedIdx === draggedOwnedIndex ? 'opacity: 0.25;' : ''}"
+            draggable={isOwned && !isPending}
             ondragstart={(e) => handleDragStart(e, index, routine)}
             ondragend={handleDragEnd}
           >
@@ -724,9 +954,15 @@
               type="button"
               class="w-6 h-9 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isActive ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
               style={isActive ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white` : ''}
+              title={isActive ? 'Assigned' : undefined}
+              aria-label={isActive ? `Assigned routine ${index + 1}` : `Routine ${index + 1}`}
               onclick={() => handleRowClick(routine)}
             >
-              {index + 1}
+              {#if isActive}
+                <Check class="size-3.5" strokeWidth={2.5} />
+              {:else}
+                {index + 1}
+              {/if}
             </button>
 
             <div
@@ -745,33 +981,48 @@
                 {/if}
 
                 {#if renamingId === routine.id && isOwned}
-                  <input
-                    autocomplete="off"
-                    class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none"
+                  <div
+                    class="flex items-center min-w-0 flex-1 font-medium text-xs uppercase leading-none"
                     style={isActive ? `color: white` : `color: #aaa`}
-                    bind:value={renameValue}
-                    autofocus
                     onclick={(e) => e.stopPropagation()}
                     onmousedown={(e) => e.stopPropagation()}
-                    onfocus={(e) => (e.currentTarget as HTMLInputElement).select()}
-                    onkeydown={(e) => {
-                      e.stopPropagation();
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        saveRename(routine.id);
-                      }
-                      if (e.key === 'Escape') {
-                        e.preventDefault();
-                        renamingId = null;
-                        renameValue = '';
-                      }
-                    }}
-                    onblur={() => saveRename(routine.id)}
-                  />
-                {:else if routine.name === 'COPYING…' || routine.id.startsWith('temp-copy-')}
+                  >
+                    <span class="shrink-0 select-none">[</span>
+                    <input
+                      autocomplete="off"
+                      class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none"
+                      style={isActive ? `color: white` : `color: #aaa`}
+                      bind:value={renameValue}
+                      autofocus
+                      onclick={(e) => e.stopPropagation()}
+                      onmousedown={(e) => e.stopPropagation()}
+                      onfocus={(e) => (e.currentTarget as HTMLInputElement).select()}
+                      onkeydown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          saveRename(routine.id);
+                        }
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          renamingId = null;
+                          renameValue = '';
+                        }
+                      }}
+                      onblur={() => saveRename(routine.id)}
+                    />
+                    <span class="shrink-0 select-none">]</span>
+                  </div>
+                {:else if routine.id.startsWith('temp-copy-') || routine.name.startsWith('COPYING ')}
                   <span
                     class="routine-copying-breathe font-medium text-xs flex-1 min-w-0 truncate leading-none uppercase {isActive ? 'text-white' : 'text-zinc-400'}"
-                  >COPYING…</span>
+                    title={routine.name}
+                  >{routine.name}</span>
+                {:else if routine.id.startsWith('temp-import-') || routine.name.startsWith('IMPORTING ')}
+                  <span
+                    class="routine-copying-breathe font-medium text-xs flex-1 min-w-0 truncate leading-none uppercase {isActive ? 'text-white' : 'text-zinc-400'}"
+                    title={routine.name}
+                  >{routine.name}</span>
                 {:else}
                   <span
                     class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none uppercase {isActive ? 'text-white' : 'text-zinc-400'} {isOwned ? 'cursor-text' : ''}"
@@ -793,13 +1044,6 @@
                 </span>
 
                 {#if isActive}
-                  <span class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none"
-                    style="background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;">
-                    ASSIGNED
-                  </span>
-                {/if}
-
-                {#if isActive}
                   {#if isOwned}
                     <button
                       type="button"
@@ -811,15 +1055,38 @@
                     >
                       <Pencil class="size-3 pointer-events-none" />
                     </button>
+                    <button
+                      type="button"
+                      class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-blue-900/80 bg-blue-950/50 text-blue-400 hover:text-blue-300 hover:border-blue-800 transition-colors"
+                      title="Duplicate routine"
+                      onclick={(e) => { e.stopPropagation(); copyRoutine(routine.id); }}
+                      disabled={busyAction !== null || routine.id.startsWith('temp-')}
+                    >
+                      <Copy class="size-3.5 pointer-events-none" />
+                    </button>
                     {#if canDeleteOwned}
                       <button
                         type="button"
-                        class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
-                        title="Delete routine"
-                        onclick={(e) => { e.stopPropagation(); deleteOwnedRoutine(routine.id); }}
+                        class="relative overflow-hidden w-7 h-7 shrink-0 flex items-center justify-center rounded border transition-colors {deleteRoutineHoldId === routine.id && deleteRoutineHoldProgress > 0
+                          ? 'border-red-500 text-red-300'
+                          : 'border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800'}"
+                        title="Hold 0.8s to delete routine"
                         disabled={busyAction !== null}
+                        onmousedown={(e) => startDeleteRoutineHold(e, routine.id)}
+                        onmouseup={stopDeleteRoutineHold}
+                        onmouseleave={stopDeleteRoutineHold}
+                        ontouchstart={(e) => startDeleteRoutineHold(e, routine.id)}
+                        ontouchend={stopDeleteRoutineHold}
+                        ontouchcancel={stopDeleteRoutineHold}
+                        onclick={(e) => e.stopPropagation()}
                       >
-                        <Trash2 class="size-3.5 pointer-events-none" />
+                        {#if deleteRoutineHoldId === routine.id && deleteRoutineHoldProgress > 0}
+                          <div
+                            class="absolute inset-0 z-0 bg-red-900/50 transition-all duration-[16ms]"
+                            style="width: {deleteRoutineHoldProgress}%;"
+                          ></div>
+                        {/if}
+                        <Trash2 class="size-3.5 pointer-events-none relative z-10" />
                       </button>
                     {/if}
                   {:else if isBookmarked}
@@ -835,12 +1102,12 @@
                     </button>
                     <button
                       type="button"
-                      class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-blue-900/80 bg-blue-950/50 text-blue-400 hover:text-blue-300 hover:border-blue-800 transition-colors"
+                      class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-emerald-900/80 bg-emerald-950/50 text-emerald-400 hover:text-emerald-300 hover:border-emerald-800 transition-colors"
                       title="Copy into your account (editable duplicate)"
                       onclick={(e) => { e.stopPropagation(); copyRoutine(routine.id); }}
                       disabled={busyAction !== null}
                     >
-                      <Copy class="size-3.5 pointer-events-none" />
+                      <Plus class="size-3.5 pointer-events-none" strokeWidth={2.5} />
                     </button>
                     <button
                       type="button"
@@ -928,7 +1195,7 @@
                     style={isSelected ? `background-color: color-mix(in srgb, white 8%, #0d0d0d); border-color: white; color: white` : ''}
                   >
                     <div class="flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
-                      <span class="font-medium text-xs truncate leading-none min-w-0 flex-1 {isSelected ? 'text-white' : 'text-zinc-400'}">{routine.name}</span>
+                      <span class="font-medium text-xs truncate leading-none min-w-0 flex-1 uppercase {isSelected ? 'text-white' : 'text-zinc-400'}">[{routine.name}]</span>
                       <span
                         class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none"
                         style={isSelected
@@ -960,11 +1227,11 @@
                         </button>
                         <button
                           type="button"
-                          class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-blue-900/80 bg-blue-950/50 text-blue-400 hover:text-blue-300 hover:border-blue-800 transition-colors"
+                          class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-emerald-900/80 bg-emerald-950/50 text-emerald-400 hover:text-emerald-300 hover:border-emerald-800 transition-colors"
                           title="Copy routine into your account"
                           onclick={(e) => { e.stopPropagation(); copyRoutine(routine.id); }}
                         >
-                          <Copy class="size-3.5 pointer-events-none" />
+                          <Plus class="size-3.5 pointer-events-none" strokeWidth={2.5} />
                         </button>
                       {/if}
                     </div>

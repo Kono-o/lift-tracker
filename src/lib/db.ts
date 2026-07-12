@@ -4,6 +4,8 @@ import {
 	PUBLIC_SUPABASE_ANON_KEY,
 } from "$env/static/public";
 import {
+	DEFAULT_TARGET_REPS,
+	DEFAULT_TARGET_SECONDS,
 	sanitizeBaseKg,
 	sanitizeExerciseName,
 	sanitizeTemplateName,
@@ -20,7 +22,9 @@ import {
 } from "./statSanitize";
 import { createDbTrackingFetch, pulseDbActivity } from "./dbActivity";
 import { getNativeOAuthRedirectUrl, isNativeApp } from "./native";
-import { clampTemplateColor } from "./templateColor";
+import { clampItemIcon, DEFAULT_ITEM_ICON, DEFAULT_TEMPLATE_ICON } from "./itemIcons";
+import { clampTemplateColor, getTemplateColor, hexToNearestIndex } from "./templateColor";
+import { APP_VERSION } from "./version";
 
 export const supabase = createClient(
 	PUBLIC_SUPABASE_URL,
@@ -191,7 +195,13 @@ export function formatDbError(error: unknown): string {
 		code === "23514" ||
 		lower.includes("workout_history_duration_seconds_check")
 	) {
-		return "Could not save workout — invalid duration. Try finishing again after a few seconds.";
+		if (lower.includes("exercises_")) {
+			return "Could not import exercise — invalid sets/reps/time fields.";
+		}
+		if (lower.includes("workout_history_duration_seconds_check")) {
+			return "Could not save workout — invalid duration. Try finishing again after a few seconds.";
+		}
+		return raw ?? "Could not save — a value failed validation.";
 	}
 
 	return raw ?? "Could not save. Please try again.";
@@ -543,6 +553,7 @@ export interface Template {
 	user_id: string;
 	name: string;
 	color?: number; // 0-255 quantized HSV spectrum index
+	icon?: number; // 0-15 lucide set (shared with stats)
 	display_order?: number;
 	exercises: Exercise[];
 }
@@ -728,7 +739,10 @@ export interface TrackedStat {
 	start_value: number;
 	has_target: boolean;
 	target_value: number | null;
+	target_prefers_lower?: boolean;
 	icon: number;
+	/** 0–255 HSV spectrum index (same as templates.color) */
+	color?: number;
 }
 
 export type StatLogSnapshotRow = {
@@ -1339,6 +1353,9 @@ export const db = {
 				user_id: t.user_id,
 				name: t.name,
 				color: typeof t.color === "number" ? t.color : 0,
+				icon: typeof (t as { icon?: number }).icon === "number"
+					? clampItemIcon((t as { icon: number }).icon)
+					: DEFAULT_TEMPLATE_ICON,
 				display_order: typeof t.display_order === "number" ? t.display_order : 0,
 				exercises: exs,
 			};
@@ -1400,7 +1417,7 @@ export const db = {
 
 		const templatesQ = supabase
 			.from("templates")
-			.select("id, user_id, name, color, display_order")
+			.select("id, user_id, name, color, icon, display_order")
 			.order("display_order")
 			.order("created_at");
 		if (userId) templatesQ.eq("user_id", userId);
@@ -1470,7 +1487,7 @@ export const db = {
 				? supabase
 						.from("tracked_stats")
 						.select(
-							"id, user_id, name, unit, display_order, start_value, has_target, target_value, icon",
+							"id, user_id, name, unit, display_order, start_value, has_target, target_value, target_prefers_lower, icon, color",
 						)
 						.order("display_order")
 						.order("created_at")
@@ -1558,7 +1575,7 @@ export const db = {
 			const [ftRes, fexRes] = await Promise.all([
 				supabase
 					.from("templates")
-					.select("id, user_id, name, color, display_order")
+					.select("id, user_id, name, color, icon, display_order")
 					.in("id", foreignScheduleIds),
 				foreignExIds.length > 0
 					? supabase
@@ -1698,7 +1715,9 @@ export const db = {
 	async getTrackedStats(): Promise<TrackedStat[]> {
 		const full = await supabase
 			.from("tracked_stats")
-			.select("id, user_id, name, unit, display_order, start_value, has_target, target_value, icon")
+			.select(
+				"id, user_id, name, unit, display_order, start_value, has_target, target_value, target_prefers_lower, icon, color",
+			)
 			.order("display_order")
 			.order("created_at");
 
@@ -1814,6 +1833,7 @@ export const db = {
 			target_value?: number | null;
 			target_prefers_lower?: boolean;
 			icon?: number;
+			color?: number;
 		}>,
 	): Promise<TrackedStat[]> {
 		const validationError = validateDraftStats(stats as DraftStatLike[]);
@@ -1830,7 +1850,10 @@ export const db = {
 				has_target: !!safe.has_target,
 				target_value: safe.has_target ? (safe.target_value ?? 0) : null,
 				target_prefers_lower: safe.target_prefers_lower ?? true,
-				icon: safe.icon ?? 0,
+				icon: clampItemIcon(safe.icon ?? DEFAULT_ITEM_ICON),
+				color: clampTemplateColor(
+					typeof safe.color === "number" ? safe.color : 242,
+				),
 			};
 			const statId = typeof d.id === "string" ? d.id : "";
 			if (
@@ -1894,12 +1917,15 @@ export const db = {
 					has_target: (draft.has_target as boolean | undefined) ?? merged.has_target,
 					target_value:
 						(draft.target_value as number | null | undefined) ?? merged.target_value,
-				target_prefers_lower: (draft.target_prefers_lower as boolean | undefined) ?? merged.target_prefers_lower,
-				icon: (draft.icon as number | undefined) ?? merged.icon,
-						},
-						display_order,
-					);
-				});
+					target_prefers_lower:
+						(draft.target_prefers_lower as boolean | undefined) ??
+						merged.target_prefers_lower,
+					icon: (draft.icon as number | undefined) ?? merged.icon,
+					color: (draft.color as number | undefined) ?? merged.color,
+				},
+				display_order,
+			);
+		});
 	},
 
 	/* ==================================================
@@ -1942,7 +1968,13 @@ export const db = {
 		if (!data || typeof data !== "object") return null;
 
 		const row = data as Template;
-		return { ...row, exercises: [] };
+		return {
+			...row,
+			icon: clampItemIcon(
+				typeof row.icon === "number" ? row.icon : DEFAULT_TEMPLATE_ICON,
+			),
+			exercises: [],
+		};
 	},
 
 	async deleteTemplate(templateId: string) {
@@ -1972,9 +2004,18 @@ export const db = {
 		if (error) throw error;
 	},
 
+	async updateTemplateIcon(templateId: string, icon: number) {
+		const i = clampItemIcon(icon);
+		const { error } = await supabase
+			.from("templates")
+			.update({ icon: i })
+			.eq("id", templateId);
+		if (error) throw error;
+	},
+
 	async updateTemplateFields(
 		templateId: string,
-		fields: { name?: string; color?: number },
+		fields: { name?: string; color?: number; icon?: number },
 	) {
 		const patch: Record<string, string | number> = {};
 		if (fields.name != null) {
@@ -1982,6 +2023,9 @@ export const db = {
 		}
 		if (fields.color != null) {
 			patch.color = clampTemplateColor(fields.color);
+		}
+		if (fields.icon != null) {
+			patch.icon = clampItemIcon(fields.icon);
 		}
 		if (Object.keys(patch).length === 0) return;
 
@@ -2696,13 +2740,11 @@ export const db = {
 	},
 
 	/**
-	 * Deep copy a routine (owned by another user) into the current user's account.
+	 * Deep copy a routine into the current user's account.
+	 * Used for community copy and for duplicating an owned routine.
 	 *
 	 * Copies: routine → new routine, templates → new templates, exercises → new exercises.
-	 * Exercises are copied because they are per-user global; the copying user needs
-	 * their own independent exercise rows to edit freely.
-	 *
-	 * Design decision: always creates fresh copies of exercises (no dedup by name).
+	 * Own duplicates keep the same name; foreign copies are "NAME - USERNAME".
 	 */
 	async copyRoutine(sourceRoutineId: string): Promise<Routine & { source_name: string; source_username: string }> {
 		const uid = await requireUserId();
@@ -2745,7 +2787,7 @@ export const db = {
 			// Batch-fetch templates + all links + all exercises (avoids N+1 hangs)
 			const [{ data: tpls, error: tErr }, { data: allLinks, error: lErr }] =
 				await Promise.all([
-					supabase.from("templates").select("id, name, color").in("id", tIds),
+					supabase.from("templates").select("id, name, color, icon").in("id", tIds),
 					supabase
 						.from("template_exercises")
 						.select("template_id, exercise_id, display_order")
@@ -2797,7 +2839,12 @@ export const db = {
 			}
 
 			// Clone templates (client UUIDs)
-			const tplList = (tpls ?? []) as Array<{ id: string; name: string; color: number }>;
+			const tplList = (tpls ?? []) as Array<{
+				id: string;
+				name: string;
+				color: number;
+				icon?: number;
+			}>;
 			if (tplList.length > 0) {
 				const insertTpls = tplList.map((t) => {
 					const newId = crypto.randomUUID();
@@ -2807,6 +2854,7 @@ export const db = {
 						user_id: uid,
 						name: t.name,
 						color: t.color ?? 0,
+						icon: clampItemIcon(t.icon ?? DEFAULT_TEMPLATE_ICON),
 						display_order: 0,
 					};
 				});
@@ -2843,7 +2891,10 @@ export const db = {
 			.maybeSingle();
 		const nextOrder = (maxRow?.display_order ?? -1) + 1;
 
-		const cleanName = `${src.name.toUpperCase()} - ${srcUsername.toUpperCase()}`;
+		// Own-list duplicate → same name; copy from someone else → "NAME - USER"
+		const isSelfDuplicate = src.user_id === uid;
+		const rawName = isSelfDuplicate ? src.name : `${src.name} - ${srcUsername}`;
+		const cleanName = sanitizeTemplateName(rawName) || "ROUTINE";
 		const { data: newRoutine, error: newRoutineErr } = await supabase
 			.from("routines")
 			.insert({ user_id: uid, name: cleanName, display_order: nextOrder })
@@ -2876,14 +2927,15 @@ export const db = {
 	},
 
 	/* ==================================================
-		 ROUTINE CSV EXPORT / IMPORT
+		 ROUTINE JSON EXPORT / IMPORT (schema v2)
+		 Legacy CSV still accepted on import only.
 		 ================================================== */
 
 	/**
-	 * Build a full CSV for a routine (metadata + week plan + templates/exercises).
-	 * Round-trippable via importRoutineFromCsv.
+	 * Build a pretty-printed lift-tracker routine JSON file.
+	 * Round-trippable via importRoutineFromText.
 	 */
-	async exportRoutineToCsv(routineId: string): Promise<{ csv: string; filename: string }> {
+	async exportRoutineToJson(routineId: string): Promise<{ json: string; filename: string }> {
 		const uid = await requireUserId();
 		const { data: routine, error: rErr } = await supabase
 			.from("routines")
@@ -2900,15 +2952,12 @@ export const db = {
 		const ownerUsername = (ownerRow?.username as string) ?? null;
 
 		const plan = await this.getRoutineSchedule(routineId);
-		const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 		const byDay = new Map<number, string | null>();
 		for (let d = 0; d < 7; d++) byDay.set(d, null);
 		for (const s of plan) byDay.set(s.day_of_week, s.template_id);
 
 		const templateIds = [
-			...new Set(
-				[...byDay.values()].filter((id): id is string => !!id),
-			),
+			...new Set([...byDay.values()].filter((id): id is string => !!id)),
 		];
 
 		type ExRow = {
@@ -2924,13 +2973,19 @@ export const db = {
 			current_weight: number | null;
 			display_order: number;
 		};
-		type TplPack = { id: string; name: string; color: number; exercises: ExRow[] };
+		type TplPack = {
+			id: string;
+			name: string;
+			color: number;
+			icon: number;
+			exercises: ExRow[];
+		};
 
 		const packs: TplPack[] = [];
 		if (templateIds.length > 0) {
 			const { data: tpls, error: tErr } = await supabase
 				.from("templates")
-				.select("id, name, color")
+				.select("id, name, color, icon")
 				.in("id", templateIds);
 			if (tErr) throw tErr;
 			for (const t of tpls ?? []) {
@@ -2939,6 +2994,9 @@ export const db = {
 					id: t.id,
 					name: t.name,
 					color: typeof t.color === "number" ? t.color : 0,
+					icon: typeof (t as { icon?: number }).icon === "number"
+						? clampItemIcon((t as { icon: number }).icon)
+						: DEFAULT_TEMPLATE_ICON,
 					exercises: exs.map((e, i) => ({
 						name: e.name,
 						exercise_type: e.exercise_type === "time" ? "time" : "reps",
@@ -2957,106 +3015,59 @@ export const db = {
 		}
 
 		const tplNameById = new Map(packs.map((p) => [p.id, p.name]));
-		const assignedDaysByTpl = new Map<string, number[]>();
-		for (const [dow, tid] of byDay) {
-			if (!tid) continue;
-			const list = assignedDaysByTpl.get(tid) ?? [];
-			list.push(dow);
-			assignedDaysByTpl.set(tid, list);
-		}
-
-		const esc = (val: unknown): string => {
-			const s = val == null ? "" : String(val);
-			if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-			return s;
-		};
-
-		const meta: string[] = [
-			`#lift-tracker-routine,1`,
-			`#name,${esc(routine.name)}`,
-			`#exported_at,${esc(new Date().toISOString())}`,
-			`#owner_username,${esc(ownerUsername ?? "")}`,
-			`#owner_user_id,${esc(routine.user_id)}`,
-			`#source_routine_id,${esc(routine.id)}`,
-			`#exporter_user_id,${esc(uid)}`,
-			`#template_count,${packs.length}`,
-			`#exercise_count,${packs.reduce((n, p) => n + p.exercises.length, 0)}`,
-		];
+		const week: Record<string, string | null> = {};
+		let trainingDays = 0;
 		for (let d = 0; d < 7; d++) {
 			const tid = byDay.get(d) ?? null;
-			const tname = tid ? tplNameById.get(tid) ?? "" : "";
-			meta.push(`#day_${d}_${dayNames[d].toLowerCase()},${esc(tname)}`);
+			const tname = tid ? tplNameById.get(tid) ?? null : null;
+			week[ROUTINE_WEEK_KEYS[d]] = tname;
+			if (tname) trainingDays++;
 		}
 
-		const headers = [
-			"Template",
-			"Color",
-			"Assigned Days",
-			"Exercise #",
-			"Exercise",
-			"Type",
-			"Sets",
-			"Reps",
-			"Duration Min",
-			"Duration Sec",
-			"Rest Min",
-			"Rest Sec",
-			"Load (kg)",
-			"Progress (+kg)",
-		];
-		const rows: string[][] = [headers];
+		const exerciseCount = packs.reduce((n, p) => n + p.exercises.length, 0);
+		const doc: LiftRoutineFileV2 = {
+			format: LIFT_ROUTINE_FORMAT,
+			schemaVersion: LIFT_ROUTINE_SCHEMA_VERSION,
+			meta: {
+				name: routine.name,
+				exportedAt: new Date().toISOString(),
+				appVersion: APP_VERSION,
+				author: {
+					username: ownerUsername,
+					userId: routine.user_id,
+				},
+				source: {
+					routineId: routine.id,
+					ownerUsername,
+					ownerUserId: routine.user_id,
+					exportedByUserId: uid,
+				},
+				stats: {
+					templates: packs.length,
+					exercises: exerciseCount,
+					trainingDays,
+					restDays: 7 - trainingDays,
+				},
+			},
+			week,
+			templates: packs.map((pack) => {
+				const colorIndex = clampTemplateColor(pack.color ?? 0);
+				const ordered = pack.exercises
+					.slice()
+					.sort((a, b) => a.display_order - b.display_order);
+				return {
+					name: pack.name,
+					color: {
+						index: colorIndex,
+						hex: getTemplateColor(colorIndex).toUpperCase(),
+					},
+					icon: clampItemIcon(pack.icon ?? DEFAULT_TEMPLATE_ICON),
+					exercises: ordered.map((ex) => exerciseToJsonExport(ex)),
+				};
+			}),
+		};
 
-		for (const pack of packs) {
-			const days = (assignedDaysByTpl.get(pack.id) ?? []).slice().sort((a, b) => a - b);
-			const daysStr = days.length ? days.map((d) => dayNames[d]).join(", ") : "—";
-			const ordered = pack.exercises
-				.slice()
-				.sort((a, b) => a.display_order - b.display_order);
-			if (ordered.length === 0) {
-				rows.push([
-					pack.name,
-					String(pack.color),
-					daysStr,
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-				]);
-			} else {
-				for (let i = 0; i < ordered.length; i++) {
-					const ex = ordered[i];
-					const isReps = ex.exercise_type === "reps";
-					rows.push([
-						pack.name,
-						String(pack.color),
-						daysStr,
-						String(i + 1),
-						ex.name,
-						ex.exercise_type,
-						String(ex.target_sets ?? 0),
-						isReps ? String(ex.target_reps ?? "") : "",
-						!isReps ? String(ex.target_minutes ?? 0) : "",
-						!isReps ? String(ex.target_seconds ?? 0) : "",
-						String(ex.rest_minutes ?? 0),
-						String(ex.rest_seconds ?? 0),
-						ex.current_weight != null ? String(ex.current_weight) : "",
-						ex.increment ? String(ex.increment) : "",
-					]);
-				}
-			}
-			rows.push(Array(headers.length).fill(""));
-		}
-
-		const body = rows.map((r) => r.map(esc).join(",")).join("\r\n");
-		const csv = `${meta.join("\r\n")}\r\n${body}\r\n`;
-
+		const json = `${JSON.stringify(doc, null, 2)}\n`;
 		const ownerPart = ownerUsername ? `-${ownerUsername}` : "";
 		const slug =
 			`${routine.name}${ownerPart}`
@@ -3065,67 +3076,323 @@ export const db = {
 				.replace(/^-+|-+$/g, "")
 				.slice(0, 48) || "routine";
 		const date = new Date().toISOString().slice(0, 10);
-		return { csv, filename: `lift-tracker-${slug}-${date}.csv` };
+		return { json, filename: `lift-tracker-${slug}-${date}.lift.json` };
 	},
 
 	/**
-	 * Parse a lift-tracker routine CSV (from exportRoutineToCsv) into a new owned routine.
-	 * Creates templates + exercises and assigns the week plan.
+	 * Import a routine file (JSON v2 preferred; legacy CSV still accepted).
+	 * Batch-inserts templates + exercises like copyRoutine.
 	 */
-	async importRoutineFromCsv(csvText: string): Promise<Routine> {
+	async importRoutineFromText(fileText: string): Promise<Routine> {
 		const uid = await requireUserId();
-		const parsed = parseRoutineExportCsv(csvText);
+		const text = String(fileText ?? "").replace(/^\uFEFF/, "").trim();
+		if (!text) throw new Error("File is empty.");
 
-		const routine = await this.createRoutine(parsed.name || "IMPORTED ROUTINE");
+		const parsed = looksLikeRoutineJson(text)
+			? parseRoutineExportJson(text)
+			: parseRoutineExportCsv(text);
 
-		const nameToId = new Map<string, string>();
-		for (const tpl of parsed.templates) {
-			const created = await this.createTemplate(tpl.name);
-			if (!created) throw new Error(`Failed to create template: ${tpl.name}`);
-			if (tpl.color != null) {
-				await this.updateTemplateColor(created.id, tpl.color);
-			}
-			nameToId.set(tpl.name.toUpperCase(), created.id);
-			// also exact name key
-			nameToId.set(tpl.name, created.id);
-
-			if (tpl.exercises.length > 0) {
-				await this.saveTemplateExercises(
-					created.id,
-					tpl.exercises.map((ex) => ({
-						name: ex.name,
-						exercise_type: ex.exercise_type,
-						target_sets: ex.target_sets,
-						target_reps: ex.target_reps ?? undefined,
-						target_minutes: ex.target_minutes ?? undefined,
-						target_seconds: ex.target_seconds ?? undefined,
-						rest_minutes: ex.rest_minutes,
-						rest_seconds: ex.rest_seconds,
-						increment: ex.increment,
-						current_weight: ex.current_weight,
-					})),
-				);
-			}
+		if (parsed.templates.length === 0 && !parsed.schedule.some((s) => s.template_name)) {
+			throw new Error("Could not parse routine file — no templates found.");
 		}
 
-		const resolveTpl = (name: string | null): string | null => {
-			if (!name || !name.trim()) return null;
-			const n = name.trim();
-			return nameToId.get(n) ?? nameToId.get(n.toUpperCase()) ?? null;
-		};
+		return createOwnedRoutineFromParsed(uid, parsed);
+	},
 
-		const schedule = parsed.schedule.map((s) => ({
-			day_of_week: s.day_of_week,
-			template_id: resolveTpl(s.template_name),
-		}));
-		await this.saveRoutineSchedule(routine.id, schedule);
-
-		const templateCount = schedule.filter((s) => s.template_id != null).length;
-		return { ...routine, template_count: templateCount, user_id: uid };
+	/** @deprecated Use importRoutineFromText — kept as alias for older call sites. */
+	async importRoutineFromCsv(csvText: string): Promise<Routine> {
+		return this.importRoutineFromText(csvText);
 	},
 };
 
-// --- Routine CSV helpers ---
+const LIFT_ROUTINE_FORMAT = "lift-tracker-routine" as const;
+const LIFT_ROUTINE_SCHEMA_VERSION = 2;
+const ROUTINE_WEEK_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
+
+type LiftRoutineFileV2 = {
+	format: typeof LIFT_ROUTINE_FORMAT;
+	schemaVersion: number;
+	meta: {
+		name: string;
+		exportedAt: string;
+		appVersion: string;
+		author: { username: string | null; userId: string };
+		source: {
+			routineId: string;
+			ownerUsername: string | null;
+			ownerUserId: string;
+			exportedByUserId: string;
+		};
+		stats: {
+			templates: number;
+			exercises: number;
+			trainingDays: number;
+			restDays: number;
+		};
+	};
+	week: Record<string, string | null>;
+	templates: Array<{
+		name: string;
+		color: { index: number; hex: string };
+		icon: number;
+		exercises: Array<Record<string, unknown>>;
+	}>;
+};
+
+function exerciseToJsonExport(ex: {
+	name: string;
+	exercise_type: "reps" | "time";
+	target_sets: number;
+	target_reps: number | null;
+	target_minutes: number | null;
+	target_seconds: number | null;
+	rest_minutes: number;
+	rest_seconds: number;
+	increment: number;
+	current_weight: number | null;
+}): Record<string, unknown> {
+	const restSec =
+		Math.max(0, Math.floor(ex.rest_minutes ?? 0)) * 60 +
+		Math.max(0, Math.floor(ex.rest_seconds ?? 0));
+	if (ex.exercise_type === "time") {
+		const durationSec =
+			Math.max(0, Math.floor(ex.target_minutes ?? 0)) * 60 +
+			Math.max(0, Math.floor(ex.target_seconds ?? 0));
+		return {
+			name: ex.name,
+			type: "time",
+			sets: ex.target_sets ?? 0,
+			durationSec,
+			progressSec: ex.increment ?? 0,
+			restSec,
+		};
+	}
+	return {
+		name: ex.name,
+		type: "reps",
+		sets: ex.target_sets ?? 0,
+		reps: ex.target_reps ?? 0,
+		loadKg: ex.current_weight,
+		progressKg: ex.increment ?? 0,
+		restSec,
+	};
+}
+
+function looksLikeRoutineJson(text: string): boolean {
+	const t = text.trimStart();
+	return t.startsWith("{") || t.startsWith("[");
+}
+
+/** Persist a parsed routine export as a new owned routine (batch inserts). */
+async function createOwnedRoutineFromParsed(
+	uid: string,
+	parsed: ParsedRoutineExport,
+): Promise<Routine> {
+	const nameToId = new Map<string, string>();
+	const registerName = (raw: string, id: string) => {
+		const n = raw.trim();
+		if (!n) return;
+		nameToId.set(n, id);
+		nameToId.set(n.toUpperCase(), id);
+		const safe = sanitizeTemplateName(n);
+		if (safe) {
+			nameToId.set(safe, id);
+			nameToId.set(safe.toUpperCase(), id);
+		}
+	};
+
+	const insertTpls: Array<{
+		id: string;
+		user_id: string;
+		name: string;
+		color: number;
+		icon: number;
+		display_order: number;
+	}> = [];
+	const insertEx: Array<Record<string, unknown>> = [];
+	const teRows: Array<{
+		template_id: string;
+		exercise_id: string;
+		user_id: string;
+		display_order: number;
+	}> = [];
+
+	const { data: maxTpl } = await supabase
+		.from("templates")
+		.select("display_order")
+		.eq("user_id", uid)
+		.order("display_order", { ascending: false })
+		.limit(1)
+		.maybeSingle();
+	let nextTplOrder = (maxTpl?.display_order ?? -1) + 1;
+
+	for (const tpl of parsed.templates) {
+		const newTid = crypto.randomUUID();
+		const safeName = sanitizeTemplateName(tpl.name) || "TEMPLATE";
+		insertTpls.push({
+			id: newTid,
+			user_id: uid,
+			name: safeName,
+			color: clampTemplateColor(tpl.color ?? 0),
+			icon: clampItemIcon(tpl.icon ?? DEFAULT_TEMPLATE_ICON),
+			display_order: nextTplOrder++,
+		});
+		registerName(tpl.name, newTid);
+		registerName(safeName, newTid);
+
+		tpl.exercises.forEach((ex, i) => {
+			const draft = coerceImportedExercise(ex);
+			const safe = sanitizeExerciseRowForDb(draft);
+			const newEid = crypto.randomUUID();
+			// DB constraints: unused type columns must be NULL (not 0).
+			const row: Record<string, unknown> = {
+				id: newEid,
+				user_id: uid,
+				name: safe.name,
+				exercise_type: safe.exercise_type,
+				target_sets: safe.target_sets ?? 1,
+				increment: safe.increment ?? 0,
+				rest_minutes: safe.rest_minutes ?? 0,
+				rest_seconds: safe.rest_seconds ?? 0,
+			};
+			if (safe.exercise_type === "reps") {
+				row.target_reps = safe.target_reps ?? DEFAULT_TARGET_REPS;
+				row.current_weight = safe.current_weight ?? null;
+			} else {
+				row.target_minutes = safe.target_minutes ?? 0;
+				row.target_seconds = safe.target_seconds ?? DEFAULT_TARGET_SECONDS;
+				row.current_weight = null;
+			}
+			insertEx.push(row);
+			teRows.push({
+				template_id: newTid,
+				exercise_id: newEid,
+				user_id: uid,
+				display_order: i,
+			});
+		});
+	}
+
+	if (insertEx.length > 0) {
+		const { error: exErr } = await supabase.from("exercises").insert(insertEx);
+		if (exErr) throw new Error(formatDbError(exErr) || "Failed to import exercises");
+	}
+	if (insertTpls.length > 0) {
+		const { error: tplErr } = await supabase.from("templates").insert(insertTpls);
+		if (tplErr) throw new Error(formatDbError(tplErr) || "Failed to import templates");
+	}
+	if (teRows.length > 0) {
+		const { error: teErr } = await supabase.from("template_exercises").insert(teRows);
+		if (teErr) throw new Error(formatDbError(teErr) || "Failed to link template exercises");
+	}
+
+	const { data: maxRow } = await supabase
+		.from("routines")
+		.select("display_order")
+		.eq("user_id", uid)
+		.order("display_order", { ascending: false })
+		.limit(1)
+		.maybeSingle();
+	const nextOrder = (maxRow?.display_order ?? -1) + 1;
+	const safeRoutineName =
+		sanitizeTemplateName(parsed.name || "IMPORTED ROUTINE") || "IMPORTED ROUTINE";
+
+	const { data: newRoutine, error: newRoutineErr } = await supabase
+		.from("routines")
+		.insert({ user_id: uid, name: safeRoutineName, display_order: nextOrder })
+		.select("id, user_id, name, created_at, display_order")
+		.single();
+	if (newRoutineErr) {
+		throw new Error(formatDbError(newRoutineErr) || "Failed to create imported routine");
+	}
+
+	const resolveTpl = (name: string | null): string | null => {
+		if (!name || !name.trim()) return null;
+		const n = name.trim();
+		return (
+			nameToId.get(n) ??
+			nameToId.get(n.toUpperCase()) ??
+			nameToId.get(sanitizeTemplateName(n)) ??
+			null
+		);
+	};
+
+	const allDays: Array<{
+		routine_id: string;
+		day_of_week: number;
+		template_id: string | null;
+	}> = [];
+	for (let dow = 0; dow < 7; dow++) {
+		const src = parsed.schedule.find((s) => s.day_of_week === dow);
+		allDays.push({
+			routine_id: newRoutine.id,
+			day_of_week: dow,
+			template_id: resolveTpl(src?.template_name ?? null),
+		});
+	}
+	const { error: schedErr } = await supabase.from("routine_schedules").insert(allDays);
+	if (schedErr) {
+		throw new Error(formatDbError(schedErr) || "Failed to import week schedule");
+	}
+
+	const templateCount = allDays.filter((d) => d.template_id != null).length;
+	return {
+		...newRoutine,
+		template_count: templateCount,
+		user_id: uid,
+	} as Routine;
+}
+
+/** Soft-fill invalid exercise rows from CSV so import doesn't hard-fail. */
+function coerceImportedExercise(ex: {
+	name: string;
+	exercise_type: "reps" | "time";
+	target_sets: number;
+	target_reps: number | null;
+	target_minutes: number | null;
+	target_seconds: number | null;
+	rest_minutes: number;
+	rest_seconds: number;
+	increment: number;
+	current_weight: number | null;
+}): DraftExerciseLike {
+	const isTime = ex.exercise_type === "time";
+	let sets = Number(ex.target_sets) || 0;
+	if (sets < 1) sets = 1;
+	if (isTime) {
+		let mins = Number(ex.target_minutes) || 0;
+		let secs = Number(ex.target_seconds) || 0;
+		if (mins === 0 && secs === 0) secs = DEFAULT_TARGET_SECONDS;
+		return {
+			name: ex.name || "EXERCISE",
+			exercise_type: "time",
+			target_sets: sets,
+			target_reps: 0,
+			target_minutes: mins,
+			target_seconds: secs,
+			rest_minutes: Number(ex.rest_minutes) || 0,
+			rest_seconds: Number(ex.rest_seconds) || 0,
+			increment: Number(ex.increment) || 0,
+			current_weight: null,
+		};
+	}
+	let reps = Number(ex.target_reps) || 0;
+	if (reps < 1) reps = DEFAULT_TARGET_REPS;
+	return {
+		name: ex.name || "EXERCISE",
+		exercise_type: "reps",
+		target_sets: sets,
+		target_reps: reps,
+		target_minutes: 0,
+		target_seconds: 0,
+		rest_minutes: Number(ex.rest_minutes) || 0,
+		rest_seconds: Number(ex.rest_seconds) || 0,
+		increment: Number(ex.increment) || 0,
+		current_weight: ex.current_weight,
+	};
+}
+
+// --- Routine file parse helpers (JSON v2 + legacy CSV) ---
 
 type ParsedRoutineExport = {
 	name: string;
@@ -3133,6 +3400,7 @@ type ParsedRoutineExport = {
 	templates: Array<{
 		name: string;
 		color: number;
+		icon: number;
 		exercises: Array<{
 			name: string;
 			exercise_type: "reps" | "time";
@@ -3147,6 +3415,187 @@ type ParsedRoutineExport = {
 		}>;
 	}>;
 };
+
+function parseRoutineExportJson(jsonText: string): ParsedRoutineExport {
+	let raw: unknown;
+	try {
+		raw = JSON.parse(jsonText);
+	} catch {
+		throw new Error("Invalid JSON — could not parse routine file.");
+	}
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+		throw new Error("Invalid routine file — expected a JSON object.");
+	}
+	const doc = raw as Record<string, unknown>;
+	const format = String(doc.format ?? "");
+	if (format && format !== LIFT_ROUTINE_FORMAT) {
+		throw new Error(`Unknown routine format “${format}”.`);
+	}
+	const schemaVersion = Number(doc.schemaVersion ?? 0);
+	if (schemaVersion && schemaVersion > LIFT_ROUTINE_SCHEMA_VERSION) {
+		throw new Error(
+			`This routine file (schema v${schemaVersion}) is newer than this app. Update Lift Tracker.`,
+		);
+	}
+
+	const meta = (doc.meta && typeof doc.meta === "object" ? doc.meta : {}) as Record<
+		string,
+		unknown
+	>;
+	let name = String(meta.name ?? doc.name ?? "").trim();
+	if (!name) name = "IMPORTED ROUTINE";
+	name = sanitizeTemplateName(name) || "IMPORTED ROUTINE";
+
+	const weekRaw =
+		doc.week && typeof doc.week === "object" && !Array.isArray(doc.week)
+			? (doc.week as Record<string, unknown>)
+			: {};
+	const schedule: ParsedRoutineExport["schedule"] = [];
+	for (let d = 0; d < 7; d++) {
+		const key = ROUTINE_WEEK_KEYS[d];
+		const altKeys = [key, key.toUpperCase(), String(d), `day_${d}`];
+		let tname: string | null = null;
+		for (const k of altKeys) {
+			if (k in weekRaw) {
+				const v = weekRaw[k];
+				if (v == null || v === "") tname = null;
+				else tname = String(v).trim() || null;
+				break;
+			}
+		}
+		schedule.push({ day_of_week: d, template_name: tname });
+	}
+
+	const templatesIn = Array.isArray(doc.templates) ? doc.templates : [];
+	const templates: ParsedRoutineExport["templates"] = [];
+
+	for (const t of templatesIn) {
+		if (!t || typeof t !== "object") continue;
+		const tr = t as Record<string, unknown>;
+		const tnameRaw = String(tr.name ?? "").trim();
+		if (!tnameRaw) continue;
+		const tname = sanitizeTemplateName(tnameRaw) || tnameRaw;
+
+		let color = 0;
+		const colorRaw = tr.color;
+		if (typeof colorRaw === "number") {
+			color = clampTemplateColor(colorRaw);
+		} else if (colorRaw && typeof colorRaw === "object") {
+			const c = colorRaw as Record<string, unknown>;
+			if (typeof c.index === "number") color = clampTemplateColor(c.index);
+			else if (typeof c.hex === "string") {
+				const idx = hexToNearestIndex(String(c.hex));
+				if (idx != null) color = idx;
+			}
+		} else if (typeof colorRaw === "string") {
+			const asNum = parseInt(colorRaw, 10);
+			if (Number.isFinite(asNum)) color = clampTemplateColor(asNum);
+			else {
+				const idx = hexToNearestIndex(colorRaw);
+				if (idx != null) color = idx;
+			}
+		}
+
+		const exercisesIn = Array.isArray(tr.exercises) ? tr.exercises : [];
+		const exercises: ParsedRoutineExport["templates"][0]["exercises"] = [];
+		for (const ex of exercisesIn) {
+			if (!ex || typeof ex !== "object") continue;
+			const er = ex as Record<string, unknown>;
+			const parsedEx = jsonExerciseToParsed(er);
+			if (parsedEx) exercises.push(parsedEx);
+		}
+
+		const icon = clampItemIcon(
+			typeof tr.icon === "number" ? tr.icon : Number(tr.icon) || DEFAULT_TEMPLATE_ICON,
+		);
+		templates.push({ name: tname, color, icon, exercises });
+	}
+
+	// Templates only named in the week plan
+	for (const s of schedule) {
+		const tn = s.template_name;
+		if (!tn) continue;
+		const key = sanitizeTemplateName(tn) || tn;
+		if (
+			!templates.some(
+				(t) =>
+					t.name.toUpperCase() === key.toUpperCase() ||
+					t.name.toUpperCase() === tn.toUpperCase(),
+			)
+		) {
+			templates.push({ name: key, color: 0, icon: DEFAULT_TEMPLATE_ICON, exercises: [] });
+		}
+	}
+
+	if (templates.length === 0 && !schedule.some((s) => s.template_name)) {
+		throw new Error("Could not parse routine JSON — missing templates.");
+	}
+
+	return { name, schedule, templates };
+}
+
+function jsonExerciseToParsed(
+	er: Record<string, unknown>,
+): ParsedRoutineExport["templates"][0]["exercises"][0] | null {
+	const name = String(er.name ?? "").trim();
+	if (!name) return null;
+	const typeRaw = String(er.type ?? er.exercise_type ?? "reps").toLowerCase();
+	const isTime = typeRaw === "time" || typeRaw === "timed";
+	const sets = Math.max(0, Math.floor(Number(er.sets ?? er.target_sets) || 0));
+
+	const restSecTotal = Number(er.restSec ?? er.rest_sec);
+	let restMin = Math.max(0, Math.floor(Number(er.rest_minutes ?? er.restMin) || 0));
+	let restSec = Math.max(0, Math.floor(Number(er.rest_seconds ?? er.restSeconds) || 0));
+	if (Number.isFinite(restSecTotal) && restSecTotal >= 0 && er.restSec != null) {
+		restMin = Math.floor(restSecTotal / 60);
+		restSec = Math.floor(restSecTotal % 60);
+	} else if (er.rest && typeof er.rest === "object") {
+		const r = er.rest as Record<string, unknown>;
+		restMin = Math.max(0, Math.floor(Number(r.min ?? r.minutes) || 0));
+		restSec = Math.max(0, Math.floor(Number(r.sec ?? r.seconds) || 0));
+	}
+
+	if (isTime) {
+		let durationSec = Number(er.durationSec ?? er.duration_sec);
+		let mins = Math.max(0, Math.floor(Number(er.target_minutes ?? er.durationMin) || 0));
+		let secs = Math.max(0, Math.floor(Number(er.target_seconds ?? er.durationSeconds) || 0));
+		if (Number.isFinite(durationSec) && durationSec >= 0 && er.durationSec != null) {
+			mins = Math.floor(durationSec / 60);
+			secs = Math.floor(durationSec % 60);
+		}
+		const progress = Number(er.progressSec ?? er.progress_sec ?? er.increment) || 0;
+		return {
+			name: sanitizeExerciseName(name) || name,
+			exercise_type: "time",
+			target_sets: sets,
+			target_reps: null,
+			target_minutes: mins,
+			target_seconds: secs,
+			rest_minutes: restMin,
+			rest_seconds: restSec,
+			increment: progress,
+			current_weight: null,
+		};
+	}
+
+	const reps = Math.max(0, Math.floor(Number(er.reps ?? er.target_reps) || 0));
+	const loadRaw = er.loadKg ?? er.load_kg ?? er.current_weight ?? er.weight;
+	const load =
+		loadRaw == null || loadRaw === "" ? null : Number(loadRaw);
+	const progress = Number(er.progressKg ?? er.progress_kg ?? er.increment) || 0;
+	return {
+		name: sanitizeExerciseName(name) || name,
+		exercise_type: "reps",
+		target_sets: sets,
+		target_reps: reps,
+		target_minutes: null,
+		target_seconds: null,
+		rest_minutes: restMin,
+		rest_seconds: restSec,
+		increment: progress,
+		current_weight: load != null && !Number.isNaN(load) ? load : null,
+	};
+}
 
 function parseCsvLine(line: string): string[] {
 	const out: string[] = [];
@@ -3178,8 +3627,20 @@ function parseCsvLine(line: string): string[] {
 	return out;
 }
 
+/** Unquote a single CSV field (handles "" escapes). */
+function unquoteCsvField(raw: string): string {
+	const t = raw.trim();
+	if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
+		return t.slice(1, -1).replace(/""/g, '"');
+	}
+	return t;
+}
+
 function parseRoutineExportCsv(csvText: string): ParsedRoutineExport {
-	const text = csvText.replace(/^\uFEFF/, "");
+	const text = String(csvText ?? "").replace(/^\uFEFF/, "");
+	if (!text.trim()) {
+		throw new Error("CSV file is empty.");
+	}
 	const lines = text.split(/\r?\n/);
 	const meta = new Map<string, string>();
 	const dataLines: string[] = [];
@@ -3194,7 +3655,11 @@ function parseRoutineExportCsv(csvText: string): ParsedRoutineExport {
 			const body = line.replace(/^#\s*/, "");
 			const comma = body.indexOf(",");
 			if (comma >= 0) {
-				meta.set(body.slice(0, comma).trim().toLowerCase(), body.slice(comma + 1).trim());
+				const key = body.slice(0, comma).trim().toLowerCase();
+				// Use CSV field parser so quoted values with commas work
+				const rest = body.slice(comma + 1);
+				const cells = parseCsvLine(rest);
+				meta.set(key, unquoteCsvField(cells[0] ?? rest));
 			} else {
 				meta.set(body.trim().toLowerCase(), "");
 			}
@@ -3224,7 +3689,7 @@ function parseRoutineExportCsv(csvText: string): ParsedRoutineExport {
 		const key = `day_${d}_${dayNames[d]}`;
 		const alt = `day_${d}`;
 		const raw = meta.get(key) ?? meta.get(alt) ?? "";
-		const name = raw.replace(/^"|"$/g, "").trim();
+		const name = unquoteCsvField(raw).trim();
 		schedule.push({ day_of_week: d, template_name: name || null });
 	}
 
@@ -3242,6 +3707,7 @@ function parseRoutineExportCsv(csvText: string): ParsedRoutineExport {
 		{
 			name: string;
 			color: number;
+			icon: number;
 			exercises: ParsedRoutineExport["templates"][0]["exercises"];
 			assignedDays: number[];
 		}
@@ -3286,6 +3752,7 @@ function parseRoutineExportCsv(csvText: string): ParsedRoutineExport {
 				pack = {
 					name: sanitizeTemplateName(tname) || tname,
 					color: Math.max(0, Math.min(255, parseInt(colorRaw || "0", 10) || 0)),
+					icon: DEFAULT_TEMPLATE_ICON,
 					exercises: [],
 					assignedDays: [],
 				};
@@ -3366,9 +3833,26 @@ function parseRoutineExportCsv(csvText: string): ParsedRoutineExport {
 		}
 	}
 
-	let name = (meta.get("name") ?? "").replace(/^"|"$/g, "").trim();
+	let name = unquoteCsvField(meta.get("name") ?? "").trim();
 	if (!name) name = "IMPORTED ROUTINE";
 	name = sanitizeTemplateName(name) || "IMPORTED ROUTINE";
+
+	// Templates referenced only in the week plan (no exercise rows) still need rows
+	if (metaHasSchedule) {
+		for (const s of schedule) {
+			const tn = s.template_name;
+			if (!tn) continue;
+			if (!templatesMap.has(tn) && !templatesMap.has(sanitizeTemplateName(tn))) {
+				const safe = sanitizeTemplateName(tn) || tn;
+				templatesMap.set(tn, {
+					name: safe,
+					color: 0,
+					exercises: [],
+					assignedDays: [],
+				});
+			}
+		}
+	}
 
 	if (templatesMap.size === 0 && !metaHasSchedule) {
 		throw new Error("Could not parse routine CSV — missing templates or metadata.");
@@ -3377,9 +3861,10 @@ function parseRoutineExportCsv(csvText: string): ParsedRoutineExport {
 	return {
 		name,
 		schedule,
-		templates: [...templatesMap.values()].map(({ name: n, color, exercises }) => ({
+		templates: [...templatesMap.values()].map(({ name: n, color, icon, exercises }) => ({
 			name: n,
 			color,
+			icon: clampItemIcon(icon ?? DEFAULT_TEMPLATE_ICON),
 			exercises,
 		})),
 	};

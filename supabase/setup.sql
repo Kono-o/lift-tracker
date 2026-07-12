@@ -65,10 +65,12 @@ create table public.templates (
   user_id uuid not null references auth.users (id) on delete cascade,
   name text not null,
   color smallint not null default 242, -- 0–255 spectrum; 242 = #FFBF00
+  icon smallint not null default 1, -- 0–31 lucide set; 1 = Weight default
   display_order integer not null default 0,
   created_at timestamptz not null default now(),
   constraint templates_name_not_empty check (char_length(trim(name)) > 0),
   constraint templates_color_range check (color >= 0 and color <= 255),
+  constraint templates_icon_range check (icon >= 0 and icon <= 31),
   constraint templates_display_order_nonneg check (display_order >= 0)
 );
 
@@ -164,10 +166,14 @@ create table public.tracked_stats (
   has_target boolean not null default false,
   target_value real,
   target_prefers_lower boolean not null default true,
+  icon smallint not null default 0,
+  color smallint not null default 242, -- 0–255 spectrum; same as templates
   created_at timestamptz not null default now(),
   constraint tracked_stats_name_not_empty check (char_length(trim(name)) > 0),
   constraint tracked_stats_display_order_nonneg check (display_order >= 0),
   constraint tracked_stats_start_value_nonneg check (start_value >= 0),
+  constraint tracked_stats_icon_range check (icon >= 0 and icon <= 31),
+  constraint tracked_stats_color_range check (color >= 0 and color <= 255),
   constraint tracked_stats_target_valid check (
     (has_target = false and target_value is null)
     or (has_target = true and target_value is not null and target_value > 0)
@@ -1414,6 +1420,9 @@ declare
   v_start_value real;
   v_has_target boolean;
   v_target_value real;
+  v_target_prefers_lower boolean;
+  v_icon smallint;
+  v_color smallint;
   saved_ids uuid[] := '{}';
   ord integer := 0;
   result jsonb := '[]'::jsonb;
@@ -1458,6 +1467,10 @@ begin
       v_target_value := null;
     end if;
 
+    v_target_prefers_lower := coalesce((st->>'target_prefers_lower')::boolean, true);
+    v_icon := greatest(0, least(31, coalesce((st->>'icon')::smallint, 0::smallint)));
+    v_color := greatest(0, least(255, coalesce((st->>'color')::smallint, 242::smallint)));
+
     v_stat_id := null;
     begin
       if st->>'id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
@@ -1478,12 +1491,21 @@ begin
         display_order = ord,
         start_value = v_start_value,
         has_target = v_has_target,
-        target_value = v_target_value
+        target_value = v_target_value,
+        target_prefers_lower = v_target_prefers_lower,
+        icon = v_icon,
+        color = v_color
       where id = v_stat_id and user_id = uid
       returning * into row;
     else
-      insert into public.tracked_stats (user_id, name, unit, display_order, start_value, has_target, target_value)
-      values (uid, v_name, v_unit, ord, v_start_value, v_has_target, v_target_value)
+      insert into public.tracked_stats (
+        user_id, name, unit, display_order, start_value, has_target,
+        target_value, target_prefers_lower, icon, color
+      )
+      values (
+        uid, v_name, v_unit, ord, v_start_value, v_has_target,
+        v_target_value, v_target_prefers_lower, v_icon, v_color
+      )
       returning * into row;
       v_stat_id := row.id;
     end if;

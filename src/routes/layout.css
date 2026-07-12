@@ -706,6 +706,12 @@ input.prop-num-input::-webkit-outer-spin-button {
 }
 
 .settings-panel-header__latency {
+	/* Fixed slot for "000 ms" so the Supabase header never shifts when latency loads */
+	box-sizing: content-box;
+	min-width: 6ch;
+	width: 6ch;
+	justify-content: flex-end;
+	text-align: right;
 	font-size: 1em;
 	font-family: var(--font-mono);
 	font-variant-numeric: tabular-nums;
@@ -714,6 +720,7 @@ input.prop-num-input::-webkit-outer-spin-button {
 	color: #a1a1aa;
 	white-space: nowrap;
 	transform: translateY(-1px);
+	overflow: hidden;
 }
 
 .settings-panel-overlay {
@@ -1921,6 +1928,40 @@ input.prop-num-input::-webkit-outer-spin-button {
 	animation: routine-copying-breathe 1.25s ease-in-out infinite;
 }
 
+/* Library exercise search — no native clear (X); visible caret */
+.library-search-input {
+	caret-color: #e4e4e7;
+}
+
+.library-search-input::-webkit-search-cancel-button,
+.library-search-input::-webkit-search-decoration,
+.library-search-input::-webkit-search-results-button,
+.library-search-input::-webkit-search-results-decoration {
+	-webkit-appearance: none;
+	appearance: none;
+	display: none;
+}
+
+@keyframes library-search-caret-blink {
+	0%,
+	49% {
+		opacity: 1;
+	}
+	50%,
+	100% {
+		opacity: 0;
+	}
+}
+
+.library-search-caret {
+	animation: library-search-caret-blink 1s step-end infinite;
+}
+
+/* Native caret handles blink while focused */
+.library-search-input:focus ~ .library-search-caret {
+	visibility: hidden;
+}
+
 .library-actions {
 	--library-ui-ms: 220ms;
 	display: grid;
@@ -2028,16 +2069,33 @@ input.prop-num-input::-webkit-outer-spin-button {
 
 	.boot-panel-dot-pulse,
 	.boot-skeleton,
-	.boot-panel-avatar-spinner,
+	.boot-panel-avatar-placeholder::after,
 	.boot-panel-placeholder::after,
-	.boot-panel-reveal-item {
+	.boot-panel-chip-value--loading::after,
+	.boot-panel-chip-value--ready {
 		animation: none;
-		opacity: 0.55;
 	}
 
-	.boot-panel-reveal--active .boot-panel-reveal-item {
+	.boot-panel-avatar-layer,
+	.boot-panel-fade-text,
+	.boot-panel-chip-value {
+		transition: none;
+	}
+
+	.boot-panel-avatar-layer--placeholder {
 		opacity: 1;
-		transform: none;
+	}
+
+	.boot-panel-avatar-layer--placeholder.boot-panel-avatar-layer--hide {
+		opacity: 0;
+	}
+
+	.boot-panel-avatar-layer--face.boot-panel-avatar-layer--show {
+		opacity: 1;
+	}
+
+	.boot-panel-chip-value--ready {
+		opacity: 1;
 	}
 
 	.library-actions,
@@ -2103,79 +2161,180 @@ input.prop-num-input::-webkit-outer-spin-button {
 	pointer-events: none;
 }
 
-.boot-panel-reveal-item {
+/* Stable avatar frame — blank pfp placeholder and real face crossfade in place */
+.boot-panel-avatar-frame {
+	position: relative;
+	width: 5rem;
+	height: 5rem;
+	flex-shrink: 0;
+}
+
+.boot-panel-avatar-layer {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: opacity 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.boot-panel-avatar-layer--placeholder {
+	opacity: 1;
+	z-index: 1;
+}
+
+.boot-panel-avatar-layer--placeholder.boot-panel-avatar-layer--hide {
 	opacity: 0;
-	transform: translateY(5px);
+	pointer-events: none;
 }
 
-.boot-panel-reveal--active .boot-panel-reveal-item {
-	animation: boot-panel-reveal-in 360ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+.boot-panel-avatar-layer--face {
+	opacity: 0;
+	z-index: 2;
 }
 
-.boot-panel-reveal--active .boot-panel-reveal-item--header {
-	animation-delay: 40ms;
+.boot-panel-avatar-layer--face.boot-panel-avatar-layer--show {
+	opacity: 1;
 }
 
-.boot-panel-reveal--active .boot-panel-reveal-item--avatar {
-	animation-delay: 0ms;
+/* Blank profile plate (matches GeneratedAvatar 80px + 8% radius) */
+.boot-panel-avatar-placeholder {
+	width: 5rem;
+	height: 5rem;
+	border-radius: 0.4rem;
+	background: #161616;
+	border: 1px solid #262626;
+	flex-shrink: 0;
+	position: relative;
+	overflow: hidden;
 }
 
-.boot-panel-reveal--active .boot-panel-reveal-item--identity {
-	animation-delay: 80ms;
+.boot-panel-avatar-placeholder::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background: linear-gradient(
+		110deg,
+		transparent 18%,
+		rgb(255 255 255 / 0.07) 48%,
+		transparent 78%
+	);
+	background-size: 220% 100%;
+	animation: boot-panel-avatar-shimmer 1.45s ease-in-out infinite;
+	pointer-events: none;
 }
 
-.boot-panel-reveal--active .boot-panel-reveal-item--chips {
-	animation-delay: 150ms;
+@keyframes boot-panel-avatar-shimmer {
+	0% {
+		background-position: 100% 0;
+	}
+	100% {
+		background-position: -100% 0;
+	}
 }
 
-.boot-panel-reveal--active .boot-panel-reveal-item--actions {
-	animation-delay: 220ms;
+/* Text / chip values: always visible shell, soft fade when filled */
+.boot-panel-fade-text {
+	transition: opacity 380ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-@keyframes boot-panel-reveal-in {
+.boot-panel-fade-text:not(.boot-panel-fade-text--on) {
+	opacity: 0.28;
+}
+
+.boot-panel-fade-text--on {
+	opacity: 1;
+}
+
+/* Action chrome stays mounted; dim until filled then brighten */
+.boot-panel-dialog:not(.boot-panel--filled) .boot-panel-fade-text--dim {
+	opacity: 0.32;
+}
+
+.boot-panel-dialog.boot-panel--filled .boot-panel-fade-text--dim.boot-panel-fade-text--on {
+	opacity: 1;
+}
+
+.boot-panel-chip {
+	position: relative;
+	overflow: hidden;
+	min-width: 0;
+}
+
+.boot-panel-chip-value {
+	transition: opacity 400ms cubic-bezier(0.22, 1, 0.36, 1);
+	font-variant-numeric: tabular-nums;
+}
+
+.boot-panel-chip-value--loading {
+	opacity: 0.28;
+	position: relative;
+}
+
+.boot-panel-chip-value--loading::after {
+	content: '';
+	position: absolute;
+	inset: -1px -2px;
+	border-radius: 2px;
+	background: linear-gradient(
+		110deg,
+		transparent 20%,
+		rgb(255 255 255 / 0.08) 50%,
+		transparent 80%
+	);
+	background-size: 220% 100%;
+	animation: boot-panel-chip-shimmer 1.35s ease-in-out infinite;
+	pointer-events: none;
+}
+
+.boot-panel-chip-value--ready {
+	opacity: 1;
+	animation: boot-panel-value-in 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes boot-panel-value-in {
 	from {
-		opacity: 0;
-		transform: translateY(5px);
+		opacity: 0.2;
 	}
 	to {
 		opacity: 1;
-		transform: translateY(0);
 	}
 }
 
+@keyframes boot-panel-chip-shimmer {
+	0% {
+		background-position: 100% 0;
+	}
+	100% {
+		background-position: -100% 0;
+	}
+}
+
+.boot-panel-dot-pulse {
+	animation: boot-panel-dot-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes boot-panel-dot-pulse {
+	0%,
+	100% {
+		opacity: 0.55;
+		box-shadow: 0 0 0.2rem rgb(59 130 246 / 0.35);
+	}
+	50% {
+		opacity: 1;
+		box-shadow: 0 0 0.45rem rgb(59 130 246 / 0.95);
+	}
+}
+
+/* Legacy placeholder hooks (settings panel may still use) */
 .boot-panel-placeholder {
 	position: relative;
 	overflow: hidden;
 }
 
-.boot-panel-avatar-spinner {
-	width: 5rem;
-	height: 5rem;
-	border-radius: 9999px;
-	border: 3px solid #262626;
-	border-top-color: #a1a1aa;
-	flex-shrink: 0;
-	animation: boot-panel-avatar-spin 0.85s linear infinite;
-}
-
-@keyframes boot-panel-avatar-spin {
-	to {
-		transform: rotate(360deg);
-	}
-}
-
 .boot-panel-placeholder__ghost {
 	color: transparent !important;
 	user-select: none;
-}
-
-.settings-panel-header__identity.boot-panel-placeholder {
-	background: transparent;
-}
-
-.settings-panel-action-btn.boot-panel-placeholder {
-	pointer-events: none;
-	cursor: default;
 }
 
 span.boot-panel-placeholder::after,
@@ -2201,22 +2360,6 @@ span.boot-panel-placeholder::after,
 	}
 	100% {
 		background-position: -100% 0;
-	}
-}
-
-.boot-panel-dot-pulse {
-	animation: boot-panel-dot-pulse 1.1s ease-in-out infinite;
-}
-
-@keyframes boot-panel-dot-pulse {
-	0%,
-	100% {
-		opacity: 0.55;
-		box-shadow: 0 0 0.2rem rgb(59 130 246 / 0.35);
-	}
-	50% {
-		opacity: 1;
-		box-shadow: 0 0 0.45rem rgb(59 130 246 / 0.95);
 	}
 }
 

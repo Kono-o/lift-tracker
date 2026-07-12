@@ -7,7 +7,15 @@
   import HeaderClock from '$lib/components/HeaderClock.svelte';
   import RoutinesMenu from '$lib/components/RoutinesMenu.svelte';
   import TemplateColorPicker from '$lib/components/TemplateColorPicker.svelte';
+  import ItemIconPicker from '$lib/components/ItemIconPicker.svelte';
   import { clampTemplateColor, DEFAULT_TEMPLATE_COLOR, getTemplateColor } from '$lib/templateColor';
+  import {
+    clampItemIcon,
+    DEFAULT_ITEM_ICON,
+    DEFAULT_TEMPLATE_ICON,
+    getItemIcon,
+    ITEM_ICON_STROKE,
+  } from '$lib/itemIcons';
   import { horizontalSwipe } from '$lib/horizontalSwipe';
   import { scrollEdgeFade } from '$lib/scrollEdgeFade';
   import { getDbActivitySnapshot, runDbActivityBatch, subscribeDbActivity, subscribeDbActivitySnapshot } from '$lib/dbActivity';
@@ -99,14 +107,6 @@
     Trash2,
     User,
     X,
-    Weight,
-    Heart,
-    Zap,
-    TrendingUp,
-    Activity,
-    Ruler,
-    Scale,
-    Hash,
     Bookmark,
     Search,
   } from '@lucide/svelte';
@@ -135,22 +135,8 @@
   const DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
   const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-const STAT_ICONS = [
-  Dna,
-  Weight,
-  Heart,
-  Zap,
-  TrendingUp,
-  Activity,
-  Timer,
-  Ruler,
-  Scale,
-  Hash,
-];
-
-function getStatIcon(id: number): typeof Dna {
-  return STAT_ICONS[Math.max(0, Math.min(9, Math.floor(id || 0)))];
-}
+/** Stat/template icons — shared set in $lib/itemIcons (0–15). */
+const getStatIcon = getItemIcon;
 
   /** Render GitHub release notes (markdown) to sanitized HTML.
    *  Falls back to basic <br> replacement if no DOM (SSR/build) or DOMPurify not ready.
@@ -359,11 +345,42 @@ function getStatIcon(id: number): typeof Dna {
       return 0;
   }
 
-  function computeRowIndex(e: DragEvent, container: HTMLElement, maxIndex: number, firstRowOffset: number = 0): number {
+  /**
+   * Resolve drop target from pointer Y against real row boxes (not fixed math).
+   * Avoids wrong indices when lists are filtered subsets or row heights vary.
+   */
+  function computeRowIndex(e: DragEvent, container: HTMLElement, maxIndex: number, _firstRowOffset: number = 0): number {
+    if (maxIndex < 0) return 0;
+    const rows = Array.from(container.children).filter(
+      (el): el is HTMLElement =>
+        el instanceof HTMLElement &&
+        (el.draggable || el.getAttribute('draggable') === 'true' || el.hasAttribute('data-list-row')),
+    );
+    if (rows.length > 0) {
+      const y = e.clientY;
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i].getBoundingClientRect();
+        if (y < r.top + r.height / 2) return Math.max(0, Math.min(maxIndex, i));
+      }
+      return maxIndex;
+    }
+    // Fallback: uniform row height estimate
     const rect = container.getBoundingClientRect();
     const y = e.clientY - rect.top;
-    const idx = Math.floor((y - firstRowOffset) / ROW_TOTAL);
+    const idx = Math.floor(y / ROW_TOTAL);
     return Math.max(0, Math.min(maxIndex, idx));
+  }
+
+  /** Splice-reorder with guards so a bad index never drops an item. */
+  function reorderByIndex<T>(list: T[], from: number, to: number): T[] | null {
+    if (from === to) return null;
+    if (from < 0 || from >= list.length) return null;
+    if (to < 0 || to >= list.length) return null;
+    const arr = [...list];
+    const [moved] = arr.splice(from, 1);
+    if (moved === undefined) return null;
+    arr.splice(to, 0, moved);
+    return arr;
   }
   let currentView = $state<'track' | 'swap_template' | 'edit_template' | 'stats' | 'edit_stats' | 'routines_menu'>('track');
   let templateEditorReturnView = $state<'track' | 'swap_template'>('track');
@@ -471,35 +488,12 @@ function getStatIcon(id: number): typeof Dna {
     return `${day} - [ ${tpl?.name ?? 'Workout'} ]`;
   });
 
-  // --- CSV export for routine (templates + schedule) ---
-  function getAssignedDaysString(templateId: string): string {
-    let assignedDays: number[] = [];
-    // When inside the routine editor, prefer the live builderAssignments so the CSV matches exactly what the user is looking at (including any just-made changes).
-    if (currentView === 'swap_template') {
-      for (let dow = 0; dow < 7; dow++) {
-        const assigned = effectiveAssignmentTemplateId(builderAssignments[dow] ?? null);
-        if (assigned === templateId) assignedDays.push(dow);
-      }
-    } else {
-      assignedDays = schedule
-        .filter((s: any) => s.template_id === templateId)
-        .map((s: any) => s.day_of_week as number);
-    }
-    if (assignedDays.length === 0) return '—';
-    const shortNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    assignedDays.sort((a, b) => a - b);
-    return assignedDays.map((d) => shortNames[d]).join(', ');
-  }
-
-  function escapeCsv(val: unknown): string {
-    const s = val == null ? '' : String(val);
-    if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
-      return `"${s.replace(/"/g, '""')}"`;
-    }
-    return s;
-  }
-
-  async function downloadCsv(filename: string, content: string) {
+  // --- Routine export (JSON v2 .lift.json) ---
+  async function downloadTextFile(
+    filename: string,
+    content: string,
+    mime = 'application/json;charset=utf-8',
+  ) {
     if (isNativeApp()) {
       try {
         const { Directory, Filesystem } = await import('@capacitor/filesystem');
@@ -509,9 +503,7 @@ function getStatIcon(id: number): typeof Dna {
           directory: Directory.Documents,
           encoding: 'utf8',
         });
-        // Give the user visible feedback in the routine editor header area.
-        // (The existing templateError styling is red, but the message is clear and actionable.)
-        const successMsg = 'CSV saved to Documents folder';
+        const successMsg = 'Saved to Documents folder';
         templateError = successMsg;
         templateErrorFading = false;
         window.setTimeout(() => {
@@ -522,13 +514,11 @@ function getStatIcon(id: number): typeof Dna {
         }, 2400);
         return;
       } catch (err) {
-        console.error('Native CSV export failed, falling back to web download:', err);
-        // Fall through to web method as last resort
+        console.error('Native routine export failed, falling back to web download:', err);
       }
     }
 
-    // Web / PWA / fallback path (works great in browsers and often in WebView too)
-    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob([content], { type: mime });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -540,7 +530,7 @@ function getStatIcon(id: number): typeof Dna {
     URL.revokeObjectURL(url);
   }
 
-  async function exportRoutineAsCsv(routineId?: string) {
+  async function exportRoutineFile(routineId?: string) {
     const id = routineId ?? activeRoutineId;
     if (!id) {
       templateError = 'Select a routine to export';
@@ -548,9 +538,9 @@ function getStatIcon(id: number): typeof Dna {
       return;
     }
     try {
-      const { csv, filename } = await db.exportRoutineToCsv(id);
-      await downloadCsv(filename, csv);
-      const successMsg = 'Routine CSV exported';
+      const { json, filename } = await db.exportRoutineToJson(id);
+      await downloadTextFile(filename, json, 'application/json;charset=utf-8');
+      const successMsg = 'Routine exported';
       templateError = successMsg;
       templateErrorFading = false;
       window.setTimeout(() => {
@@ -560,39 +550,23 @@ function getStatIcon(id: number): typeof Dna {
         }
       }, 2000);
     } catch (e) {
-      console.error('exportRoutineAsCsv failed', e);
+      console.error('exportRoutineFile failed', e);
       templateError = formatDbError(e) || 'Failed to export routine';
       templateErrorFading = false;
     }
   }
 
-  async function importRoutineFromFile(file: File) {
+  /** After RoutinesMenu finishes import + activate — refresh templates/cache. */
+  async function onRoutineImported(routineId: string) {
     try {
-      const text = await file.text();
-      const created = await runDbActivityBatch(() => db.importRoutineFromCsv(text));
-      await db.setActiveRoutine(created.id);
-      activeRoutineId = created.id;
-      try {
-        preloadedRoutineList = await db.getUserRoutineList();
-      } catch {
-        /* ignore */
-      }
-      await onRoutineActivate(created.id);
-      void loadData({ preserveSession: true });
-      const successMsg = `Imported “${created.name}”`;
-      templateError = successMsg;
-      templateErrorFading = false;
-      window.setTimeout(() => {
-        if (templateError === successMsg) {
-          templateError = null;
-          templateErrorFading = false;
-        }
-      }, 2400);
-      return created;
-    } catch (e) {
-      console.error('importRoutineFromFile failed', e);
-      throw e;
+      preloadedRoutineList = await db.getUserRoutineList();
+    } catch {
+      /* ignore */
     }
+    // Ensure newly created templates land in local cache (activate already
+    // pulls missing IDs; full load covers library + any edge cases).
+    await onRoutineActivate(routineId);
+    void loadData({ preserveSession: true });
   }
 
   let isLoading = $state(true);
@@ -1224,7 +1198,10 @@ function getStatIcon(id: number): typeof Dna {
         ? 'Ends your session on this device.'
         : '',
   );
+  /** Skip / cancel / erase / account destructive holds */
   const HOLD_CONFIRM_MS = 1000;
+  /** Template delete (and matching routine deletes elsewhere) */
+  const HOLD_DELETE_MS = 800;
 
   const REP_SET_HOLD_MS = 500;
   const REST_START_DELAY_MS = 1000;
@@ -1279,13 +1256,24 @@ function getStatIcon(id: number): typeof Dna {
   let templateErrorFading = $state(false);
   let isCreatingTemplate = $state(false);
 
+  // Stable empty refs for gated $deriveds (avoid new []/Map each run).
+  const EMPTY_EXERCISE_LIST: Exercise[] = [];
+  const EMPTY_LIBRARY_POOL = new Map<string, Exercise>();
+
   // Draft state for template editing (local until commit on finish)
   let draftExercises = $state<any[]>([]);
   /** Preserves reps/time fields across type toggles (DB nulls inactive type columns). */
   let exerciseTypeFieldStash = $state<Record<string, ExerciseTypeFieldStash>>({});
   let draftTemplateName = $state('');
   let draftTemplateColor = $state(DEFAULT_TEMPLATE_COLOR); // 0-255 quantized HSV spectrum (#FFBF00 default)
+  let draftTemplateIcon = $state(DEFAULT_TEMPLATE_ICON);
   let showTemplateColorPicker = $state(false);
+  let showTemplateIconPicker = $state(false);
+  let templateIconBtnEl = $state<HTMLButtonElement | undefined>();
+  let showStatColorPicker = $state(false);
+  let showStatIconPicker = $state(false);
+  let statColorBtnEl = $state<HTMLButtonElement | undefined>();
+  let statIconBtnEl = $state<HTMLButtonElement | undefined>();
   let templateColorBtnEl = $state<HTMLButtonElement | undefined>();
   let selectedExerciseId = $state<string | null>(null);
   let editingExerciseNameId = $state<string | null>(null);
@@ -1300,8 +1288,10 @@ function getStatIcon(id: number): typeof Dna {
     return !!id && !id.startsWith('temp-');
   }
 
-  /** All persisted exercises the user owns (library row + any linked on templates). */
+  /** All persisted exercises the user owns (library row + any linked on templates).
+   * Only computed in template editor — avoids scanning every template on unrelated views. */
   let librarySourcePool = $derived.by(() => {
+    if (currentView !== 'edit_template') return EMPTY_LIBRARY_POOL;
     const byId = new Map<string, Exercise>();
     for (const ex of exerciseLibrary) {
       if (isLibraryExerciseId(ex.id)) byId.set(ex.id, ex);
@@ -1315,20 +1305,25 @@ function getStatIcon(id: number): typeof Dna {
   });
 
   let libraryExercisesAvailable = $derived.by(() => {
+    if (currentView !== 'edit_template') return EMPTY_EXERCISE_LIST;
     const inDraft = new Set(
       draftExercises.map((e) => e.id).filter((id) => isLibraryExerciseId(id)),
     );
     return [...librarySourcePool.values()].filter((ex) => !inDraft.has(ex.id));
   });
 
-  let showLibraryButton = $derived(libraryExercisesAvailable.length > 0);
+  let showLibraryButton = $derived(
+    currentView === 'edit_template' && libraryExercisesAvailable.length > 0,
+  );
 
   // Filtered version for the library panel that excludes ones we just optimistically deleted (for instant UI)
   let availableLibraryForPicker = $derived.by(() => {
+    if (currentView !== 'edit_template') return EMPTY_EXERCISE_LIST;
     return libraryExercisesAvailable.filter((ex) => !deletedLibraryExerciseIds.has(ex.id));
   });
 
   let filteredLibraryForPicker = $derived.by(() => {
+    if (currentView !== 'edit_template') return EMPTY_EXERCISE_LIST;
     const q = librarySearchQuery.trim().toLowerCase();
     if (!q) return availableLibraryForPicker;
     return availableLibraryForPicker.filter((ex) => {
@@ -1580,6 +1575,7 @@ function getStatIcon(id: number): typeof Dna {
         day: DAYS[dayOfWeek],
         hasTemplate: !!tid,
         color,
+        icon: clampItemIcon(tpl?.icon ?? DEFAULT_TEMPLATE_ICON),
       };
     }),
   );
@@ -2971,17 +2967,35 @@ function getStatIcon(id: number): typeof Dna {
 
   function openRoutinesMenu() {
     currentView = 'routines_menu';
-    refreshRoutinesPreload();
+    // Do not kick off a parallel getUserRoutineList here — it races create/delete
+    // optimistics in RoutinesMenu and can flash deleted/old rows via parent state.
+    // Menu owns the list while open and calls onListChange; soft-refresh community only.
+    if (!currentUser) return;
+    db.getAllUsersAndRoutines().then((r) => {
+      if (currentView !== 'routines_menu') return;
+      preloadedAllRoutines = r;
+    }).catch(() => {});
   }
 
   function refreshRoutinesPreload() {
     if (!currentUser) return;
-    db.getUserRoutineList().then((r) => { preloadedRoutineList = r; }).catch(() => {});
-    db.getAllUsersAndRoutines().then((r) => { preloadedAllRoutines = r; }).catch(() => {});
-    db.getUserBookmarks().then((r) => { preloadedBookmarkIds = r.map((b) => b.routine_id); }).catch(() => {});
+    // Skip overwriting the live menu list while the routines menu is open
+    db.getUserRoutineList().then((r) => {
+      if (currentView === 'routines_menu') return;
+      preloadedRoutineList = r;
+    }).catch(() => {});
+    db.getAllUsersAndRoutines().then((r) => {
+      if (currentView === 'routines_menu') return;
+      preloadedAllRoutines = r;
+    }).catch(() => {});
+    db.getUserBookmarks().then((r) => {
+      if (currentView === 'routines_menu') return;
+      preloadedBookmarkIds = r.map((b) => b.routine_id);
+    }).catch(() => {});
   }
 
   function handleRoutineListChange(list: UserRoutineListItem[], activeId: string | null) {
+    // Always accept menu-local truth (includes optimistics)
     preloadedRoutineList = list;
     preloadedBookmarkIds = list.filter((r) => r.source === 'bookmarked').map((r) => r.id);
     if (activeId !== undefined) activeRoutineId = activeId;
@@ -3255,7 +3269,8 @@ function getStatIcon(id: number): typeof Dna {
         start_value: 0,
         has_target: false,
         target_value: null,
-        icon: 0,
+        icon: DEFAULT_ITEM_ICON,
+        color: DEFAULT_TEMPLATE_COLOR,
       },
     ];
     selectDraftStat(tempId);
@@ -3338,15 +3353,10 @@ function getStatIcon(id: number): typeof Dna {
       return;
     }
     const targetIndex = computeRowIndex(e, statListBody, draftStats.length - 1);
-    if (statDraggedIndex === targetIndex) {
-      statDraggedIndex = null;
-      return;
-    }
-    const arr = [...draftStats];
-    const [moved] = arr.splice(statDraggedIndex, 1);
-    arr.splice(targetIndex, 0, moved);
-    draftStats = arr;
+    const next = reorderByIndex(draftStats, statDraggedIndex, targetIndex);
     statDraggedIndex = null;
+    if (!next) return;
+    draftStats = next;
     void persistTrackedStatsNow();
   }
 
@@ -4975,7 +4985,7 @@ function getStatIcon(id: number): typeof Dna {
     deleteTemplateHoldId = id;
     const startTime = Date.now();
     deleteTemplateHoldTimer = setInterval(() => {
-      deleteTemplateProgress = Math.min(((Date.now() - startTime) / HOLD_CONFIRM_MS) * 100, 100);
+      deleteTemplateProgress = Math.min(((Date.now() - startTime) / HOLD_DELETE_MS) * 100, 100);
       if (deleteTemplateProgress >= 100) {
         clearInterval(deleteTemplateHoldTimer);
         deleteTemplateHoldTimer = null;
@@ -5009,7 +5019,7 @@ function getStatIcon(id: number): typeof Dna {
           });
         }
       }
-    }, 20);
+    }, 16);
   }
   function stopDeleteTemplateHold(e?: Event) {
     e?.stopPropagation?.();
@@ -5310,7 +5320,15 @@ function getStatIcon(id: number): typeof Dna {
 
       const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const nextOrder = templates.length;
-      const optimistic: Template = { id: tempId, user_id: uid, name, color: DEFAULT_TEMPLATE_COLOR, display_order: nextOrder, exercises: [] };
+      const optimistic: Template = {
+        id: tempId,
+        user_id: uid,
+        name,
+        color: DEFAULT_TEMPLATE_COLOR,
+        icon: DEFAULT_TEMPLATE_ICON,
+        display_order: nextOrder,
+        exercises: [],
+      };
       templates = [...templates, optimistic];
       // Scope new templates to this routine so the list is not empty after create
       routineEditorExtraTemplateIds = new Set([...routineEditorExtraTemplateIds, tempId]);
@@ -6486,48 +6504,64 @@ function getStatIcon(id: number): typeof Dna {
   }
 
   function openTemplateEditor(templateId?: string) {
-    try {
-      // From routine editor / list always allow when an id is passed; header pencil needs edit mode.
-      if (!templateId && !showHeaderEditActions) return;
-      const id = templateId ?? activeTemplate?.id;
-      if (!id) return;
-      const tpl =
-        templates.find((t) => t.id === id) ??
-        builderTemplates.find((t) => t.id === id);
-      if (!tpl) {
-        console.warn('openTemplateEditor: template not found', id);
-        templateError = 'Template not found';
-        templateErrorFading = false;
-        return;
-      }
-      editingTemplateId = id;
-      exerciseTypeFieldStash = {};
-      const sourceEx = Array.isArray(tpl.exercises) ? tpl.exercises : [];
-      draftExercises = sourceEx.map((e) => {
-        const copy = { ...e };
-        normalizeDraftExercise(copy);
-        return copy;
+    // From routine editor / list always allow when an id is passed; header pencil needs edit mode.
+    if (!templateId && !showHeaderEditActions) return;
+    const id = templateId ?? activeTemplate?.id;
+    if (!id) return;
+    const tpl =
+      templates.find((t) => t.id === id) ??
+      builderTemplates.find((t) => t.id === id);
+    if (!tpl) {
+      console.warn('openTemplateEditor: template not found', id);
+      templateError = 'Template not found';
+      templateErrorFading = false;
+      return;
+    }
+
+    // Precompute everything before any reactive writes so Svelte batches one paint.
+    const sourceEx = Array.isArray(tpl.exercises) ? tpl.exercises : [];
+    const next: any[] = new Array(sourceEx.length);
+    for (let i = 0; i < sourceEx.length; i++) next[i] = { ...sourceEx[i] };
+    const returnView =
+      currentView === 'swap_template' || currentView === 'routines_menu'
+        ? 'swap_template'
+        : 'track';
+    const name = sanitizeTemplateName(tpl.name);
+    const color = clampTemplateColor(
+      typeof tpl.color === 'number' ? tpl.color : DEFAULT_TEMPLATE_COLOR,
+    );
+    const icon = clampItemIcon(
+      typeof tpl.icon === 'number' ? tpl.icon : DEFAULT_TEMPLATE_ICON,
+    );
+    const firstId = next.length > 0 ? next[0].id : null;
+
+    // Single batch: open shell + exercise list immediately (no empty-then-fill lag).
+    // Properties panel is deferred one frame — it's the heaviest form subtree.
+    templateEditorReturnView = returnView;
+    editingTemplateId = id;
+    exerciseTypeFieldStash = {};
+    draftTemplateName = name;
+    draftTemplateColor = color;
+    draftTemplateIcon = icon;
+    draftExercises = next;
+    selectedExerciseId = null;
+    editingExerciseNameId = null;
+    templateSaveError = null;
+    showTemplateColorPicker = false;
+    showTemplateIconPicker = false;
+    showExerciseLibraryPicker = false;
+    libraryPickerClosing = false;
+    selectedLibraryExerciseId = null;
+    librarySearchQuery = '';
+    deletedLibraryExerciseIds = new Set();
+    currentView = 'edit_template';
+
+    if (firstId) {
+      const openId = id;
+      requestAnimationFrame(() => {
+        if (editingTemplateId !== openId || currentView !== 'edit_template') return;
+        selectedExerciseId = firstId;
       });
-      draftTemplateName = sanitizeTemplateName(tpl.name);
-      draftTemplateColor = clampTemplateColor(
-        typeof tpl.color === 'number' ? tpl.color : DEFAULT_TEMPLATE_COLOR,
-      );
-      selectedExerciseId = draftExercises.length > 0 ? draftExercises[0].id : null;
-      editingExerciseNameId = null;
-      templateSaveError = null;
-      showTemplateColorPicker = false;
-      resetNewExerciseForm();
-      // Library picker is closed by default. User can open it explicitly with the LIBRARY button.
-      showExerciseLibraryPicker = false;
-      // Remember where we came from so we can return there on close (supports nesting: routine editor → template editor)
-      templateEditorReturnView =
-        currentView === 'swap_template' || currentView === 'routines_menu'
-          ? 'swap_template'
-          : 'track';
-      currentView = 'edit_template';
-    } catch (e) {
-      console.error('openTemplateEditor failed', e);
-      templateSaveError = formatDbError(e) || 'Could not open template editor';
     }
   }
 
@@ -6536,11 +6570,18 @@ function getStatIcon(id: number): typeof Dna {
     name: string,
     exercises: Exercise[],
     color?: number,
+    icon?: number,
   ) {
     const trimmed = name.trim();
     templates = templates.map((t) =>
       t.id === templateId
-        ? { ...t, name: trimmed || t.name, exercises, color: typeof color === 'number' ? color : t.color ?? 0 }
+        ? {
+            ...t,
+            name: trimmed || t.name,
+            exercises,
+            color: typeof color === 'number' ? color : t.color ?? 0,
+            icon: typeof icon === 'number' ? clampItemIcon(icon) : t.icon ?? DEFAULT_TEMPLATE_ICON,
+          }
         : t,
     );
   }
@@ -6680,6 +6721,7 @@ function getStatIcon(id: number): typeof Dna {
       tpl?.name ?? draftTemplateName,
       tpl?.exercises ?? [],
       draftTemplateColor,
+      draftTemplateIcon,
     );
 
     try {
@@ -6692,6 +6734,33 @@ function getStatIcon(id: number): typeof Dna {
     }
   }
 
+  async function persistTemplateIconNow() {
+    const templateId = editingTemplateId;
+    if (!templateId || templateId.startsWith('temp-')) return;
+    if (activeRoutineIsReadonly || isForeignTemplate(templateId)) return;
+
+    const tpl = templates.find((t) => t.id === templateId);
+    const prevIcon = clampItemIcon(tpl?.icon ?? DEFAULT_TEMPLATE_ICON);
+    if (draftTemplateIcon === prevIcon) return;
+
+    patchTemplateInCache(
+      templateId,
+      tpl?.name ?? draftTemplateName,
+      tpl?.exercises ?? [],
+      draftTemplateColor,
+      draftTemplateIcon,
+    );
+
+    try {
+      await db.updateTemplateIcon(templateId, draftTemplateIcon);
+      templateSaveError = null;
+    } catch (err) {
+      console.error('template icon save failed', err);
+      templateSaveError = 'Could not save template icon.';
+      void loadData({ preserveSession: true }).catch(() => {});
+    }
+  }
+
   async function saveTemplateEditorDraft() {
     const templateId = editingTemplateId;
     editingExerciseNameId = null;
@@ -6699,6 +6768,7 @@ function getStatIcon(id: number): typeof Dna {
     if (templateId && !templateId.startsWith('temp-')) {
       await persistTemplateNameById(templateId, draftTemplateName);
       await persistTemplateColorNow();
+      await persistTemplateIconNow();
       await persistTemplateExercisesNow();
     }
   }
@@ -6707,6 +6777,7 @@ function getStatIcon(id: number): typeof Dna {
     if (editorExitSaving) return;
     editorExitSaving = true;
     showTemplateColorPicker = false;
+    showTemplateIconPicker = false;
     const returnView = templateEditorReturnView;
     templateEditorReturnView = 'track';
     currentView = returnView;
@@ -6716,6 +6787,7 @@ function getStatIcon(id: number): typeof Dna {
         exerciseTypeFieldStash = {};
         draftTemplateName = '';
         draftTemplateColor = DEFAULT_TEMPLATE_COLOR;
+        draftTemplateIcon = DEFAULT_TEMPLATE_ICON;
         selectedExerciseId = null;
         editingExerciseNameId = null;
         editingTemplateId = '';
@@ -6918,15 +6990,10 @@ function getStatIcon(id: number): typeof Dna {
       return;
     }
     const targetIndex = computeRowIndex(e, exerciseListBody, draftExercises.length - 1);
-    if (draggedIndex === targetIndex) {
-      draggedIndex = null;
-      return;
-    }
-    const arr = [...draftExercises];
-    const [moved] = arr.splice(draggedIndex, 1);
-    arr.splice(targetIndex, 0, moved);
-    draftExercises = arr;
+    const next = reorderByIndex(draftExercises, draggedIndex, targetIndex);
     draggedIndex = null;
+    if (!next) return;
+    draftExercises = next;
     void persistTemplateExercisesNow();
   }
 
@@ -6958,6 +7025,8 @@ function getStatIcon(id: number): typeof Dna {
       e.stopPropagation();
       return;
     }
+    // Cancel any in-progress hold-to-delete so a drag never commits a delete
+    stopDeleteTemplateHold();
     templateDraggedIndex = index;
     templateDragOverIndex = index;
     if (e.dataTransfer) {
@@ -6972,7 +7041,8 @@ function getStatIcon(id: number): typeof Dna {
       e.dataTransfer.dropEffect = 'move';
     }
     if (!templateListBody) return;
-    const idx = computeRowIndex(e, templateListBody, templates.length - 1);
+    // Index must match builderTemplates (what the list actually renders), not full templates[]
+    const idx = computeRowIndex(e, templateListBody, Math.max(0, builderTemplates.length - 1));
     if (templateDragOverIndex !== idx) templateDragOverIndex = idx;
   }
 
@@ -6983,39 +7053,37 @@ function getStatIcon(id: number): typeof Dna {
       templateDraggedIndex = null;
       return;
     }
-    const targetIndex = computeRowIndex(e, templateListBody, templates.length - 1);
-    if (templateDraggedIndex === targetIndex) {
-      templateDraggedIndex = null;
-      return;
-    }
-    const arr = [...templates];
-    const [moved] = arr.splice(templateDraggedIndex, 1);
-    arr.splice(targetIndex, 0, moved);
-    // Re-assign sequential display orders
-    arr.forEach((t, i) => {
-      (t as any).display_order = i;
-    });
-    templates = arr;
-    // Persist
-    const orders = arr
+    const visible = builderTemplates;
+    const targetIndex = computeRowIndex(e, templateListBody, Math.max(0, visible.length - 1));
+    const reorderedVisible = reorderByIndex(visible, templateDraggedIndex, targetIndex);
+    templateDraggedIndex = null;
+    if (!reorderedVisible) return;
+
+    // Apply new order only to the visible (builder) set; leave other library
+    // templates after them so we never splice the wrong global indices.
+    const visibleIds = new Set(reorderedVisible.map((t) => t.id));
+    const others = templates.filter((t) => !visibleIds.has(t.id));
+    const merged = [
+      ...reorderedVisible.map((t, i) => ({ ...t, display_order: i })),
+      ...others.map((t, i) => ({ ...t, display_order: reorderedVisible.length + i })),
+    ];
+    templates = merged;
+
+    const orders = merged
       .map((t, i) => ({ id: t.id, display_order: i }))
       .filter((o) => !o.id.startsWith('temp-'));
-    if (orders.length === 0) {
-      templateDraggedIndex = null;
-      return;
-    }
+    if (orders.length === 0) return;
     void db.updateTemplateDisplayOrders(orders).catch((err) => {
       console.error('Failed to persist template reorder', err);
-      // refresh to restore server order
       loadData({ preserveSession: true });
     });
-    templateDraggedIndex = null;
   }
 
   function handleTemplateDragEnd() {
     const wasDragging = templateDraggedIndex !== null;
     templateDraggedIndex = null;
     templateDragOverIndex = null;
+    stopDeleteTemplateHold();
     if (wasDragging) {
       templateRowDragged = true;
       setTimeout(() => {
@@ -7103,7 +7171,36 @@ function getStatIcon(id: number): typeof Dna {
             </span>
           </button>
 
-          {#if workoutState === 'idle'}
+          {#if !isViewingToday}
+              <!-- Never show Start Workout for past/future days — jump home instead -->
+              <button
+                type="button"
+                class="{workoutCenterBtnClass} go-to-today-btn border-transparent bg-white text-black"
+                onclick={goToToday}
+              >
+                <span class={workoutCenterLabelClass}>GO TO TODAY</span>
+              </button>
+              {#if isViewingPastDoneLog || isViewingPastSkippedLog}
+                <button
+                  type="button"
+                  class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-white hover:border-white/40'}"
+                  onmousedown={startEraseHold}
+                  onmouseup={stopEraseHold}
+                  onmouseleave={stopEraseHold}
+                  ontouchstart={startEraseHold}
+                  ontouchend={stopEraseHold}
+                  onanimationend={onEraseTapPulseEnd}
+                >
+                  <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {eraseProgress}%;"></div>
+                  <span class="workout-cta-side-content">
+                    <Trash2 class="workout-cta-side-icon" strokeWidth={2.25} aria-hidden="true" />
+                    <span class={workoutSideLabelClass} style={ctaChStyle(ERASE_CTA_SOURCE, SIDE_CTA_MAX_CH)}>{ERASE_CTA_SOURCE}</span>
+                  </span>
+                </button>
+              {:else}
+                {@render ctaEmptySlot()}
+              {/if}
+          {:else if workoutState === 'idle'}
               <button
                 type="button"
                 class="{workoutCenterBtnClass} border-transparent bg-white text-black"
@@ -7163,10 +7260,8 @@ function getStatIcon(id: number): typeof Dna {
                   <span class={workoutSideLabelClass} style={ctaChStyle(SKIP_CTA_TARGET, SIDE_CTA_MAX_CH)}>{SKIP_CTA_TARGET}</span>
                 </span>
               </button>
-          {:else if (isViewingToday && workoutState === 'done') || isViewingPastDoneLog}
-            {@const effectiveStatus = isViewingPastDoneLog
-              ? (completionStatusForLog(viewedLog) ?? 'neutral')
-              : (justFinishedStatus ?? todayCompletionStatus)}
+          {:else if workoutState === 'done'}
+            {@const effectiveStatus = justFinishedStatus ?? todayCompletionStatus}
             {@const isUntouchedComplete = effectiveStatus === 'untouched'}
             {@const isYellowComplete = !isUntouchedComplete && (effectiveStatus === 'yellow' || effectiveStatus === 'neutral')}
               <button
@@ -7193,7 +7288,7 @@ function getStatIcon(id: number): typeof Dna {
                   <span class={workoutSideLabelClass} style={ctaChStyle(ERASE_CTA_SOURCE, SIDE_CTA_MAX_CH)}>{ERASE_CTA_SOURCE}</span>
                 </span>
               </button>
-          {:else if (isViewingToday && workoutState === 'skipped') || isViewingPastSkippedLog}
+          {:else if workoutState === 'skipped'}
               <button
                 class="{workoutCenterBtnClass} w-cta-skipped cursor-default"
               >
@@ -7254,12 +7349,10 @@ function getStatIcon(id: number): typeof Dna {
                 ></span>
               </span>
               <span class="settings-panel-header__latency">
-                {#if supabasePanelLoading}
-                  …
-                {:else if supabasePanel?.health.latencyMs != null}
+                {#if supabasePanel?.health.latencyMs != null}
                   {formatSupabaseLatencyMs(supabasePanel.health.latencyMs)}
                 {:else}
-                  —
+                  {'--- ms'}
                 {/if}
               </span>
             </div>
@@ -7791,13 +7884,30 @@ function getStatIcon(id: number): typeof Dna {
 
   {#snippet bootScreen()}
     {@const panel = supabasePanel}
+    {@const filled = bootAccountReveal && !!currentUser && !!panel}
+    {@const usage = panel?.usage ?? null}
+    {@const chipsFilled = filled && !!usage}
+    {@const chipDefs = [
+      { key: 'tpl', icon: 'list', text: usage ? `${usage.templates} tpl` : '— tpl' },
+      { key: 'ex', icon: 'dumbbell', text: usage ? `${usage.exercises} ex` : '— ex' },
+      { key: 'wrk', icon: 'history', text: usage ? `${usage.workout_history} wrk logs` : '— wrk logs' },
+      { key: 'sts', icon: 'dna', text: usage ? `${usage.tracked_stats ?? 0} sts` : '— sts' },
+      {
+        key: 'bytes',
+        icon: 'drive',
+        text: usage
+          ? `${usage.exact ? '' : '~'}${formatBytes(usage.estimated_bytes)}`
+          : '— B',
+      },
+      { key: 'stsl', icon: 'pencil', text: usage ? `${usage.stat_logs ?? 0} sts logs` : '— sts logs' },
+    ]}
     <div
       class="settings-panel-dialog boot-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left"
-      class:boot-panel-reveal--active={bootAccountReveal}
+      class:boot-panel--filled={filled}
       role="status"
       aria-live="polite"
-      aria-busy={!bootAccountReveal}
-      aria-label={bootAccountReveal ? 'Account ready' : bootMessage}
+      aria-busy={!filled}
+      aria-label={filled ? 'Account ready' : bootMessage}
     >
       <div class="settings-panel-header">
         <div class="settings-panel-header__title">
@@ -7813,21 +7923,18 @@ function getStatIcon(id: number): typeof Dna {
             <span class="settings-panel-header__dot-wrap">
               <span
                 class="db-io-dot settings-panel-header__dot"
-                class:db-io-dot--active={bootAccountReveal && !!panel && panel.health.ok && panel.sessionOk}
-                class:boot-panel-dot-pulse={!bootAccountReveal}
+                class:db-io-dot--active={filled && panel.health.ok && panel.sessionOk}
+                class:boot-panel-dot-pulse={!filled}
               ></span>
             </span>
             <span
-              class="settings-panel-header__latency"
-              class:boot-panel-reveal-item={bootAccountReveal}
-              class:boot-panel-reveal-item--header={bootAccountReveal}
+              class="settings-panel-header__latency boot-panel-fade-text"
+              class:boot-panel-fade-text--on={filled || panel?.health.latencyMs != null}
             >
-              {#if bootAccountReveal && panel?.health.latencyMs != null}
+              {#if panel?.health.latencyMs != null}
                 {formatSupabaseLatencyMs(panel.health.latencyMs)}
-              {:else if bootAccountReveal}
-                —
               {:else}
-                …
+                {'--- ms'}
               {/if}
             </span>
           </div>
@@ -7844,170 +7951,132 @@ function getStatIcon(id: number): typeof Dna {
       </div>
 
       <div class="settings-panel-body text-[10px] leading-snug">
-        {#if bootAccountReveal && currentUser && panel}
-          <div class="flex justify-center py-1 boot-panel-reveal-item boot-panel-reveal-item--avatar">
-            {#key avatarSeed}
-              <GeneratedAvatar userId={currentUser.id} seed={avatarSeed} size={80} />
-            {/key}
-          </div>
-
-          <div class="settings-panel-stats">
-            <div class="settings-panel-header__identity boot-panel-reveal-item boot-panel-reveal-item--identity">
-              <span class="settings-panel-header__name">{accountDisplayName}</span>
-              <span class="text-[10px] text-zinc-500">joined {accountMemberSince}</span>
-              <span class="text-[10px] text-zinc-500">Session: {formatSessionExpiry(panel.expiresAt)}</span>
-              <span class="settings-panel-header__user-id" title={currentUser.id}>{currentUser.id}</span>
+        <!-- Single layout: chrome always present; values fade in (no unmount swap) -->
+        <div class="boot-panel-avatar-slot flex justify-center py-1" aria-hidden="true">
+          <div class="boot-panel-avatar-frame">
+            <div
+              class="boot-panel-avatar-layer boot-panel-avatar-layer--placeholder"
+              class:boot-panel-avatar-layer--hide={filled && !!currentUser}
+            >
+              <div class="boot-panel-avatar-placeholder" title="Loading profile"></div>
             </div>
-
-            {#if panel.usage}
-              <div class="mt-1 mb-2 boot-panel-reveal-item boot-panel-reveal-item--chips">
-                <div class="text-[8px] uppercase tracking-[1px] text-zinc-500 text-center mb-1">Data usage</div>
-                <div class="grid grid-cols-3 gap-1 text-[9px] text-zinc-400">
-                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                    <List class="size-3 shrink-0" aria-hidden="true" />
-                    <span class="leading-none">{panel.usage.templates} tpl</span>
-                  </span>
-                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                    <Dumbbell class="size-3 shrink-0" aria-hidden="true" />
-                    <span class="leading-none">{panel.usage.exercises} ex</span>
-                  </span>
-                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                    <History class="size-3 shrink-0" aria-hidden="true" />
-                    <span class="leading-none">{panel.usage.workout_history} wrk logs</span>
-                  </span>
-                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                    <Dna class="size-3 shrink-0" aria-hidden="true" />
-                    <span class="leading-none">{panel.usage.tracked_stats ?? 0} sts</span>
-                  </span>
-                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                    <HardDrive class="size-3 shrink-0" aria-hidden="true" />
-                    <span class="leading-none">{panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}</span>
-                  </span>
-                  <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                    <Pencil class="size-3 shrink-0" aria-hidden="true" />
-                    <span class="leading-none">{panel.usage.stat_logs ?? 0} sts logs</span>
-                  </span>
-                </div>
-              </div>
-            {/if}
-
-            {#if panel.health.error || panel.sessionError}
-              <p class="settings-panel-alert boot-panel-reveal-item boot-panel-reveal-item--chips">
-                {panel.sessionError ?? panel.health.error}
-              </p>
-            {/if}
-          </div>
-
-          <div class="settings-panel-account boot-panel-reveal-item boot-panel-reveal-item--actions">
-            {#if accountCanChangePassword}
-              <div class="settings-panel-password">
-                <div class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--change-password">
-                  <span class="settings-panel-action-btn__label">
-                    <LockKeyhole class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
-                    CHANGE PASSWORD
-                  </span>
-                </div>
-              </div>
-            {/if}
-
-            <div class="settings-panel-actions-reveal settings-panel-actions-reveal--open">
-              <div class="settings-panel-actions-reveal__inner">
-                <div class="settings-panel-actions">
-                  <div class="settings-panel-action-btn settings-panel-action-btn--signout">
-                    <span class="settings-panel-action-btn__label">
-                      <LogOut class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
-                      SIGN OUT
-                    </span>
-                  </div>
-                  <div class="settings-panel-action-btn settings-panel-action-btn--delete">
-                    <span class="settings-panel-action-btn__label">
-                      <Trash2 class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
-                      DELETE
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        {:else}
-          <div class="flex justify-center py-1">
-            <div class="boot-panel-avatar-spinner" aria-hidden="true"></div>
-          </div>
-
-          <div class="settings-panel-stats">
-            <div class="settings-panel-header__identity boot-panel-placeholder" aria-hidden="true">
-              <span class="settings-panel-header__name boot-panel-placeholder__ghost">account name</span>
-              <span class="text-[10px] boot-panel-placeholder__ghost">joined Jan 2026</span>
-              <span class="text-[10px] boot-panel-placeholder__ghost">Session: 1h 00m</span>
-              <span class="settings-panel-header__user-id boot-panel-placeholder__ghost">00000000-0000-0000-0000-000000000000</span>
-            </div>
-
-            <div class="mt-1 mb-2 boot-panel-reveal-item boot-panel-reveal-item--chips" aria-hidden="true">
-              <div class="text-[8px] uppercase tracking-[1px] text-zinc-500 text-center mb-1 boot-panel-placeholder__ghost">Data usage</div>
-              <div class="grid grid-cols-3 gap-1 text-[9px] text-zinc-400">
-                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
-                  <List class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-                  <span class="leading-none boot-panel-placeholder__ghost">0 tpl</span>
-                </span>
-                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
-                  <Dumbbell class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-                  <span class="leading-none boot-panel-placeholder__ghost">0 ex</span>
-                </span>
-                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
-                  <History class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-                  <span class="leading-none boot-panel-placeholder__ghost">0 wrk logs</span>
-                </span>
-                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
-                  <Dna class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-                  <span class="leading-none boot-panel-placeholder__ghost">0 sts</span>
-                </span>
-                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
-                  <HardDrive class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-                  <span class="leading-none boot-panel-placeholder__ghost">~0 B</span>
-                </span>
-                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center boot-panel-placeholder">
-                  <Pencil class="size-3 shrink-0 boot-panel-placeholder__ghost" aria-hidden="true" />
-                  <span class="leading-none boot-panel-placeholder__ghost">0 sts logs</span>
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div class="settings-panel-account" aria-hidden="true">
-            <div class="settings-panel-password">
+            {#if currentUser}
               <div
-                class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--change-password boot-panel-placeholder"
+                class="boot-panel-avatar-layer boot-panel-avatar-layer--face"
+                class:boot-panel-avatar-layer--show={filled}
               >
-                <span class="settings-panel-action-btn__label boot-panel-placeholder__ghost">
+                {#key avatarSeed}
+                  <GeneratedAvatar userId={currentUser.id} seed={avatarSeed} size={80} />
+                {/key}
+              </div>
+            {/if}
+          </div>
+        </div>
+
+        <div class="settings-panel-stats">
+          <div class="settings-panel-header__identity">
+            <span class="settings-panel-header__name boot-panel-fade-text" class:boot-panel-fade-text--on={!!currentUser}>
+              {currentUser ? accountDisplayName : '…'}
+            </span>
+            <span class="text-[10px] text-zinc-500 boot-panel-fade-text" class:boot-panel-fade-text--on={!!currentUser && !!accountMemberSince}>
+              {currentUser ? `joined ${accountMemberSince}` : '…'}
+            </span>
+            <span class="text-[10px] text-zinc-500 boot-panel-fade-text" class:boot-panel-fade-text--on={filled}>
+              {filled ? `Session: ${formatSessionExpiry(panel.expiresAt)}` : 'Session: …'}
+            </span>
+            <span
+              class="settings-panel-header__user-id boot-panel-fade-text"
+              class:boot-panel-fade-text--on={!!currentUser}
+              title={currentUser?.id ?? ''}
+            >
+              {currentUser?.id ?? '…'}
+            </span>
+          </div>
+
+          <div class="mt-1 mb-2">
+            <div
+              class="text-[8px] uppercase tracking-[1px] text-zinc-500 text-center mb-1 boot-panel-fade-text"
+              class:boot-panel-fade-text--on={true}
+            >Data usage</div>
+            <div class="grid grid-cols-3 gap-1 text-[9px] text-zinc-400">
+              {#each chipDefs as chip (chip.key)}
+                <span class="boot-panel-chip inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center min-h-[1.5rem]">
+                  {#if chip.icon === 'list'}
+                    <List class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                  {:else if chip.icon === 'dumbbell'}
+                    <Dumbbell class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                  {:else if chip.icon === 'history'}
+                    <History class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                  {:else if chip.icon === 'dna'}
+                    <Dna class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                  {:else if chip.icon === 'drive'}
+                    <HardDrive class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                  {:else}
+                    <Pencil class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                  {/if}
+                  <span
+                    class="leading-none boot-panel-chip-value"
+                    class:boot-panel-chip-value--loading={!chipsFilled}
+                    class:boot-panel-chip-value--ready={chipsFilled}
+                  >{chip.text}</span>
+                </span>
+              {/each}
+            </div>
+          </div>
+
+          {#if filled && (panel.health.error || panel.sessionError)}
+            <p class="settings-panel-alert boot-panel-fade-text boot-panel-fade-text--on">
+              {panel.sessionError ?? panel.health.error}
+            </p>
+          {/if}
+        </div>
+
+        <div class="settings-panel-account" aria-hidden="true">
+          {#if accountCanChangePassword || !filled}
+            <div
+              class="settings-panel-password boot-panel-fade-text"
+              class:boot-panel-fade-text--on={filled ? accountCanChangePassword : true}
+              class:boot-panel-fade-text--dim={!filled}
+            >
+              <div class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--change-password">
+                <span class="settings-panel-action-btn__label">
                   <LockKeyhole class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
                   CHANGE PASSWORD
                 </span>
               </div>
             </div>
+          {/if}
 
-            <div class="settings-panel-actions-reveal settings-panel-actions-reveal--open">
-              <div class="settings-panel-actions-reveal__inner">
-                <div class="settings-panel-actions">
-                  <div class="settings-panel-action-btn settings-panel-action-btn--signout boot-panel-placeholder">
-                    <span class="settings-panel-action-btn__label boot-panel-placeholder__ghost">
-                      <LogOut class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
-                      SIGN OUT
-                    </span>
-                  </div>
-                  <div class="settings-panel-action-btn settings-panel-action-btn--delete boot-panel-placeholder">
-                    <span class="settings-panel-action-btn__label boot-panel-placeholder__ghost">
-                      <Trash2 class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
-                      DELETE
-                    </span>
-                  </div>
+          <div class="settings-panel-actions-reveal settings-panel-actions-reveal--open">
+            <div class="settings-panel-actions-reveal__inner">
+              <div class="settings-panel-actions">
+                <div
+                  class="settings-panel-action-btn settings-panel-action-btn--signout boot-panel-fade-text"
+                  class:boot-panel-fade-text--on={true}
+                  class:boot-panel-fade-text--dim={!filled}
+                >
+                  <span class="settings-panel-action-btn__label">
+                    <LogOut class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                    SIGN OUT
+                  </span>
+                </div>
+                <div
+                  class="settings-panel-action-btn settings-panel-action-btn--delete boot-panel-fade-text"
+                  class:boot-panel-fade-text--on={true}
+                  class:boot-panel-fade-text--dim={!filled}
+                >
+                  <span class="settings-panel-action-btn__label">
+                    <Trash2 class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                    DELETE
+                  </span>
                 </div>
               </div>
             </div>
           </div>
-        {/if}
+        </div>
       </div>
 
-      <p class="sr-only">{bootAccountReveal ? 'Account ready' : bootMessage}</p>
+      <p class="sr-only">{filled ? 'Account ready' : bootMessage}</p>
     </div>
   {/snippet}
 
@@ -8184,6 +8253,7 @@ function getStatIcon(id: number): typeof Dna {
           <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 mb-2 text-center pointer-events-none">WEEKLY PLAN</div>
           <div class="grid grid-cols-7 gap-1 pointer-events-none">
             {#each weekPlan as d, i}
+              {@const PlanIcon = getItemIcon(d.icon)}
               <div class="flex flex-col items-center gap-0.5 transition-all duration-150">
                 <div class="text-[10px] font-medium {i === TODAY_WEEKDAY ? 'text-white' : 'text-zinc-400'}">{d.day}</div>
                 <div
@@ -8191,9 +8261,9 @@ function getStatIcon(id: number): typeof Dna {
                   style={d.color ? `background-color: color-mix(in srgb, ${d.color} 12%, #141414); border-color: ${d.color};` : ''}
                 >
                   {#if d.hasTemplate}
-                    <Dumbbell class="size-3" style={d.color ? `color: ${d.color}` : ''} />
+                    <PlanIcon class="size-5" style={d.color ? `color: ${d.color}` : ''} strokeWidth={ITEM_ICON_STROKE} />
                   {:else}
-                    <Bed class="size-3 text-zinc-500" />
+                    <Bed class="size-5 text-zinc-500" />
                   {/if}
                 </div>
               </div>
@@ -8267,6 +8337,7 @@ function getStatIcon(id: number): typeof Dna {
           <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 mb-2 text-center pointer-events-none">WEEKLY PLAN</div>
           <div class="grid grid-cols-7 gap-1 pointer-events-none">
             {#each weekPlan as d, i}
+              {@const PlanIcon = getItemIcon(d.icon)}
               <div class="flex flex-col items-center gap-0.5 transition-all duration-150">
                 <div class="text-[10px] font-medium {i === TODAY_WEEKDAY ? 'text-white' : 'text-zinc-400'}">{d.day}</div>
                 <div
@@ -8274,9 +8345,9 @@ function getStatIcon(id: number): typeof Dna {
                   style={d.color ? `background-color: color-mix(in srgb, ${d.color} 12%, #141414); border-color: ${d.color};` : ''}
                 >
                   {#if d.hasTemplate}
-                    <Dumbbell class="size-3" style={d.color ? `color: ${d.color}` : ''} />
+                    <PlanIcon class="size-5" style={d.color ? `color: ${d.color}` : ''} strokeWidth={ITEM_ICON_STROKE} />
                   {:else}
-                    <Bed class="size-3 text-zinc-500" />
+                    <Bed class="size-5 text-zinc-500" />
                   {/if}
                 </div>
               </div>
@@ -8883,6 +8954,7 @@ function getStatIcon(id: number): typeof Dna {
           {@const dayAssignedId = effectiveAssignmentTemplateId(builderAssignments[i] ?? null)}
           {@const dayTpl = dayAssignedId ? templates.find((t) => t.id === dayAssignedId) : null}
           {@const dayColor = dayTpl ? getTemplateColor(dayTpl.color ?? 0) : null}
+          {@const DayIcon = getItemIcon(dayTpl?.icon ?? DEFAULT_TEMPLATE_ICON)}
           {@const isDaySelected = builderEditingDay === i}
           {@const iconStyle = isDaySelected && dayColor ? `color: color-mix(in srgb, ${dayColor} 20%, black)` : 'color: black'}
           <button
@@ -8896,9 +8968,9 @@ function getStatIcon(id: number): typeof Dna {
               style={dayColor ? `background-color: ${dayColor};` : isDaySelected ? 'background-color: white;' : ''}
             >
               {#if hasTemplate}
-                <Dumbbell class={isDaySelected ? 'size-4' : 'size-3'} strokeWidth={2.5} style={iconStyle} />
+                <DayIcon class={isDaySelected ? 'size-5' : 'size-4'} strokeWidth={ITEM_ICON_STROKE} style={iconStyle} />
               {:else}
-                <Bed class={isDaySelected ? 'size-4 text-black' : 'size-3 text-zinc-500'} />
+                <Bed class={isDaySelected ? 'size-5 text-black' : 'size-4 text-zinc-500'} />
               {/if}
             </div>
           </button>
@@ -8914,10 +8986,15 @@ function getStatIcon(id: number): typeof Dna {
         <div class="flex flex-col gap-1 min-w-0">
           <div class="flex items-stretch gap-1 h-8">
             <div
-              class="w-6 h-8 shrink-0 flex items-center justify-center border rounded leading-none transition-colors {builderAssignedTemplateId === null ? 'bg-[#1e1e1e] border-[#2a2a2a]' : 'bg-[#141414] border-[#1e1e1e]'}"
-              aria-hidden="true"
+              class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {builderAssignedTemplateId === null ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-300' : 'bg-[#141414] border-[#1e1e1e] text-zinc-500'}"
+              title={builderAssignedTemplateId === null ? 'Assigned' : undefined}
+              aria-label={builderAssignedTemplateId === null ? 'Assigned rest day' : 'Rest day'}
             >
-              <Bed class="size-3 text-zinc-500" />
+              {#if builderAssignedTemplateId === null}
+                <Check class="size-3.5" strokeWidth={2.5} />
+              {:else}
+                0
+              {/if}
             </div>
             <button
               type="button"
@@ -8925,13 +9002,12 @@ function getStatIcon(id: number): typeof Dna {
               onclick={() => assignTemplateToBuilderDay(null)}
             >
               <span
-                class="template-list-color-squircle shrink-0 w-3.5 h-3.5 bg-white"
+                class="template-list-color-squircle shrink-0 w-4 h-4 flex items-center justify-center bg-white"
                 aria-hidden="true"
-              ></span>
+              >
+                <Bed class="size-2.5 text-black/80" strokeWidth={ITEM_ICON_STROKE} />
+              </span>
               <span class="font-medium truncate leading-none flex-1 min-w-0 text-left">[ REST DAY ]</span>
-              {#if builderAssignedTemplateId === null}
-                <span class="text-[9px] shrink-0 bg-[#1e1e1e] px-1.5 py-0.5 rounded border border-[#2a2a2a] text-zinc-500 leading-none">ASSIGNED</span>
-              {/if}
             </button>
           </div>
 
@@ -8942,8 +9018,10 @@ function getStatIcon(id: number): typeof Dna {
             {@const isSelected = rawSelectedId === template.id}
             {@const isRealAssigned = builderAssignedTemplateId === template.id}
             {@const tColor = getTemplateColor(template.color ?? DEFAULT_TEMPLATE_COLOR)}
+            {@const TplIcon = getItemIcon(template.icon ?? DEFAULT_TEMPLATE_ICON)}
             <div
               class="flex items-stretch gap-1 h-8 {activeRoutineIsReadonly ? '' : 'cursor-grab active:cursor-grabbing'}"
+              data-list-row
               style="transform: translateY({activeRoutineIsReadonly ? 0 : dragShift(templateDraggedIndex, templateDragOverIndex, index)}px); transition: transform 150ms ease; {templateDraggedIndex === index ? 'opacity: 0.25;' : ''}"
               draggable={!activeRoutineIsReadonly}
               ondragstart={(e) => { if (!activeRoutineIsReadonly) handleTemplateDragStart(e, index); }}
@@ -8953,12 +9031,18 @@ function getStatIcon(id: number): typeof Dna {
                 type="button"
                 class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
                 style={isSelected ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white;` : ''}
+                title={isRealAssigned ? 'Assigned' : undefined}
+                aria-label={isRealAssigned ? `Assigned template ${index + 1}` : `Template ${index + 1}`}
                 onclick={() => {
                   if (templateRowDragged) return;
                   assignTemplateToBuilderDay(template.id);
                 }}
               >
-                {index + 1}
+                {#if isRealAssigned}
+                  <Check class="size-3.5" strokeWidth={2.5} />
+                {:else}
+                  {index + 1}
+                {/if}
               </button>
               <div
                 class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center transition-colors cursor-pointer hover:bg-[#1a1a1a] {isSelected ? '' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
@@ -8970,11 +9054,13 @@ function getStatIcon(id: number): typeof Dna {
               >
                 <div class="flex items-center gap-1 min-w-0 flex-1">
                   <span
-                    class="template-list-color-squircle shrink-0 w-3.5 h-3.5"
+                    class="template-list-color-squircle shrink-0 w-4 h-4 flex items-center justify-center"
                     style="background-color: {tColor}"
-                    title="Template color"
+                    title="Template color & icon"
                     aria-hidden="true"
-                  ></span>
+                  >
+                    <TplIcon class="size-2.5 text-black/80" strokeWidth={ITEM_ICON_STROKE} />
+                  </span>
                   {#if editingRoutineTemplateNameId === template.id}
                     <span class="shrink-0" style={isSelected ? `color: white` : `color: #aaa`}>[</span>
                     <input
@@ -9012,10 +9098,7 @@ function getStatIcon(id: number): typeof Dna {
                   {#if !isEmpty}
                     {@const exCount = template.exercises.length}
                     <span class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none" style={isSelected ? `background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;` : `background-color: #1e1e1e; border-color: #2a2a2a; color: #aaa;`}>{exCount} EXERCISE{exCount === 1 ? '' : 'S'}</span>
-                  {/if}
-                  {#if isRealAssigned}
-                    <span class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none" style={isSelected ? `background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;` : `background-color: #1e1e1e; border-color: #2a2a2a; color: #aaa;`}>ASSIGNED</span>
-                  {:else if isEmpty}
+                  {:else}
                     <span class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none" style={isSelected ? `background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;` : `background-color: #1e1e1e; border-color: #2a2a2a; color: #aaa;`}>EMPTY</span>
                   {/if}
                   {#if isSelected && !activeRoutineIsReadonly}
@@ -9040,7 +9123,7 @@ function getStatIcon(id: number): typeof Dna {
                       class="relative overflow-hidden w-6 h-6 shrink-0 flex items-center justify-center rounded border transition-colors {deleteTemplateHoldId === template.id && deleteTemplateProgress > 0
                         ? 'border-red-500 text-red-300'
                         : 'border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800'}"
-                      title="Hold to delete template"
+                      title="Hold 0.8s to delete template"
                       onmousedown={(e) => startDeleteTemplateHold(e, template.id)}
                       onmouseup={stopDeleteTemplateHold}
                       onmouseleave={stopDeleteTemplateHold}
@@ -9110,11 +9193,12 @@ function getStatIcon(id: number): typeof Dna {
         <span class="flex-1 text-[11px] font-bold tracking-[0.15em] text-zinc-400 leading-none">STATS</span>
         <button
           type="button"
-          class="w-7 h-7 rounded-lg shrink-0 flex items-center justify-center border border-[#1e1e1e] bg-transparent text-zinc-400 hover:bg-[#1a1a1a] hover:text-white"
+          class="h-7 px-2.5 gap-1.5 rounded-lg shrink-0 flex items-center justify-center border border-[#1e1e1e] bg-transparent text-zinc-400 hover:bg-[#1a1a1a] hover:text-white text-[10px] font-bold tracking-wide"
           onclick={openStatsEditor}
           title="Edit stats"
         >
-          <Pencil class="size-3.5" />
+          <Pencil class="size-3.5 shrink-0" />
+          <span>EDIT STATS</span>
         </button>
       </div>
 
@@ -9134,16 +9218,25 @@ function getStatIcon(id: number): typeof Dna {
           {#each trackedStats as stat (stat.id)}
             {@const isSelected = selectedStatsViewStatId === stat.id}
             {@const IconComponent = getStatIcon(stat.icon)}
+            {@const statHex = getTemplateColor(
+              clampTemplateColor(
+                typeof stat.color === 'number' ? stat.color : DEFAULT_TEMPLATE_COLOR,
+              ),
+            )}
               <div
                 class="rounded-lg border transition-all cursor-pointer"
                 class:bg-[#1a1a1a]={isSelected}
                 class:bg-[#0d0d0d]={!isSelected}
-                style="border-color: {isSelected ? '#2a2a2a' : '#1e1e1e'}"
+                style="border-color: {isSelected ? statHex : '#1e1e1e'}"
                 onclick={() => { selectedStatsViewStatId = selectedStatsViewStatId === stat.id ? null : stat.id; }}
               >
-                <div class="flex items-stretch gap-1.5 p-1.5">
-                  <div class="shrink-0 flex items-center justify-center">
-                    <IconComponent class="size-4 text-zinc-300" />
+                <div class="flex items-center gap-1.5 p-1.5">
+                  <div
+                    class="template-list-color-squircle shrink-0 w-5 h-5 flex items-center justify-center self-center"
+                    style="background-color: {statHex}"
+                    aria-hidden="true"
+                  >
+                    <IconComponent class="size-3 text-black/80" strokeWidth={ITEM_ICON_STROKE} />
                   </div>
                   <div class="flex-1 min-w-0 flex items-center">
                     <span class="font-medium text-xs truncate leading-none text-zinc-300">{stat.name}</span>
@@ -9405,179 +9498,241 @@ function getStatIcon(id: number): typeof Dna {
     </div>
 
   {:else if currentView === 'edit_stats'}
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-2 flex-1 min-h-0 overflow-y-auto no-scrollbar">
-      <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2">
+    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto no-scrollbar">
+      <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
         <button
           type="button"
-          class="w-7 h-7 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
+          class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
           onclick={() => void exitStatsEditor()}
           disabled={editorExitSaving}
           title="Go back"
         >
-          <ArrowLeft class="size-3.5" />
+          <ArrowLeft class="size-4" />
         </button>
-        <span class="text-[11px] font-bold tracking-[0.15em] text-zinc-400 leading-none shrink-0">STAT EDITOR</span>
-        <div class="flex-1 min-w-0 flex items-center">
-          <input
-            autocomplete="off"
-            class="w-full h-7 bg-black border border-[#1e1e1e] text-[11px] font-medium uppercase text-center px-2 rounded-lg outline-none placeholder:text-zinc-600"
-            placeholder="Stat name"
-            disabled={!selectedDraftStatId}
-            value={selectedDraftStatId ? (draftStatById(selectedDraftStatId)?.name ?? '') : ''}
-            oninput={(e) => {
-              const v = (e.currentTarget as HTMLInputElement).value;
-              if (selectedDraftStatId) {
-                patchDraftStat(selectedDraftStatId, { name: v });
-                void persistTrackedStatsNow();
-              }
-            }}
-          />
-        </div>
+        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">STAT EDITOR</span>
         {#if selectedDraftStatId}
           {@const selectedStat = draftStatById(selectedDraftStatId)}
-          {@const statIconId = selectedStat?.icon ?? 0}
+          {@const statIconId = clampItemIcon(selectedStat?.icon ?? DEFAULT_ITEM_ICON)}
+          {@const statColorIdx = clampTemplateColor(
+            typeof selectedStat?.color === 'number' ? selectedStat.color : DEFAULT_TEMPLATE_COLOR,
+          )}
+          {@const statColorHex = getTemplateColor(statColorIdx)}
           {@const StatIcon = getStatIcon(statIconId)}
-          <button
-            type="button"
-            class="w-7 h-7 rounded-lg bg-black border border-[#1e1e1e] flex items-center justify-center transition-all group hover:border-zinc-400"
-            onclick={() => {
-              const next = (statIconId + 1) % 10;
-              patchDraftStat(selectedDraftStatId, { icon: next });
+          <div class="flex-1 min-w-0 flex items-center">
+            <input
+              autocomplete="off"
+              class="w-full h-8 bg-black border text-xs font-medium uppercase text-center px-2 rounded outline-none placeholder:text-zinc-600"
+              style={`border-color: ${statColorHex}; color: ${statColorHex}; transition: none;`}
+              placeholder="Stat name"
+              value={selectedStat?.name ?? ''}
+              oninput={(e) => {
+                const v = (e.currentTarget as HTMLInputElement).value;
+                patchDraftStat(selectedDraftStatId, { name: v });
+                void persistTrackedStatsNow();
+              }}
+            />
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              bind:this={statIconBtnEl}
+              class="w-8 h-8 rounded bg-black border flex items-center justify-center"
+              style="border-color: {statColorHex}; color: {statColorHex}; transition: none;"
+              onclick={() => {
+                showStatIconPicker = !showStatIconPicker;
+                if (showStatIconPicker) showStatColorPicker = false;
+              }}
+              title="Pick stat icon"
+            >
+              <StatIcon class="size-4" strokeWidth={ITEM_ICON_STROKE} />
+            </button>
+            <button
+              type="button"
+              bind:this={statColorBtnEl}
+              class="w-8 h-8 rounded bg-black border flex items-center justify-center relative"
+              style="border-color: {statColorHex}; transition: none;"
+              onclick={() => {
+                showStatColorPicker = !showStatColorPicker;
+                if (showStatColorPicker) showStatIconPicker = false;
+              }}
+              title="Pick stat color"
+            >
+              <div class="w-5 h-5 rounded" style="background-color: {statColorHex}; transition: none;"></div>
+            </button>
+          </div>
+          <ItemIconPicker
+            bind:open={showStatIconPicker}
+            iconIndex={statIconId}
+            accentColor={statColorHex}
+            anchorEl={statIconBtnEl ?? null}
+            onChange={(idx) => {
+              patchDraftStat(selectedDraftStatId, { icon: clampItemIcon(idx) });
               void persistTrackedStatsNow();
             }}
-            title="Click to cycle stat icon"
-          >
-            <StatIcon class="size-4 text-zinc-300 transition-all group-active:scale-90" />
-          </button>
+          />
+          <TemplateColorPicker
+            bind:open={showStatColorPicker}
+            colorIndex={statColorIdx}
+            anchorEl={statColorBtnEl ?? null}
+            onChange={(idx) => {
+              patchDraftStat(selectedDraftStatId, { color: clampTemplateColor(idx) });
+              void persistTrackedStatsNow();
+            }}
+          />
+        {:else}
+          <div class="flex-1 min-w-0 flex items-center">
+            <input
+              autocomplete="off"
+              class="w-full h-8 bg-black border border-[#1e1e1e] text-xs font-medium uppercase text-center px-2 rounded outline-none placeholder:text-zinc-600"
+              placeholder="Stat name"
+              disabled
+              value=""
+            />
+          </div>
         {/if}
       </div>
       {#if statSaveError}
         <p class="text-[10px] text-red-300 leading-snug">{statSaveError}</p>
       {/if}
-  
-      <div class="space-y-1.5">
-        <div class="builder-editor-grid">
-          <div class="col-start-1 row-start-1 h-6 flex items-center">
-            <span class="text-[10px] uppercase tracking-[2px] text-zinc-500 font-semibold leading-none">STATS</span>
-          </div>
-          <div class="col-start-2 row-start-1 h-6 flex items-center border-l border-[#1e1e1e] pl-2">
-            <span class="text-[10px] uppercase tracking-[2px] text-zinc-500 font-semibold leading-none">PROPERTIES</span>
-          </div>
-  
-          <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
-            <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0" role="list" bind:this={statListBody} ondrop={handleStatDrop} ondragover={handleStatDragOver}>
-              {#if draftStats.length === 0}
-                <div class="text-center py-3 border border-dashed border-[#1e1e1e] rounded text-[10px] text-zinc-500">
-                  No stats yet.<br />
-                  Tap NEW to create one.
-                </div>
-              {/if}
-              {#each draftStats as stat, index (stat.id)}
-                {@const isSelected = selectedDraftStatId === stat.id}
-                {@const RowIcon = getStatIcon(stat.icon)}
-                <div
-                  class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing"
-                  style="transform: translateY({dragShift(statDraggedIndex, statDragOverIndex, index)}px); transition: transform 150ms ease; {statDraggedIndex === index ? 'opacity: 0.25;' : ''}"
-                  draggable="true"
-                  ondragstart={(e) => handleStatDragStart(e, index)}
-                  ondragend={handleStatDragEnd}
+
+      <div class="builder-editor-grid">
+        <div class="col-start-1 row-start-1 h-5 flex items-center justify-between gap-1 min-w-0">
+          <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">STATS</span>
+          <span class="text-[9px] tabular-nums text-zinc-600 leading-none shrink-0">{draftStats.length}/{MAX_STATS}</span>
+        </div>
+        <div class="col-start-2 row-start-1 h-5 flex items-center border-l border-[#1e1e1e] pl-2">
+          <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">PROPERTIES</span>
+        </div>
+
+        <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
+          <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0" role="list" bind:this={statListBody} ondrop={handleStatDrop} ondragover={handleStatDragOver}>
+            {#if draftStats.length === 0}
+              <div class="text-center py-4 border border-dashed border-[#1e1e1e] rounded-lg text-[10px] text-zinc-500 leading-snug">
+                No stats yet.<br />
+                Tap NEW to create one.
+              </div>
+            {/if}
+            {#each draftStats as stat, index (stat.id)}
+              {@const isSelected = selectedDraftStatId === stat.id}
+              {@const RowIcon = getStatIcon(stat.icon)}
+              {@const rowColor = getTemplateColor(
+                clampTemplateColor(
+                  typeof stat.color === 'number' ? stat.color : DEFAULT_TEMPLATE_COLOR,
+                ),
+              )}
+              <div
+                class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing"
+                data-list-row
+                style="transform: translateY({dragShift(statDraggedIndex, statDragOverIndex, index)}px); transition: transform 150ms ease; {statDraggedIndex === index ? 'opacity: 0.25;' : ''}"
+                draggable="true"
+                ondragstart={(e) => handleStatDragStart(e, index)}
+                ondragend={handleStatDragEnd}
+              >
+                <button
+                  type="button"
+                  class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
+                  style={isSelected ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white` : ''}
+                  onclick={() => {
+                    if (statRowDragged) return;
+                    selectDraftStat(stat.id);
+                  }}
                 >
-                  <button
-                    type="button"
-                    class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
-                    style={isSelected ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white` : ''}
-                    onclick={() => {
-                      if (statRowDragged) return;
-                      selectDraftStat(stat.id);
-                    }}
-                  >
-                    {index + 1}
-                  </button>
-                  <div
-                    class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center cursor-pointer transition-colors {isSelected ? '' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
-                    style={isSelected ? `background-color: color-mix(in srgb, white 8%, #0d0d0d); border-color: white; color: white` : ''}
-                    onclick={() => selectDraftStat(stat.id)}
-                  >
-                    <div class="flex items-center gap-1 min-w-0 flex-1">
-                      <RowIcon class="size-3 shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
-                      {#if editingStatNameId === stat.id}
-                        <input
-                          type="text"
-                          autocomplete="off"
-                          use:focusExerciseNameInput
-                          use:clampedStatNameProp={{
-                            getValue: () => stat.name,
-                            setValue: (v) => { patchDraftStat(stat.id, { name: v }); },
-                          }}
-                          onclick={(e) => e.stopPropagation()}
-                          onblur={endStatNameEdit}
-                          onkeydown={(e) => {
-                            if (e.key === 'Enter' || e.key === 'Escape') {
-                              e.preventDefault();
-                              (e.currentTarget as HTMLInputElement).blur();
-                            }
-                          }}
-                          class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isSelected ? 'text-white' : 'text-zinc-400'}"
-                          placeholder="NAME"
-                        />
-                      {:else}
-                        <span
-                          class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-white' : 'text-zinc-400'}"
-                          ondblclick={(e) => {
-                            e.stopPropagation();
-                            beginStatNameEdit(stat.id);
-                          }}
-                        >{stat.name || 'Name'}</span>
-                      {/if}
-                      {#if isSelected}
-                        <button
-                          type="button"
-                          class="w-6 h-6 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
-                          title="Delete stat"
-                          onclick={(e) => { e.stopPropagation(); deleteSelectedStat(); }}
-                        >
-                          <Trash2 class="size-3 pointer-events-none" />
-                        </button>
-                      {/if}
-                    </div>
+                  {index + 1}
+                </button>
+                <div
+                  class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center cursor-pointer transition-colors {isSelected ? '' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
+                  style={isSelected ? `background-color: color-mix(in srgb, white 8%, #0d0d0d); border-color: white; color: white` : ''}
+                  onclick={() => selectDraftStat(stat.id)}
+                >
+                  <div class="flex items-center gap-1 min-w-0 flex-1">
+                    <span
+                      class="template-list-color-squircle shrink-0 w-4 h-4 flex items-center justify-center"
+                      style="background-color: {rowColor}"
+                      title="Stat color & icon"
+                      aria-hidden="true"
+                    >
+                      <RowIcon class="size-2.5 text-black/80" strokeWidth={ITEM_ICON_STROKE} />
+                    </span>
+                    {#if editingStatNameId === stat.id}
+                      <input
+                        type="text"
+                        autocomplete="off"
+                        use:focusExerciseNameInput
+                        use:clampedStatNameProp={{
+                          getValue: () => stat.name,
+                          setValue: (v) => { patchDraftStat(stat.id, { name: v }); },
+                        }}
+                        onclick={(e) => e.stopPropagation()}
+                        onblur={endStatNameEdit}
+                        onkeydown={(e) => {
+                          if (e.key === 'Enter' || e.key === 'Escape') {
+                            e.preventDefault();
+                            (e.currentTarget as HTMLInputElement).blur();
+                          }
+                        }}
+                        class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                        placeholder="NAME"
+                      />
+                    {:else}
+                      <span
+                        class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                        ondblclick={(e) => {
+                          e.stopPropagation();
+                          beginStatNameEdit(stat.id);
+                        }}
+                      >{stat.name || 'Name'}</span>
+                    {/if}
+                    {#if isSelected}
+                      <button
+                        type="button"
+                        class="w-6 h-6 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
+                        title="Delete stat"
+                        onclick={(e) => { e.stopPropagation(); deleteSelectedStat(); }}
+                      >
+                        <Trash2 class="size-3 pointer-events-none" />
+                      </button>
+                    {/if}
                   </div>
                 </div>
-              {/each}
-            </div>
-
-            <div class="library-actions mt-1.5">
-              <button
-                type="button"
-                class="library-action-btn library-action-btn--new"
-                disabled={draftStats.length >= MAX_STATS}
-                onclick={addNewStat}
-                title="Create a new stat"
-                aria-label="Create new stat"
-              >
-                <Plus class="size-3.5" strokeWidth={3} />
-                <span>NEW</span>
-              </button>
-            </div>
+              </div>
+            {/each}
           </div>
 
-          <div class="col-start-2 row-start-2 flex flex-col min-h-0 self-stretch border-l border-[#1e1e1e] pl-2">
-            <div class="flex-1 flex flex-col min-h-0 h-full">
-              {#if selectedDraftStatId}
-                {#key selectedDraftStatId}
-                  {@const statId = selectedDraftStatId}
-                  {@const stat = draftStatById(statId)}
-                  {#if stat}
-                    {@const hasTarget = !!draftStatById(statId)?.has_target}
-                    {@const prefersLower = draftStatById(statId)?.target_prefers_lower ?? true}
-                    <div class="grid grid-cols-[minmax(0,1.55fr)_minmax(0,0.85fr)] gap-x-1.5 gap-y-2.5 text-[10px]">
-                      <div>
-                        <span class="text-zinc-500 block mb-0.5 leading-none">Start</span>
+          <div class="library-actions mt-1.5">
+            <button
+              type="button"
+              class="library-action-btn library-action-btn--new"
+              disabled={draftStats.length >= MAX_STATS}
+              onclick={addNewStat}
+              title="Create a new stat"
+              aria-label="Create new stat"
+            >
+              <Plus class="size-3.5" strokeWidth={3} />
+              <span>NEW</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="col-start-2 row-start-2 flex flex-col min-h-0 self-stretch border-l border-[#1e1e1e] pl-2">
+          <div class="flex-1 flex flex-col min-h-0 h-full">
+            {#if selectedDraftStatId}
+              {#key selectedDraftStatId}
+                {@const statId = selectedDraftStatId}
+                {@const live = draftStatById(statId)}
+                {#if live}
+                  {@const hasTarget = !!live.has_target}
+                  {@const prefersLower = live.target_prefers_lower ?? true}
+                  <!-- Fixed compact card: same height with goal on/off -->
+                  <div class="rounded-lg border border-[#1e1e1e] bg-[#0d0d0d] p-2 flex flex-col gap-1.5">
+                    <div class="grid grid-cols-2 gap-1.5">
+                      <label class="block min-w-0">
+                        <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Start</span>
                         <input
                           type="text"
                           inputmode="decimal"
                           autocomplete="off"
                           placeholder="0"
-                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
+                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none focus:border-[#2a2a2a]"
                           use:clampedNumericProp={{
                             kind: 'statValue',
                             getValue: () => draftStatById(statId)?.start_value ?? 0,
@@ -9585,30 +9740,76 @@ function getStatIcon(id: number): typeof Dna {
                           }}
                           onblur={() => void persistTrackedStatsNow()}
                         />
-                      </div>
-                      <div>
-                        <span class="text-zinc-500 block mb-0.5 leading-none">Unit</span>
+                      </label>
+                      <label class="block min-w-0">
+                        <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Unit</span>
                         <input
                           type="text"
                           autocomplete="off"
                           placeholder="KG"
-                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none uppercase"
+                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none uppercase focus:border-[#2a2a2a]"
                           use:clampedStatUnitProp={{
                             getValue: () => draftStatById(statId)?.unit ?? '',
                             setValue: (v) => { patchDraftStat(statId, { unit: v }); },
                           }}
                           onblur={() => void persistTrackedStatsNow()}
                         />
-                      </div>
-                      <div>
-                        <span class="text-zinc-500 block mb-0.5 leading-none">Target</span>
+                      </label>
+                    </div>
+
+                    <div
+                      class="relative grid grid-cols-2 w-full rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
+                      role="group"
+                      aria-label="Target enabled"
+                    >
+                      <div
+                        class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+                        style="transform: translateX({hasTarget ? 'calc(100% + 4px)' : '0'})"
+                      ></div>
+                      <button
+                        type="button"
+                        class="relative z-10 h-6 flex items-center justify-center text-[8px] font-black tracking-[0.1em] transition-colors {!hasTarget ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                        onclick={() => {
+                          patchDraftStat(statId, { has_target: false, target_value: null });
+                          void persistTrackedStatsNow();
+                        }}
+                      >OFF</button>
+                      <button
+                        type="button"
+                        class="relative z-10 h-6 flex items-center justify-center text-[8px] font-black tracking-[0.1em] transition-colors {hasTarget ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                        onclick={() => {
+                          const current = draftStatById(statId);
+                          const nextTarget =
+                            (current?.target_value ?? 0) > 0
+                              ? current?.target_value
+                              : (current?.start_value ?? 0) > 0
+                                ? current?.start_value
+                                : 1;
+                          patchDraftStat(statId, {
+                            has_target: true,
+                            target_value: nextTarget ?? 1,
+                          });
+                          void persistTrackedStatsNow();
+                        }}
+                      >ON</button>
+                    </div>
+
+                    <div class="min-w-0">
+                      <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Target</span>
+                      <div
+                        class="flex items-stretch h-7 rounded border overflow-hidden transition-colors {hasTarget
+                          ? 'border-[#1e1e1e] bg-black'
+                          : 'border-[#1a1a1a] bg-[#0a0a0a] opacity-70'}"
+                      >
                         <input
                           type="text"
                           inputmode="decimal"
                           autocomplete="off"
                           placeholder="—"
                           disabled={!hasTarget}
-                          class="prop-num-input w-full h-7 border text-center text-xs rounded outline-none transition-colors {hasTarget ? 'bg-black border-[#1e1e1e] text-white' : 'bg-[#0a0a0a] border-[#1a1a1a] text-zinc-600 cursor-not-allowed opacity-70'}"
+                          class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none outline-none {hasTarget
+                            ? 'text-white'
+                            : 'text-zinc-600 cursor-not-allowed'}"
                           use:clampedNumericProp={{
                             kind: 'statValue',
                             getValue: () => draftStatById(statId)?.target_value ?? 0,
@@ -9618,83 +9819,64 @@ function getStatIcon(id: number): typeof Dna {
                           }}
                           onblur={() => void persistTrackedStatsNow()}
                         />
-                      </div>
-                      <div class="flex items-end">
-                        <div
-                          class="relative grid grid-cols-2 w-full rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
-                          role="group"
-                          aria-label="Target enabled"
-                        >
-                          <div
-                            class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
-                            style="transform: translateX({hasTarget ? 'calc(100% + 4px)' : '0'})"
-                          ></div>
-                          <button
-                            type="button"
-                            class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.1em] transition-colors {!hasTarget ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
-                            onclick={() => {
-                              patchDraftStat(statId, { has_target: false, target_value: null });
-                              void persistTrackedStatsNow();
-                            }}
-                          >OFF</button>
-                          <button
-                            type="button"
-                            class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.1em] transition-colors {hasTarget ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
-                            onclick={() => {
-                              const current = draftStatById(statId);
-                              const nextTarget =
-                                (current?.target_value ?? 0) > 0
-                                  ? current?.target_value
-                                  : (current?.start_value ?? 0) > 0
-                                    ? current?.start_value
-                                    : 1;
-                              patchDraftStat(statId, {
-                                has_target: true,
-                                target_value: nextTarget ?? 1,
-                              });
-                              void persistTrackedStatsNow();
-                            }}
-                          >ON</button>
-                        </div>
-                      </div>
-
-                      <!-- New: target goal preference (UNDER = prefer <= target, OVER = prefer >= target) -->
-                      <div class="flex items-end">
-                        <div
-                          class="relative grid grid-cols-2 w-full rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
-                          role="group"
-                          aria-label="Target goal preference"
-                          style="opacity: {hasTarget ? 1 : 0.45}; pointer-events: {hasTarget ? 'auto' : 'none'}"
-                        >
-                          <div
-                            class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
-                            style="transform: translateX({prefersLower ? '0' : 'calc(100% + 4px)'})"
-                          ></div>
-                          <button
-                            type="button"
-                            class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.1em] transition-colors {prefersLower ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
-                            onclick={() => {
-                              patchDraftStat(statId, { target_prefers_lower: true });
-                              void persistTrackedStatsNow();
-                            }}
-                          >UNDER</button>
-                          <button
-                            type="button"
-                            class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.1em] transition-colors {!prefersLower ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
-                            onclick={() => {
-                              patchDraftStat(statId, { target_prefers_lower: false });
-                              void persistTrackedStatsNow();
-                            }}
-                          >OVER</button>
-                        </div>
+                        <span
+                          class="shrink-0 min-w-[2.25rem] max-w-[4rem] px-1.5 flex items-center justify-center border-l text-[10px] font-medium uppercase tabular-nums truncate {hasTarget
+                            ? 'border-[#1e1e1e] text-zinc-400'
+                            : 'border-[#1a1a1a] text-zinc-600'}"
+                          title={live.unit?.trim() || 'Unit from above'}
+                          aria-hidden="true"
+                        >{live.unit?.trim() || '—'}</span>
                       </div>
                     </div>
-                  {/if}
-                {/key}
-              {:else}
-                <div class="flex-1 min-h-0 flex items-center justify-center text-center px-1 text-[10px] leading-snug text-zinc-500 border border-dashed border-[#1e1e1e] rounded">Select a stat to edit.</div>
-              {/if}
-            </div>
+
+                    <div class="space-y-1 transition-opacity {hasTarget ? 'opacity-100' : 'opacity-40'}">
+                      <div
+                        class="relative grid grid-cols-2 w-full rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
+                        role="group"
+                        aria-label="Target goal preference"
+                        style="pointer-events: {hasTarget ? 'auto' : 'none'}"
+                      >
+                        <div
+                          class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+                          style="transform: translateX({prefersLower ? '0' : 'calc(100% + 4px)'})"
+                        ></div>
+                        <button
+                          type="button"
+                          class="relative z-10 h-6 flex items-center justify-center gap-0.5 text-[8px] font-black tracking-[0.06em] transition-colors {prefersLower ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                          onclick={() => {
+                            patchDraftStat(statId, { target_prefers_lower: true });
+                            void persistTrackedStatsNow();
+                          }}
+                        >
+                          <span class="opacity-70">≤</span> UNDER
+                        </button>
+                        <button
+                          type="button"
+                          class="relative z-10 h-6 flex items-center justify-center gap-0.5 text-[8px] font-black tracking-[0.06em] transition-colors {!prefersLower ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                          onclick={() => {
+                            patchDraftStat(statId, { target_prefers_lower: false });
+                            void persistTrackedStatsNow();
+                          }}
+                        >
+                          <span class="opacity-70">≥</span> OVER
+                        </button>
+                      </div>
+                      <p class="text-[9px] text-zinc-600 leading-snug">
+                        {#if prefersLower}
+                          Counts as success at or below the target.
+                        {:else}
+                          Counts as success at or above the target.
+                        {/if}
+                      </p>
+                    </div>
+                  </div>
+                {/if}
+              {/key}
+            {:else}
+              <div class="flex-1 min-h-0 flex items-center justify-center text-center px-2 py-4 text-[10px] leading-snug text-zinc-500 border border-dashed border-[#1e1e1e] rounded-lg">
+                Select a stat to edit.
+              </div>
+            {/if}
           </div>
         </div>
       </div>
@@ -9702,6 +9884,7 @@ function getStatIcon(id: number): typeof Dna {
 
   {:else if currentView === 'edit_template'}
     {@const templateEditorColor = getTemplateColor(draftTemplateColor)}
+    {@const TemplateEditorIcon = getItemIcon(draftTemplateIcon)}
     <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto no-scrollbar">
       <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
         <button
@@ -9729,24 +9912,49 @@ function getStatIcon(id: number): typeof Dna {
             onblur={() => persistTemplateNameNow()}
           />
         </div>
-        <button
-          type="button"
-          bind:this={templateColorBtnEl}
-          class="w-8 h-8 rounded bg-black border flex items-center justify-center relative"
-          style="border-color: {templateEditorColor}; transition: none;"
-          onclick={() => {
-            showTemplateColorPicker = !showTemplateColorPicker;
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            bind:this={templateIconBtnEl}
+            class="w-8 h-8 rounded bg-black border flex items-center justify-center"
+            style="border-color: {templateEditorColor}; color: {templateEditorColor}; transition: none;"
+            onclick={() => {
+              showTemplateIconPicker = !showTemplateIconPicker;
+              if (showTemplateIconPicker) showTemplateColorPicker = false;
+            }}
+            title="Pick template icon"
+          >
+            <TemplateEditorIcon class="size-4" strokeWidth={ITEM_ICON_STROKE} />
+          </button>
+          <button
+            type="button"
+            bind:this={templateColorBtnEl}
+            class="w-8 h-8 rounded bg-black border flex items-center justify-center relative"
+            style="border-color: {templateEditorColor}; transition: none;"
+            onclick={() => {
+              showTemplateColorPicker = !showTemplateColorPicker;
+              if (showTemplateColorPicker) showTemplateIconPicker = false;
+            }}
+            title="Pick template color"
+          >
+            <div class="w-5 h-5 rounded" style="background-color: {templateEditorColor}; transition: none;"></div>
+          </button>
+        </div>
+        <ItemIconPicker
+          bind:open={showTemplateIconPicker}
+          iconIndex={draftTemplateIcon}
+          accentColor={templateEditorColor}
+          anchorEl={templateIconBtnEl ?? null}
+          onChange={(idx) => {
+            draftTemplateIcon = clampItemIcon(idx);
+            void persistTemplateIconNow();
           }}
-          title="Pick template color"
-        >
-          <div class="w-5 h-5 rounded" style="background-color: {templateEditorColor}; transition: none;"></div>
-        </button>
+        />
         <TemplateColorPicker
           bind:open={showTemplateColorPicker}
           colorIndex={draftTemplateColor}
           anchorEl={templateColorBtnEl ?? null}
           onChange={(idx) => {
-            // Single write path so name border + swatch update together
             draftTemplateColor = clampTemplateColor(idx);
             void persistTemplateColorNow();
           }}
@@ -9762,11 +9970,10 @@ function getStatIcon(id: number): typeof Dna {
           <button type="button" class="h-8 px-3 bg-[#141414] border border-[#1e1e1e] text-xs font-bold rounded" onclick={() => enterRoutineBuilder()}>Assign or Create</button>
         </div>
       {:else}
-        <div class="space-y-1.5">
-        <!-- Exercises + properties: shared grid keeps headers, divider, and footers aligned -->
         <div class="builder-editor-grid">
-          <div class="col-start-1 row-start-1 h-5 flex items-center">
+          <div class="col-start-1 row-start-1 h-5 flex items-center justify-between gap-1 min-w-0">
             <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">EXERCISES</span>
+            <span class="text-[9px] tabular-nums text-zinc-600 leading-none shrink-0">{draftExercises.length}</span>
           </div>
           <div class="col-start-2 row-start-1 h-5 flex items-center border-l border-[#1e1e1e] pl-2">
             <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">PROPERTIES</span>
@@ -9775,7 +9982,7 @@ function getStatIcon(id: number): typeof Dna {
           <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
             <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0" role="list" bind:this={exerciseListBody} ondrop={handleExerciseDrop} ondragover={handleExerciseDragOver}>
               {#if draftExercises.length === 0}
-                <div class="text-center py-3 border border-dashed border-[#1e1e1e] rounded text-[10px] text-zinc-500">
+                <div class="text-center py-4 border border-dashed border-[#1e1e1e] rounded-lg text-[10px] text-zinc-500 leading-snug">
                   No exercises yet.<br />
                   {#if libraryExercisesAvailable.length > 0}
                     Tap NEW to create one, or LIBRARY to pick from exercises you've already made.
@@ -9788,7 +9995,8 @@ function getStatIcon(id: number): typeof Dna {
               {#each draftExercises as exercise, index (exercise.id)}
                 {@const isSelected = selectedExerciseId === exercise.id}
                 <div
-                  class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing"
+                  class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing [content-visibility:auto] [contain-intrinsic-size:auto_32px]"
+                  data-list-row
                   style="transform: translateY({dragShift(draggedIndex, dragOverIndex, index)}px); transition: transform 150ms ease; {draggedIndex === index ? 'opacity: 0.25;' : ''}"
                   draggable="true"
                   ondragstart={(e) => handleDragStart(e, index)}
@@ -9893,84 +10101,94 @@ function getStatIcon(id: number): typeof Dna {
               </div>
             </div>
 
-            <div
-              class="library-picker-panel"
-              class:library-picker-panel--open={showExerciseLibraryPicker && !libraryPickerClosing}
-            >
-              <div class="library-picker-panel__inner {(showExerciseLibraryPicker && !libraryPickerClosing) ? '' : 'pointer-events-none'}">
-                <div class="mt-1.5 rounded border border-[#1e1e1e] bg-[#0d0d0d] p-1.5 space-y-1.5 max-h-52 flex flex-col min-h-0">
-                  <div class="relative shrink-0">
-                    <Search class="size-3 absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
-                    <input
-                      type="search"
-                      autocomplete="off"
-                      spellcheck="false"
-                      placeholder=""
-                      class="w-full h-7 pl-7 pr-2 rounded border border-[#1e1e1e] bg-[#141414] text-xs text-zinc-200 outline-none focus:border-[#2a2a2a]"
-                      bind:value={librarySearchQuery}
-                      onclick={(e) => e.stopPropagation()}
-                    />
-                  </div>
-                  <div class="space-y-1 max-h-40 overflow-y-auto no-scrollbar min-h-0">
-                    {#if availableLibraryForPicker.length === 0}
-                      <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
-                        {exerciseLibrary.length === 0
-                          ? 'No saved exercises yet. Create one with NEW.'
-                          : 'All your exercises are already in this template.'}
-                      </p>
-                    {:else if filteredLibraryForPicker.length === 0}
-                      <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
-                        No exercises match “{librarySearchQuery.trim()}”.
-                      </p>
-                    {:else}
-                      {#each filteredLibraryForPicker as libraryEx (libraryEx.id)}
-                        {@const isReps = libraryEx.exercise_type === 'reps'}
-                        {@const isSelectedLib = selectedLibraryExerciseId === libraryEx.id}
-                        {@const summary = isReps
-                          ? `${libraryEx.target_sets || 0}×${libraryEx.target_reps || 0}`
-                          : `${libraryEx.target_sets || 0}× ${libraryEx.target_minutes || 0}m${String(libraryEx.target_seconds || 0).padStart(2, '0')}s`}
-                        {@const weight = isReps && libraryEx.current_weight != null ? ` · ${libraryEx.current_weight}kg` : ''}
-                        <div
-                          class="w-full h-7 min-w-0 px-1.5 rounded border text-xs transition flex items-center gap-1.5 cursor-pointer {isSelectedLib 
-                            ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-200' 
-                            : 'bg-[#141414] border-[#1e1e1e] text-zinc-500 hover:bg-[#1a1a1a] hover:border-[#2a2a2a] hover:text-zinc-400'}"
-                          onclick={() => selectLibraryExercise(libraryEx.id)}
-                          title={isSelectedLib ? '' : 'Select to move or delete'}
-                        >
-                          <div class="flex items-center gap-1.5 flex-1 min-w-0">
-                            {#if isReps}
-                              <Dumbbell class="size-3 shrink-0 text-zinc-400" />
-                            {:else}
-                              <Timer class="size-3 shrink-0 text-zinc-400" />
+            {#if showExerciseLibraryPicker || libraryPickerClosing}
+              <div
+                class="library-picker-panel"
+                class:library-picker-panel--open={showExerciseLibraryPicker && !libraryPickerClosing}
+              >
+                <div class="library-picker-panel__inner {(showExerciseLibraryPicker && !libraryPickerClosing) ? '' : 'pointer-events-none'}">
+                  <div class="mt-1.5 rounded border border-[#1e1e1e] bg-[#0d0d0d] p-1.5 space-y-1.5 max-h-52 flex flex-col min-h-0">
+                    <div class="relative shrink-0">
+                      <Search class="size-3 absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+                      <input
+                        type="text"
+                        inputmode="search"
+                        autocomplete="off"
+                        spellcheck="false"
+                        placeholder=""
+                        enterkeyhint="search"
+                        class="library-search-input w-full h-7 pl-7 pr-2 rounded border border-[#1e1e1e] bg-[#141414] text-xs text-zinc-200 outline-none focus:border-[#2a2a2a] caret-zinc-200"
+                        bind:value={librarySearchQuery}
+                        onclick={(e) => e.stopPropagation()}
+                      />
+                      {#if !librarySearchQuery}
+                        <span
+                          class="library-search-caret absolute left-7 top-1/2 -translate-y-1/2 w-px h-3.5 bg-zinc-300 pointer-events-none"
+                          aria-hidden="true"
+                        ></span>
+                      {/if}
+                    </div>
+                    <div class="space-y-1 max-h-40 overflow-y-auto no-scrollbar min-h-0">
+                      {#if availableLibraryForPicker.length === 0}
+                        <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
+                          {exerciseLibrary.length === 0
+                            ? 'No saved exercises yet. Create one with NEW.'
+                            : 'All your exercises are already in this template.'}
+                        </p>
+                      {:else if filteredLibraryForPicker.length === 0}
+                        <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
+                          No exercises match “{librarySearchQuery.trim()}”.
+                        </p>
+                      {:else}
+                        {#each filteredLibraryForPicker as libraryEx (libraryEx.id)}
+                          {@const isReps = libraryEx.exercise_type === 'reps'}
+                          {@const isSelectedLib = selectedLibraryExerciseId === libraryEx.id}
+                          {@const summary = isReps
+                            ? `${libraryEx.target_sets || 0}×${libraryEx.target_reps || 0}`
+                            : `${libraryEx.target_sets || 0}× ${libraryEx.target_minutes || 0}m${String(libraryEx.target_seconds || 0).padStart(2, '0')}s`}
+                          {@const weight = isReps && libraryEx.current_weight != null ? ` · ${libraryEx.current_weight}kg` : ''}
+                          <div
+                            class="w-full h-7 min-w-0 px-1.5 rounded border text-xs transition flex items-center gap-1.5 cursor-pointer {isSelectedLib 
+                              ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-200' 
+                              : 'bg-[#141414] border-[#1e1e1e] text-zinc-500 hover:bg-[#1a1a1a] hover:border-[#2a2a2a] hover:text-zinc-400'}"
+                            onclick={() => selectLibraryExercise(libraryEx.id)}
+                            title={isSelectedLib ? '' : 'Select to move or delete'}
+                          >
+                            <div class="flex items-center gap-1.5 flex-1 min-w-0">
+                              {#if isReps}
+                                <Dumbbell class="size-3 shrink-0 text-zinc-400" />
+                              {:else}
+                                <Timer class="size-3 shrink-0 text-zinc-400" />
+                              {/if}
+                              <span class="truncate leading-none text-left font-medium">{libraryEx.name}</span>
+                              <span class="ml-auto text-[10px] text-zinc-500 tabular-nums shrink-0">{summary}{weight}</span>
+                            </div>
+                            {#if isSelectedLib}
+                              <button
+                                type="button"
+                                class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-[#2a2a2a] bg-[#1e1e1e] text-zinc-400 hover:text-white hover:border-[#3a3a3a] transition-colors"
+                                onclick={(e) => { e.stopPropagation(); moveLibraryExerciseToTemplate(libraryEx); }}
+                                title="Move into this template"
+                              >
+                                <ChevronUp class="size-3 pointer-events-none" />
+                              </button>
+                              <button
+                                type="button"
+                                class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-red-900/70 bg-red-950/40 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
+                                onclick={(e) => { e.stopPropagation(); deleteLibraryExercise(libraryEx); }}
+                                title="Delete from library (removes from all templates)"
+                              >
+                                <Trash2 class="size-3 pointer-events-none" />
+                              </button>
                             {/if}
-                            <span class="truncate leading-none text-left font-medium">{libraryEx.name}</span>
-                            <span class="ml-auto text-[10px] text-zinc-500 tabular-nums shrink-0">{summary}{weight}</span>
                           </div>
-                          {#if isSelectedLib}
-                            <button
-                              type="button"
-                              class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-[#2a2a2a] bg-[#1e1e1e] text-zinc-400 hover:text-white hover:border-[#3a3a3a] transition-colors"
-                              onclick={(e) => { e.stopPropagation(); moveLibraryExerciseToTemplate(libraryEx); }}
-                              title="Move into this template"
-                            >
-                              <ChevronUp class="size-3 pointer-events-none" />
-                            </button>
-                            <button
-                              type="button"
-                              class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-red-900/70 bg-red-950/40 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
-                              onclick={(e) => { e.stopPropagation(); deleteLibraryExercise(libraryEx); }}
-                              title="Delete from library (removes from all templates)"
-                            >
-                              <Trash2 class="size-3 pointer-events-none" />
-                            </button>
-                          {/if}
-                        </div>
-                      {/each}
-                    {/if}
+                        {/each}
+                      {/if}
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            {/if}
           </div>
 
           <div class="col-start-2 row-start-2 flex flex-col min-h-0 self-stretch border-l border-[#1e1e1e] pl-2">
@@ -9978,226 +10196,255 @@ function getStatIcon(id: number): typeof Dna {
               {#if selectedExerciseId}
                 {@const ex = draftExercises.find((e: any) => e.id === selectedExerciseId)}
                 {#if ex}
-                  <div class="space-y-2">
-                  <div
-                    class="relative grid grid-cols-2 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
-                    role="group"
-                    aria-label="Exercise type">
+                  {@const isReps = ex.exercise_type === 'reps'}
+                  <!-- Fixed structure both modes: type + work + load/progress + rest -->
+                  <div class="rounded-lg border border-[#1e1e1e] bg-[#0d0d0d] p-2 flex flex-col gap-2">
                     <div
-                      class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
-                      style="transform: translateX({ex.exercise_type === 'time' ? 'calc(100% + 4px)' : '0'})"
-                    ></div>
-                    <button
-                      type="button"
-                      class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.12em] transition-colors {ex.exercise_type === 'reps' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
-                      onclick={() => switchDraftExerciseType(ex, 'reps')}
-                    >REPS</button>
-                    <button
-                      type="button"
-                      class="relative z-10 h-7 flex items-center justify-center text-[9px] font-black tracking-[0.12em] transition-colors {ex.exercise_type === 'time' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
-                      onclick={() => switchDraftExerciseType(ex, 'time')}
-                    >TIME</button>
-                  </div>
+                      class="relative grid grid-cols-2 w-full rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
+                      role="group"
+                      aria-label="Exercise type"
+                    >
+                      <div
+                        class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+                        style="transform: translateX({isReps ? '0' : 'calc(100% + 4px)'})"
+                      ></div>
+                      <button
+                        type="button"
+                        class="relative z-10 h-7 flex items-center justify-center gap-1 text-[8px] font-black tracking-[0.1em] transition-colors {isReps ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                        onclick={() => switchDraftExerciseType(ex, 'reps')}
+                      >
+                        <Dumbbell class="size-3" strokeWidth={ITEM_ICON_STROKE} />
+                        REPS
+                      </button>
+                      <button
+                        type="button"
+                        class="relative z-10 h-7 flex items-center justify-center gap-1 text-[8px] font-black tracking-[0.1em] transition-colors {!isReps ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                        onclick={() => switchDraftExerciseType(ex, 'time')}
+                      >
+                        <Timer class="size-3" strokeWidth={ITEM_ICON_STROKE} />
+                        TIME
+                      </button>
+                    </div>
 
-                  {#if ex.exercise_type === 'reps'}
-                    <div class="grid grid-cols-2 gap-1 text-[9px]">
-                      <div>
-                        <span class="text-zinc-500 block mb-0.5 leading-none">Sets</span>
-                        <input 
-                          type="text" 
-                          inputmode="numeric" 
-                          autocomplete="off" 
-                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
-                          value={ex.target_sets > 0 ? ex.target_sets : ''}
-                          oninput={(e) => {
-                            const raw = (e.currentTarget as HTMLInputElement).value;
-                            const { value, display } = clampSetsFieldInput(raw);
-                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_sets: value } : ee);
-                            const input = e.currentTarget as HTMLInputElement;
-                            if (input.value !== display) input.value = display;
-                          }}
-                          onblur={() => void persistTemplateExercisesNow()} 
-                        />
-                      </div>
-                      <div>
-                        <span class="text-zinc-500 block mb-0.5 leading-none">Reps</span>
-                        <input 
-                          type="text" 
-                          inputmode="numeric" 
-                          autocomplete="off" 
-                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
-                          value={ex.target_reps > 0 ? ex.target_reps : ''}
-                          oninput={(e) => {
-                            const raw = (e.currentTarget as HTMLInputElement).value;
-                            const { value, display } = clampRepsFieldInput(raw);
-                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_reps: value } : ee);
-                            const input = e.currentTarget as HTMLInputElement;
-                            if (input.value !== display) input.value = display;
-                          }}
-                          onblur={() => void persistTemplateExercisesNow()} 
-                        />
-                      </div>
-                      <div>
-                        <span class="text-zinc-500 block mb-0.5 leading-none">Base kg</span>
-                        <input 
-                          type="text" 
-                          inputmode="decimal" 
-                          autocomplete="off" 
-                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
-                          value={ex.current_weight ?? 0}
-                          oninput={(e) => {
-                            const raw = (e.currentTarget as HTMLInputElement).value;
-                            const { value, display } = clampBaseKgFieldInput(raw);
-                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, current_weight: value } : ee);
-                            const input = e.currentTarget as HTMLInputElement;
-                            if (input.value !== display) input.value = display;
-                          }}
-                          onblur={() => void persistTemplateExercisesNow()} 
-                        />
-                      </div>
-                      <div>
-                        <span class="text-zinc-500 block mb-0.5 leading-none">+ kg</span>
-                        <input 
-                          type="text" 
-                          inputmode="decimal" 
-                          autocomplete="off" 
-                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
-                          value={ex.increment ?? 0}
-                          oninput={(e) => {
-                            const raw = (e.currentTarget as HTMLInputElement).value;
-                            const { value, display } = clampIncrementKgFieldInput(raw);
-                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, increment: value } : ee);
-                            const input = e.currentTarget as HTMLInputElement;
-                            if (input.value !== display) input.value = display;
-                          }}
-                          onblur={() => void persistTemplateExercisesNow()} 
-                        />
+                    <!-- Work -->
+                    <div class="space-y-1">
+                      <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 font-semibold leading-none">Work</div>
+                      <div class="grid grid-cols-2 gap-1.5">
+                        <label class="block min-w-0">
+                          <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Sets</span>
+                          <input
+                            type="text"
+                            inputmode="numeric"
+                            autocomplete="off"
+                            class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none focus:border-[#2a2a2a]"
+                            value={ex.target_sets > 0 ? ex.target_sets : ''}
+                            oninput={(e) => {
+                              const raw = (e.currentTarget as HTMLInputElement).value;
+                              const { value, display } = clampSetsFieldInput(raw);
+                              draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_sets: value } : ee);
+                              const input = e.currentTarget as HTMLInputElement;
+                              if (input.value !== display) input.value = display;
+                            }}
+                            onblur={() => void persistTemplateExercisesNow()}
+                          />
+                        </label>
+                        {#if isReps}
+                          <label class="block min-w-0">
+                            <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Reps</span>
+                            <input
+                              type="text"
+                              inputmode="numeric"
+                              autocomplete="off"
+                              class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none focus:border-[#2a2a2a]"
+                              value={ex.target_reps > 0 ? ex.target_reps : ''}
+                              oninput={(e) => {
+                                const raw = (e.currentTarget as HTMLInputElement).value;
+                                const { value, display } = clampRepsFieldInput(raw);
+                                draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_reps: value } : ee);
+                                const input = e.currentTarget as HTMLInputElement;
+                                if (input.value !== display) input.value = display;
+                              }}
+                              onblur={() => void persistTemplateExercisesNow()}
+                            />
+                          </label>
+                        {:else}
+                          <div class="min-w-0">
+                            <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Min</span>
+                            <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                              <input
+                                type="text"
+                                inputmode="numeric"
+                                autocomplete="off"
+                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                                value={ex.target_minutes ?? 0}
+                                oninput={(e) => {
+                                  const raw = (e.currentTarget as HTMLInputElement).value;
+                                  const { value, display } = clampMinsFieldInput(raw);
+                                  draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_minutes: value } : ee);
+                                  const input = e.currentTarget as HTMLInputElement;
+                                  if (input.value !== display) input.value = display;
+                                }}
+                                onblur={() => void persistTemplateExercisesNow()}
+                              />
+                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">m</span>
+                            </div>
+                          </div>
+                        {/if}
                       </div>
                     </div>
-                  {:else}
-                    <div class="grid grid-cols-2 gap-1 text-[9px]">
-                      <div>
-                        <span class="text-zinc-500 block mb-0.5 leading-none">Sets</span>
-                        <input 
-                          type="text" 
-                          inputmode="numeric" 
-                          autocomplete="off" 
-                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
-                          value={ex.target_sets > 0 ? ex.target_sets : ''}
-                          oninput={(e) => {
-                            const raw = (e.currentTarget as HTMLInputElement).value;
-                            const { value, display } = clampSetsFieldInput(raw);
-                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_sets: value } : ee);
-                            const input = e.currentTarget as HTMLInputElement;
-                            if (input.value !== display) input.value = display;
-                          }}
-                          onblur={() => void persistTemplateExercisesNow()} 
-                        />
-                      </div>
-                      <div>
-                        <span class="text-zinc-500 block mb-0.5 leading-none">Min</span>
-                        <input 
-                          type="text" 
-                          inputmode="numeric" 
-                          autocomplete="off" 
-                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
-                          value={ex.target_minutes ?? 0}
-                          oninput={(e) => {
-                            const raw = (e.currentTarget as HTMLInputElement).value;
-                            const { value, display } = clampMinsFieldInput(raw);
-                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_minutes: value } : ee);
-                            const input = e.currentTarget as HTMLInputElement;
-                            if (input.value !== display) input.value = display;
-                          }}
-                          onblur={() => void persistTemplateExercisesNow()} 
-                        />
-                      </div>
-                      <div>
-                        <span class="text-zinc-500 block mb-0.5 leading-none">Sec</span>
-                        <input 
-                          type="text" 
-                          inputmode="numeric" 
-                          autocomplete="off" 
-                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
-                          value={ex.target_seconds ?? 0}
-                          oninput={(e) => {
-                            const raw = (e.currentTarget as HTMLInputElement).value;
-                            const { value, display } = clampSecsFieldInput(raw);
-                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_seconds: value } : ee);
-                            const input = e.currentTarget as HTMLInputElement;
-                            if (input.value !== display) input.value = display;
-                          }}
-                          onblur={() => void persistTemplateExercisesNow()} 
-                        />
-                      </div>
-                      <div>
-                        <span class="text-zinc-500 block mb-0.5 leading-none">+ s</span>
-                        <input 
-                          type="text" 
-                          inputmode="numeric" 
-                          autocomplete="off" 
-                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
-                          value={ex.increment ?? 0}
-                          oninput={(e) => {
-                            const raw = (e.currentTarget as HTMLInputElement).value;
-                            const { value, display } = clampIncrementSecFieldInput(raw);
-                            draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, increment: value } : ee);
-                            const input = e.currentTarget as HTMLInputElement;
-                            if (input.value !== display) input.value = display;
-                          }}
-                          onblur={() => void persistTemplateExercisesNow()} 
-                        />
-                      </div>
-                    </div>
-                  {/if}
 
-                  <!-- Rest time (common to reps and time exercises) -->
-                  <div class="grid grid-cols-2 gap-1 text-[9px] mt-1 pt-1 border-t border-[#1e1e1e]">
-                    <div>
-                      <span class="text-zinc-500 block mb-0.5 leading-none">Rest Min</span>
-                      <input 
-                        type="text" 
-                        inputmode="numeric" 
-                        autocomplete="off" 
-                        class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
-                        value={ex.rest_minutes ?? 0}
-                        oninput={(e) => {
-                          const raw = (e.currentTarget as HTMLInputElement).value;
-                          const { value, display } = clampRestMinsFieldInput(raw);
-                          draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, rest_minutes: value } : ee);
-                          const input = e.currentTarget as HTMLInputElement;
-                          if (input.value !== display) input.value = display;
-                        }}
-                        onblur={() => void persistTemplateExercisesNow()} 
-                      />
+                    <!-- Load / duration progress — fixed 2 fields both modes -->
+                    <div class="space-y-1">
+                      <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 font-semibold leading-none">{isReps ? 'Load' : 'Duration'}</div>
+                      <div class="grid grid-cols-2 gap-1.5">
+                        {#if isReps}
+                          <div class="min-w-0">
+                            <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Base</span>
+                            <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                              <input
+                                type="text"
+                                inputmode="decimal"
+                                autocomplete="off"
+                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                                value={ex.current_weight ?? 0}
+                                oninput={(e) => {
+                                  const raw = (e.currentTarget as HTMLInputElement).value;
+                                  const { value, display } = clampBaseKgFieldInput(raw);
+                                  draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, current_weight: value } : ee);
+                                  const input = e.currentTarget as HTMLInputElement;
+                                  if (input.value !== display) input.value = display;
+                                }}
+                                onblur={() => void persistTemplateExercisesNow()}
+                              />
+                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">kg</span>
+                            </div>
+                          </div>
+                          <div class="min-w-0">
+                            <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Progress</span>
+                            <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                              <input
+                                type="text"
+                                inputmode="decimal"
+                                autocomplete="off"
+                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                                value={ex.increment ?? 0}
+                                oninput={(e) => {
+                                  const raw = (e.currentTarget as HTMLInputElement).value;
+                                  const { value, display } = clampIncrementKgFieldInput(raw);
+                                  draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, increment: value } : ee);
+                                  const input = e.currentTarget as HTMLInputElement;
+                                  if (input.value !== display) input.value = display;
+                                }}
+                                onblur={() => void persistTemplateExercisesNow()}
+                              />
+                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">kg</span>
+                            </div>
+                          </div>
+                        {:else}
+                          <div class="min-w-0">
+                            <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Sec</span>
+                            <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                              <input
+                                type="text"
+                                inputmode="numeric"
+                                autocomplete="off"
+                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                                value={ex.target_seconds ?? 0}
+                                oninput={(e) => {
+                                  const raw = (e.currentTarget as HTMLInputElement).value;
+                                  const { value, display } = clampSecsFieldInput(raw);
+                                  draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, target_seconds: value } : ee);
+                                  const input = e.currentTarget as HTMLInputElement;
+                                  if (input.value !== display) input.value = display;
+                                }}
+                                onblur={() => void persistTemplateExercisesNow()}
+                              />
+                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">s</span>
+                            </div>
+                          </div>
+                          <div class="min-w-0">
+                            <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Progress</span>
+                            <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                              <input
+                                type="text"
+                                inputmode="numeric"
+                                autocomplete="off"
+                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                                value={ex.increment ?? 0}
+                                oninput={(e) => {
+                                  const raw = (e.currentTarget as HTMLInputElement).value;
+                                  const { value, display } = clampIncrementSecFieldInput(raw);
+                                  draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, increment: value } : ee);
+                                  const input = e.currentTarget as HTMLInputElement;
+                                  if (input.value !== display) input.value = display;
+                                }}
+                                onblur={() => void persistTemplateExercisesNow()}
+                              />
+                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">s</span>
+                            </div>
+                          </div>
+                        {/if}
+                      </div>
                     </div>
-                    <div>
-                      <span class="text-zinc-500 block mb-0.5 leading-none">Rest Sec</span>
-                      <input 
-                        type="text" 
-                        inputmode="numeric" 
-                        autocomplete="off" 
-                        class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none" 
-                        value={ex.rest_seconds ?? 0}
-                        oninput={(e) => {
-                          const raw = (e.currentTarget as HTMLInputElement).value;
-                          const { value, display } = clampRestSecsFieldInput(raw);
-                          draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, rest_seconds: value } : ee);
-                          const input = e.currentTarget as HTMLInputElement;
-                          if (input.value !== display) input.value = display;
-                        }}
-                        onblur={() => void persistTemplateExercisesNow()} 
-                      />
+
+                    <!-- Rest -->
+                    <div class="space-y-1 pt-0.5 border-t border-[#1e1e1e]">
+                      <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 font-semibold leading-none">Rest</div>
+                      <div class="grid grid-cols-2 gap-1.5">
+                        <div class="min-w-0">
+                          <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Min</span>
+                          <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                            <input
+                              type="text"
+                              inputmode="numeric"
+                              autocomplete="off"
+                              class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                              value={ex.rest_minutes ?? 0}
+                              oninput={(e) => {
+                                const raw = (e.currentTarget as HTMLInputElement).value;
+                                const { value, display } = clampRestMinsFieldInput(raw);
+                                draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, rest_minutes: value } : ee);
+                                const input = e.currentTarget as HTMLInputElement;
+                                if (input.value !== display) input.value = display;
+                              }}
+                              onblur={() => void persistTemplateExercisesNow()}
+                            />
+                            <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">m</span>
+                          </div>
+                        </div>
+                        <div class="min-w-0">
+                          <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Sec</span>
+                          <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                            <input
+                              type="text"
+                              inputmode="numeric"
+                              autocomplete="off"
+                              class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                              value={ex.rest_seconds ?? 0}
+                              oninput={(e) => {
+                                const raw = (e.currentTarget as HTMLInputElement).value;
+                                const { value, display } = clampRestSecsFieldInput(raw);
+                                draftExercises = draftExercises.map((ee: any) => ee.id === ex.id ? { ...ee, rest_seconds: value } : ee);
+                                const input = e.currentTarget as HTMLInputElement;
+                                if (input.value !== display) input.value = display;
+                              }}
+                              onblur={() => void persistTemplateExercisesNow()}
+                            />
+                            <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">s</span>
+                          </div>
+                        </div>
+                      </div>
+                      <p class="text-[9px] text-zinc-600 leading-snug">Between sets during the workout.</p>
                     </div>
-                  </div>
                   </div>
                 {/if}
               {:else}
-                <div class="flex-1 min-h-0 flex items-center justify-center text-center px-1 text-[9px] leading-snug text-zinc-500 border border-dashed border-[#1e1e1e] rounded">Select an exercise to edit.</div>
+                <div class="flex-1 min-h-0 flex items-center justify-center text-center px-2 py-4 text-[10px] leading-snug text-zinc-500 border border-dashed border-[#1e1e1e] rounded-lg">
+                  Select an exercise to edit.
+                </div>
               {/if}
             </div>
           </div>
-        </div>
         </div>
       {/if}
     </div>
@@ -10207,8 +10454,8 @@ function getStatIcon(id: number): typeof Dna {
         onBack={closeRoutinesMenu}
         onEditRoutine={handleEditRoutineFromMenu}
         onViewRoutine={handleViewRoutineFromMenu}
-        onDownload={(id) => void exportRoutineAsCsv(id)}
-        onImport={(file) => importRoutineFromFile(file)}
+        onDownload={(id) => void exportRoutineFile(id)}
+        onImported={(id) => void onRoutineImported(id)}
         onActivate={onRoutineActivate}
         onListChange={handleRoutineListChange}
         currentUserId={currentUser?.id ?? ''}

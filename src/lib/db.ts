@@ -2074,14 +2074,30 @@ export const db = {
 		if (error) throw error;
 
 		if (routineId) {
-			// Sync the schedule table with the active routine's weekly plan
-			const { data: plan, error: planErr } = await supabase
+			let { data: plan, error: planErr } = await supabase
 				.from("routine_schedules")
 				.select("day_of_week, template_id")
 				.eq("routine_id", routineId);
 			if (planErr) throw planErr;
 
-			// Replace current schedule entries with this routine's plan
+			if (!plan || plan.length === 0) {
+				// Routine has no saved schedule — derive from current schedule table
+				const { data: currentSched, error: curErr } = await supabase
+					.from("schedule")
+					.select("day_of_week, template_id")
+					.eq("user_id", uid);
+				if (curErr) throw curErr;
+				const allDays: Array<{ day_of_week: number; template_id: string | null }> = [];
+				for (let dow = 0; dow < 7; dow++) {
+					const row = (currentSched ?? []).find((s) => s.day_of_week === dow);
+					allDays.push({ day_of_week: dow, template_id: row?.template_id ?? null });
+				}
+				await supabase.from("routine_schedules").insert(
+					allDays.map((s) => ({ routine_id: routineId, day_of_week: s.day_of_week, template_id: s.template_id })),
+				);
+				plan = allDays;
+			}
+
 			await supabase.from("schedule").delete().eq("user_id", uid);
 			if (plan && plan.length > 0) {
 				const { error: insertErr } = await supabase.from("schedule").insert(
@@ -2105,28 +2121,32 @@ export const db = {
 		return (data ?? []) as RoutineSchedule[];
 	},
 
-	/** Save weekly assignments to a routine. Replaces existing routine_schedules. */
+	/** Save weekly assignments to a routine. Always stores all 7 days (null for unassigned). */
 	async saveRoutineSchedule(
 		routineId: string,
 		schedule: Array<{ day_of_week: number; template_id: string | null }>,
 	): Promise<void> {
+		const byDay = new Map<number, string | null>();
+		for (const s of schedule) {
+			byDay.set(s.day_of_week, s.template_id);
+		}
+		const allDays: Array<{ routine_id: string; day_of_week: number; template_id: string | null }> = [];
+		for (let dow = 0; dow < 7; dow++) {
+			allDays.push({
+				routine_id: routineId,
+				day_of_week: dow,
+				template_id: byDay.has(dow) ? byDay.get(dow)! : null,
+			});
+		}
 		const { error: delErr } = await supabase
 			.from("routine_schedules")
 			.delete()
 			.eq("routine_id", routineId);
 		if (delErr) throw delErr;
-		if (schedule.length > 0) {
-			const { error: insErr } = await supabase
-				.from("routine_schedules")
-				.insert(
-					schedule.map((s) => ({
-						routine_id: routineId,
-						day_of_week: s.day_of_week,
-						template_id: s.template_id,
-					})),
-				);
-			if (insErr) throw insErr;
-		}
+		const { error: insErr } = await supabase
+			.from("routine_schedules")
+			.insert(allDays);
+		if (insErr) throw insErr;
 	},
 
 	/** Persist reordered display_orders for the current user's routines. */
@@ -2252,10 +2272,10 @@ export const db = {
 	 *
 	 * Design decision: always creates fresh copies of exercises (no dedup by name).
 	 */
-	async copyRoutine(sourceRoutineId: string): Promise<Routine> {
+	async copyRoutine(sourceRoutineId: string): Promise<Routine & { source_name: string; source_username: string }> {
 		const uid = await requireUserId();
 
-		// 1. Get the source routine
+		// 1. Get the source routine + owner username
 		const { data: srcRoutine, error: routineErr } = await supabase
 			.from("routines")
 			.select("id, user_id, name")
@@ -2263,6 +2283,13 @@ export const db = {
 			.single();
 		if (routineErr) throw routineErr;
 		const src = srcRoutine as { id: string; user_id: string; name: string };
+
+		const { data: ownerRow } = await supabase
+			.from("usernames")
+			.select("username")
+			.eq("user_id", src.user_id)
+			.maybeSingle();
+		const srcUsername = (ownerRow?.username as string) ?? 'unknown';
 
 		// 2. Get the source schedule
 		const { data: srcSched, error: schedErr } = await supabase
@@ -2373,7 +2400,7 @@ export const db = {
 		}
 
 		// 5. Create the new routine
-		const cleanName = `${src.name} (copy)`;
+		const cleanName = `${src.name.toUpperCase()} - ${srcUsername.toUpperCase()}`;
 		const { data: newRoutine, error: newRoutineErr } = await supabase
 			.from("routines")
 			.insert({ user_id: uid, name: cleanName })
@@ -2398,6 +2425,6 @@ export const db = {
 			if (insSchedErr) throw insSchedErr;
 		}
 
-		return newRoutine as Routine;
+		return { ...newRoutine, source_name: src.name, source_username: srcUsername } as Routine & { source_name: string; source_username: string };
 	},
 };

@@ -2998,14 +2998,16 @@ function getStatIcon(id: number): typeof Dna {
   function closeRoutinesMenu() {
     templateError = null;
     templateErrorFading = false;
+    const byDay = new Map<number, string | null>();
+    for (const s of schedule) byDay.set(s.day_of_week, s.template_id);
     const newAssignments: Record<number, string | null> = {};
-    for (const s of schedule) {
-      const tid = s.template_id ?? null;
+    for (let dow = 0; dow < 7; dow++) {
+      const tid = byDay.has(dow) ? byDay.get(dow)! : null;
       if (tid) {
         const tpl = templates.find((t) => t.id === tid);
-        newAssignments[s.day_of_week] = isTemplateAssignable(tpl) ? tid : null;
+        newAssignments[dow] = isTemplateAssignable(tpl) ? tid : null;
       } else {
-        newAssignments[s.day_of_week] = null;
+        newAssignments[dow] = null;
       }
     }
     builderAssignments = newAssignments;
@@ -3016,23 +3018,23 @@ function getStatIcon(id: number): typeof Dna {
   async function onRoutineActivate(routineId: string) {
     try {
       const plan = await db.getRoutineSchedule(routineId);
-      const newSchedule = plan.map((s: { day_of_week: number; template_id: string | null }) => ({
-        user_id: currentUser?.id ?? '',
-        day_of_week: s.day_of_week,
-        template_id: s.template_id,
-        updated_at: new Date().toISOString(),
-      }));
-      schedule = newSchedule;
+      const byDay = new Map<number, string | null>();
+      for (const s of plan) byDay.set(s.day_of_week, s.template_id);
+      const newSchedule: Array<{ user_id: string; day_of_week: number; template_id: string | null; updated_at: string }> = [];
       const newAssignments: Record<number, string | null> = {};
-      for (const s of newSchedule) {
-        const tid = s.template_id ?? null;
+      const uid = currentUser?.id ?? '';
+      const now = new Date().toISOString();
+      for (let dow = 0; dow < 7; dow++) {
+        const tid = byDay.has(dow) ? byDay.get(dow)! : null;
+        newSchedule.push({ user_id: uid, day_of_week: dow, template_id: tid, updated_at: now });
         if (tid) {
           const tpl = templates.find((t) => t.id === tid);
-          newAssignments[s.day_of_week] = isTemplateAssignable(tpl) ? tid : null;
+          newAssignments[dow] = isTemplateAssignable(tpl) ? tid : null;
         } else {
-          newAssignments[s.day_of_week] = null;
+          newAssignments[dow] = null;
         }
       }
+      schedule = newSchedule;
       builderAssignments = newAssignments;
     } catch (e) {
       console.error('Failed to update editor after routine activation', e);

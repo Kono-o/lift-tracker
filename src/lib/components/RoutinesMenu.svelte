@@ -298,8 +298,9 @@
     const optimistic: Routine = { id: 'temp-' + Date.now(), user_id: '', name: 'COPYING…', created_at: '', template_count: 0 };
     myRoutines = [...myRoutines, optimistic];
     try {
-      const newRoutine = await db.copyRoutine(routineId);
-      myRoutines = myRoutines.map((x) => x.id === optimistic.id ? newRoutine : x);
+      const result = await db.copyRoutine(routineId) as Routine & { source_name: string; source_username: string };
+      myRoutines = myRoutines.map((x) => x.id === optimistic.id ? result : x);
+      activateRoutine(result.id);
     } catch (e) {
       myRoutines = myRoutines.filter((x) => x.id !== optimistic.id);
       errorMsg = 'Failed to copy routine';

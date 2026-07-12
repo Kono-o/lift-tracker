@@ -226,6 +226,7 @@
 
   async function deleteRoutine(id: string) {
     if (myRoutines.length <= 1) return;
+    errorMsg = null;
     const idx = myRoutines.findIndex((r) => r.id === id);
     const deleted = myRoutines.filter((r) => r.id === id);
     myRoutines = myRoutines.filter((r) => r.id !== id);

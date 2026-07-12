@@ -1257,15 +1257,17 @@ export const db = {
 		 APP LOAD
 		 ================================================== */
 
-	async getAppData() {
+	async getAppData(userId?: string | null) {
+		const templatesQuery = supabase
+			.from("templates")
+			.select("id, user_id, name, color, display_order")
+			.order("display_order")
+			.order("created_at");
+		if (userId) templatesQuery.eq("user_id", userId);
 		const [scheduleRes, templatesRes, libraryRes, linksRes, todayRes] =
 			await Promise.all([
 				supabase.from("schedule").select("*").order("day_of_week"),
-				supabase
-					.from("templates")
-					.select("id, user_id, name, color, display_order")
-					.order("display_order")
-					.order("created_at"),
+				templatesQuery,
 				supabase.from("exercises").select("id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, created_at").order("created_at"),
 				supabase
 					.from("template_exercises")

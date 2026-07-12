@@ -3823,7 +3823,7 @@ function getStatIcon(id: number): typeof Dna {
 				bootSections = buildAuthBootSections(currentUser, 'syncing');
 			}
 			const [data, recentLogs, stats, snapshots] = await Promise.all([
-				db.getAppData(),
+				db.getAppData(currentUser?.id),
 				db.getRecentHistory(21).catch((e) => {
 					console.error('Recent history fetch failed', e);
 					return [] as WorkoutHistory[];

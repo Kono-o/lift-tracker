@@ -3697,6 +3697,15 @@ const getStatIcon = getItemIcon;
     return 'ALL';
   }
 
+  /** Whether a logged value is on the success side of the goal (UNDER ≤ / OVER ≥). */
+  function statValueMeetsTarget(
+    value: number,
+    target: number,
+    prefersLower: boolean,
+  ): boolean {
+    return prefersLower ? value <= target : value >= target;
+  }
+
   function setStatTodayInputDraft(statId: string, value: number) {
     const logDate = REAL_TODAY_STR;
     const prev = statLogs[statId] ?? {};
@@ -9691,17 +9700,18 @@ const getStatIcon = getItemIcon;
                     {/if}
                   </div>
                 </div>
-                <div class="shrink-0 flex items-center gap-1.5" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
-                  {#if stat.unit}
-                    <span class="text-[9px] uppercase tracking-wide text-zinc-600 leading-none hidden sm:inline">{stat.unit}</span>
-                  {/if}
+                <div
+                  class="stats-card__value-wrap shrink-0 flex items-stretch h-8 rounded-md border border-[#1e1e1e] bg-black overflow-hidden"
+                  style={todayVal > 0 ? `border-color: color-mix(in srgb, ${statHex} 55%, #1e1e1e);` : undefined}
+                  onclick={(e) => e.stopPropagation()}
+                  onkeydown={(e) => e.stopPropagation()}
+                >
                   <input
                     type="text"
                     inputmode="decimal"
                     autocomplete="off"
                     placeholder={String(stat.start_value || 0)}
-                    class="prop-num-input stats-card__value w-16 h-8 bg-black border border-[#1e1e1e] text-center text-sm font-medium text-white rounded-md outline-none focus:border-zinc-500 tabular-nums"
-                    style={todayVal > 0 ? `border-color: color-mix(in srgb, ${statHex} 55%, #1e1e1e);` : undefined}
+                    class="prop-num-input stats-card__value w-14 h-full bg-transparent border-0 text-center text-sm font-medium text-white outline-none tabular-nums"
                     use:clampedNumericProp={{
                       kind: 'statLog',
                       getValue: () => {
@@ -9732,6 +9742,10 @@ const getStatIcon = getItemIcon;
                     onclick={(e) => e.stopPropagation()}
                     aria-label={`Today value for ${stat.name}`}
                   />
+                  <span
+                    class="stats-card__unit shrink-0 min-w-[1.75rem] max-w-[3.25rem] px-1 flex items-center justify-center border-l border-[#1e1e1e] text-[9px] font-medium uppercase tracking-wide text-zinc-500 leading-none truncate"
+                    title={stat.unit?.trim() || 'No unit set — edit in STAT EDITOR'}
+                  >{stat.unit?.trim() || '—'}</span>
                 </div>
               </div>
 
@@ -9752,6 +9766,7 @@ const getStatIcon = getItemIcon;
                 {@const rawMin = hasData ? Math.min(...values) : 0}
                 {@const rawMax = hasData ? Math.max(...values) : 0}
                 {@const targetVal = stat.has_target && stat.target_value != null ? stat.target_value : null}
+                {@const prefersLower = stat.target_prefers_lower ?? true}
                 {@const minVal = hasData ? (targetVal !== null ? Math.min(rawMin, targetVal) : rawMin) : 0}
                 {@const maxVal = hasData ? (targetVal !== null ? Math.max(rawMax, targetVal) : rawMax) : 1}
                 {@const range = maxVal - minVal || 1}
@@ -9820,9 +9835,10 @@ const getStatIcon = getItemIcon;
                           if (e.key === 'Escape') { statEditEntry = REAL_TODAY_STR; }
                         }}
                       />
-                      {#if stat.unit}
-                        <span class="pr-2 text-[9px] uppercase tracking-wide text-zinc-600 shrink-0">{stat.unit}</span>
-                      {/if}
+                      <span
+                        class="shrink-0 min-w-[2rem] max-w-[3.5rem] px-1.5 flex items-center justify-center border-l border-[#1e1e1e] text-[9px] font-medium uppercase tracking-wide text-zinc-500 leading-none truncate"
+                        title={stat.unit?.trim() || 'No unit set'}
+                      >{stat.unit?.trim() || '—'}</span>
                       <button
                         type="button"
                         class="w-8 h-full shrink-0 flex items-center justify-center border-l border-[#1e1e1e] text-zinc-500 hover:text-red-400 hover:bg-[#120808] transition-colors"
@@ -9895,7 +9911,7 @@ const getStatIcon = getItemIcon;
 
                         {#if targetY !== null}
                           <line x1={padL} y1={targetY} x2={padL + plotW} y2={targetY} stroke="#4ade80" stroke-width="1" stroke-dasharray="4 4" opacity="0.55" />
-                          <text x={padL + plotW - 2} y={targetY - 4} text-anchor="end" fill="#4ade80" font-size="9" opacity="0.8">GOAL</text>
+                          <text x={padL + plotW - 2} y={targetY - 4} text-anchor="end" fill="#4ade80" font-size="9" opacity="0.8">{prefersLower ? '≤ GOAL' : '≥ GOAL'}</text>
                         {/if}
 
                         {#each chartData.slice(0, -1) as _, i}
@@ -9910,6 +9926,8 @@ const getStatIcon = getItemIcon;
                           {@const x1 = padL + idx1 * spacingX}
                           {@const y1 = padT + plotH - ((d1.value - minVal) / range) * plotH}
                           {@const gapDays = idx1 - idx0}
+                          {@const d0Met = targetVal === null || statValueMeetsTarget(d0.value, targetVal, prefersLower)}
+                          {@const d1Met = targetVal === null || statValueMeetsTarget(d1.value, targetVal, prefersLower)}
                           {#if gapDays > 1}
                             {@const leftIdx = idx0 + 1}
                             {@const rightIdx = idx1 - 1}
@@ -9922,15 +9940,14 @@ const getStatIcon = getItemIcon;
                             {#if gapDays > 2}
                               <line x1={xRight} y1={padT} x2={xRight} y2={padT + plotH} stroke="#a16207" stroke-width="1" stroke-dasharray="2 3" opacity="0.7" />
                             {/if}
-                          {:else if targetVal !== null && (d0.value <= targetVal) !== (d1.value <= targetVal)}
+                          {:else if targetVal !== null && d0Met !== d1Met}
                             {@const t = Math.abs((targetVal - d0.value) / (d1.value - d0.value || 1))}
                             {@const midX = x0 + t * (x1 - x0)}
                             {@const midY = y0 + t * (y1 - y0)}
-                            {@const isD0Met = d0.value <= targetVal}
-                            <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={lineColor} stroke-opacity={isD0Met ? 1 : 0.28} stroke-width="2" stroke-linecap="round" />
-                            <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={lineColor} stroke-opacity={isD0Met ? 0.28 : 1} stroke-width="2" stroke-linecap="round" />
+                            <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={lineColor} stroke-opacity={d0Met ? 1 : 0.28} stroke-width="2" stroke-linecap="round" />
+                            <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={lineColor} stroke-opacity={d1Met ? 1 : 0.28} stroke-width="2" stroke-linecap="round" />
                           {:else}
-                            {@const dimSeg = targetVal !== null && !(d0.value <= targetVal && d1.value <= targetVal)}
+                            {@const dimSeg = targetVal !== null && !(d0Met && d1Met)}
                             <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={lineColor} stroke-opacity={dimSeg ? 0.28 : 1} stroke-width="2" stroke-linecap="round" />
                           {/if}
                         {/each}
@@ -9942,7 +9959,7 @@ const getStatIcon = getItemIcon;
                           {@const y = padT + plotH - ((d.value - minVal) / range) * plotH}
                           {@const isLatest = d.date === chartData[chartData.length - 1].date}
                           {@const isPtSelected = statEditEntry === d.date}
-                          {@const met = targetVal === null || d.value <= targetVal}
+                          {@const met = targetVal === null || statValueMeetsTarget(d.value, targetVal, prefersLower)}
                           {#if isPtSelected}
                             <line x1={x} y1={padT} x2={x} y2={padT + plotH} stroke="#e4e4e7" stroke-width="1" stroke-dasharray="3 3" opacity="0.45" />
                           {/if}

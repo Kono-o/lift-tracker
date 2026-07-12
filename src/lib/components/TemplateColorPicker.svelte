@@ -6,7 +6,9 @@
     getTemplateColor,
     hexToNearestIndex,
     hsvToNearestIndex,
+    hsvToRgb,
     indexToHsv,
+    rgbToHex,
     type Hsv,
   } from '$lib/templateColor';
   import { menuPopoverIn, menuPopoverOut } from '$lib/menuTransitions';
@@ -30,12 +32,20 @@
   let pos = $state({ top: 0, left: 0 });
   let hexCopied = $state(false);
   let hexCopyTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Draft hex while editing; null means show quantized preview. */
+  /** Draft hex while editing; null means show live preview. */
   let hexDraft = $state<string | null>(null);
+  /**
+   * Index we last pushed to the parent. Prevents the open-sync effect from
+   * re-quantizing HSV after every slider tick (which snaps thumbs).
+   */
+  let lastEmittedIndex = $state<number | null>(null);
+  let wasOpen = $state(false);
 
-  const previewHex = $derived(getTemplateColor(hsvToNearestIndex(hsv.h, hsv.s, hsv.v)));
+  /** Continuous HSV → hex for smooth slider feedback (not palette-snapped). */
+  const liveHex = $derived(rgbToHex(hsvToRgb(hsv.h, hsv.s, hsv.v)));
   const quantizedIndex = $derived(hsvToNearestIndex(hsv.h, hsv.s, hsv.v));
-  const hexDisplay = $derived(hexDraft ?? previewHex.toUpperCase());
+  const paletteHex = $derived(getTemplateColor(quantizedIndex));
+  const hexDisplay = $derived(hexDraft ?? liveHex.toUpperCase());
   const hexValid = $derived(hexDraft === null || hexToNearestIndex(hexDraft) !== null);
   /** 8 hue presets across the wheel */
   const HUE_PRESETS = 8;
@@ -46,8 +56,17 @@
   }
 
   $effect(() => {
-    if (open) {
+    if (!open) {
+      wasOpen = false;
+      lastEmittedIndex = null;
+      return;
+    }
+    // Hydrate once when opening, or when parent index changes from outside (not from us).
+    const openedNow = !wasOpen;
+    wasOpen = true;
+    if (openedNow || lastEmittedIndex !== colorIndex) {
       syncFromIndex(colorIndex);
+      lastEmittedIndex = colorIndex;
       hexCopied = false;
       hexDraft = null;
     }
@@ -93,9 +112,11 @@
   });
 
   function applyFromSliders() {
-    // Always notify parent so name border + color button update in the same tick
+    // Keep continuous HSV on the sliders; only the committed palette index is quantized.
     hexDraft = null;
-    onChange(hsvToNearestIndex(hsv.h, hsv.s, hsv.v));
+    const idx = hsvToNearestIndex(hsv.h, hsv.s, hsv.v);
+    lastEmittedIndex = idx;
+    onChange(idx);
   }
 
   /** Apply typed/pasted hex if valid; snaps to nearest palette entry. */
@@ -107,6 +128,7 @@
     }
     hsv = indexToHsv(idx);
     hexDraft = null;
+    lastEmittedIndex = idx;
     onChange(idx);
     return true;
   }
@@ -144,7 +166,7 @@
   async function copyHex() {
     const hex = (hexDraft && hexToNearestIndex(hexDraft) !== null
       ? hexDraft
-      : previewHex
+      : paletteHex
     ).toUpperCase();
     const normalized = hex.startsWith('#') ? hex : `#${hex}`;
     try {
@@ -198,7 +220,8 @@
     <div class="flex items-center gap-2">
       <div
         class="w-8 h-8 rounded-lg border border-[#2a2a2a] shrink-0"
-        style="background-color: {previewHex}"
+        style="background-color: {liveHex}"
+        title="Live preview (saves as {paletteHex})"
       ></div>
       <div class="min-w-0 flex-1">
         <div class="text-[10px] font-bold tracking-wider text-zinc-400 leading-none">COLOR</div>
@@ -218,7 +241,7 @@
             onkeydown={onHexKeydown}
             onfocus={(e) => {
               const el = e.currentTarget as HTMLInputElement;
-              if (hexDraft === null) hexDraft = previewHex.toUpperCase();
+              if (hexDraft === null) hexDraft = liveHex.toUpperCase();
               // Select all for easy paste-over
               queueMicrotask(() => el.select());
             }}
@@ -249,10 +272,13 @@
         type="range"
         min="0"
         max="360"
-        step="1"
+        step="any"
         class="template-hsv-slider template-hsv-slider--hue w-full h-2 rounded-full appearance-none cursor-pointer"
-        bind:value={hsv.h}
-        oninput={applyFromSliders}
+        value={hsv.h}
+        oninput={(e) => {
+          hsv = { ...hsv, h: Number((e.currentTarget as HTMLInputElement).value) };
+          applyFromSliders();
+        }}
       />
     </label>
 
@@ -265,10 +291,10 @@
         type="range"
         min="0"
         max="100"
-        step="1"
+        step="any"
         class="template-hsv-slider w-full h-2 rounded-full appearance-none cursor-pointer"
-        style="background: linear-gradient(to right, {getTemplateColor(hsvToNearestIndex(hsv.h, 0, hsv.v))}, {getTemplateColor(hsvToNearestIndex(hsv.h, 1, hsv.v))})"
-        value={Math.round(hsv.s * 100)}
+        style="background: linear-gradient(to right, {rgbToHex(hsvToRgb(hsv.h, 0, hsv.v))}, {rgbToHex(hsvToRgb(hsv.h, 1, hsv.v))})"
+        value={hsv.s * 100}
         oninput={(e) => {
           hsv = { ...hsv, s: Number((e.currentTarget as HTMLInputElement).value) / 100 };
           applyFromSliders();
@@ -285,10 +311,10 @@
         type="range"
         min="0"
         max="100"
-        step="1"
+        step="any"
         class="template-hsv-slider w-full h-2 rounded-full appearance-none cursor-pointer"
-        style="background: linear-gradient(to right, #111, {getTemplateColor(hsvToNearestIndex(hsv.h, hsv.s, 1))})"
-        value={Math.round(hsv.v * 100)}
+        style="background: linear-gradient(to right, #111, {rgbToHex(hsvToRgb(hsv.h, hsv.s, 1))})"
+        value={hsv.v * 100}
         oninput={(e) => {
           hsv = { ...hsv, v: Number((e.currentTarget as HTMLInputElement).value) / 100 };
           applyFromSliders();

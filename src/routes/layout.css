@@ -2682,8 +2682,12 @@ span.boot-panel-placeholder::after,
 	outline-offset: -1px;
 }
 
-.stats-card__value:focus {
+.stats-card__value-wrap:focus-within {
 	border-color: #52525b;
+}
+
+.stats-card__unit {
+	background: #0a0a0a;
 }
 
 .stats-meta__cell {

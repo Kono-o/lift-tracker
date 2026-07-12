@@ -4,7 +4,6 @@
 @import "@fontsource-variable/oxanium";
 @import "@fontsource/space-mono/400.css";
 @import "@fontsource/dseg7-classic/400.css";
-@import "@fontsource/dseg7-classic/700.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -360,6 +359,22 @@
 	min-height: var(--cta-height);
 }
 
+/* START WORKOUT — subtle breathing white glow */
+.start-workout-glow {
+	animation: start-workout-glow-breathe 3s ease-in-out infinite;
+	box-shadow: 0 0 8px 1px rgb(255 255 255 / 0.14);
+}
+
+@keyframes start-workout-glow-breathe {
+	0%,
+	100% {
+		box-shadow: 0 0 6px 0 rgb(255 255 255 / 0.08);
+	}
+	50% {
+		box-shadow: 0 0 12px 2px rgb(255 255 255 / 0.2);
+	}
+}
+
 .app-cta-grid {
 	display: grid;
 	grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -475,8 +490,9 @@
 
 .time-readout.font-7segment,
 .weight-num.font-7segment,
+.rest-readout.font-7segment,
 input.prop-num-input.font-7segment {
-	font-weight: 700;
+	font-weight: 400;
 }
 
 .font-timer.text-2xl,
@@ -738,6 +754,13 @@ input.prop-num-input::-webkit-outer-spin-button {
 	backdrop-filter: blur(12px);
 }
 
+/* User menu: 3D perspective for tilt entrance */
+.settings-panel-overlay--user-menu {
+	perspective: 1200px;
+	perspective-origin: 50% 40%;
+	background: rgb(0 0 0 / 0.55);
+}
+
 .settings-panel-dialog {
 	/* Match auth-panel-card: fixed width, grows vertically only */
 	width: min(100%, 300px);
@@ -750,6 +773,15 @@ input.prop-num-input::-webkit-outer-spin-button {
 	--sp-gap: 0.5rem;
 	--sp-control-h: 2.25rem;
 	--sp-control-px: 0.75rem;
+}
+
+.settings-panel-dialog--user-menu {
+	transform-style: preserve-3d;
+	box-shadow:
+		0 0 0 1px rgb(255 255 255 / 0.04),
+		0 24px 64px -12px rgb(0 0 0 / 0.75),
+		0 0 80px -20px rgb(16 185 129 / 0.15);
+	will-change: transform, opacity, filter;
 }
 
 .settings-panel-body {
@@ -1303,10 +1335,13 @@ input.prop-num-input::-webkit-outer-spin-button {
 	justify-content: center;
 	min-height: 0.875rem;
 	line-height: 1;
+	letter-spacing: 0.12em;
 }
 
 .workout-label-text {
 	line-height: 1;
+	font-weight: 600;
+	opacity: 0.95;
 }
 
 .workout-tick-slot {
@@ -1374,10 +1409,12 @@ input.prop-num-input::-webkit-outer-spin-button {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	letter-spacing: -0.01em;
 }
 
 .tpl-name-stack {
 	justify-self: center;
+	padding-inline: 0.125rem;
 }
 
 /* Template color underline: 6 segments, each breathes independently (noise-like) */
@@ -1440,20 +1477,25 @@ input.prop-num-input::-webkit-outer-spin-button {
 	height: 3.25rem;
 	font-family: var(--font-7segment);
 	font-size: 2.25rem;
+	font-weight: 400;
 	line-height: 1;
 	font-variant-numeric: tabular-nums;
 	font-feature-settings: 'tnum' 1;
-	letter-spacing: 0.06em;
-	border-radius: 0.5rem;
-	border: 1px solid var(--w-neutral-border);
-	background-color: color-mix(in srgb, #000 52%, var(--w-neutral-bg));
+	letter-spacing: 0.04em;
+	border-radius: 0.375rem;
+	border: 1px solid #2a2a2a;
+	background-color: #0a0a0a;
+	box-shadow: inset 0 0 0 1px #141414;
 	color: #ffffff;
 	opacity: 0;
 	visibility: hidden;
 	pointer-events: none;
 	transition:
 		opacity 0.45s ease,
-		visibility 0s linear 0.45s;
+		visibility 0s linear 0.45s,
+		border-color 0.25s ease,
+		background-color 0.25s ease,
+		color 0.25s ease;
 }
 
 .tpl-workout-timer--visible {
@@ -1482,21 +1524,24 @@ input.prop-num-input::-webkit-outer-spin-button {
 }
 
 .tpl-workout-timer--green {
-	background-color: color-mix(in srgb, #000 48%, var(--w-green-bg));
+	background-color: color-mix(in srgb, #000 55%, var(--w-green-bg));
 	border-color: var(--w-green-border);
 	color: var(--w-green-fg);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--w-green-border) 40%, #141414);
 }
 
 .tpl-workout-timer--yellow {
-	background-color: color-mix(in srgb, #000 48%, var(--w-yellow-bg));
+	background-color: color-mix(in srgb, #000 55%, var(--w-yellow-bg));
 	border-color: var(--w-yellow-border);
 	color: var(--w-yellow-fg);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--w-yellow-border) 40%, #141414);
 }
 
 .tpl-workout-timer--skipped {
-	background-color: color-mix(in srgb, #000 42%, var(--w-skipped-bg));
+	background-color: color-mix(in srgb, #000 50%, var(--w-skipped-bg));
 	border-color: var(--w-skipped-border);
 	color: var(--w-skipped-fg);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--w-skipped-border) 35%, #141414);
 }
 
 .tpl-header-body {
@@ -1611,7 +1656,8 @@ input.prop-num-input::-webkit-outer-spin-button {
 	align-items: center;
 }
 
-.time-readout {
+.time-readout,
+.rest-readout {
 	display: inline-flex;
 	align-items: center;
 	justify-content: flex-end;
@@ -1620,81 +1666,132 @@ input.prop-num-input::-webkit-outer-spin-button {
 	text-align: right;
 	line-height: 1;
 	white-space: nowrap;
+	min-width: 4.25rem;
 }
 
 .time-readout-plus {
-	width: 0.62em;
-	height: 0.62em;
+	width: 0.55em;
+	height: 0.55em;
 	flex-shrink: 0;
+	margin-right: -0.05em;
 }
 
 /* Bodyweight panel reuses settings overlay + dialog sizing above */
 
+/* Active set / rest timer strip — same height as set row (h-7) */
 .time-active-bar {
 	display: flex;
 	align-items: center;
-	gap: clamp(0.375rem, 1vw, 0.625rem);
-	height: clamp(1.75rem, 5vw, 2.25rem);
+	gap: 0.3rem;
+	height: 1.75rem;
 	min-width: 0;
 	width: 100%;
+	padding: 0 0.2rem 0 0.15rem;
+	border-radius: 0.25rem;
+	background: #0a0a0a;
+	border: 1px solid #252525;
+	box-sizing: border-box;
+}
+
+.time-active-bar--rest {
+	border-color: color-mix(in srgb, #f97316 42%, #252525);
+	background: color-mix(in srgb, #9a3412 16%, #0a0a0a);
 }
 
 .time-active-set {
-	flex: 0 0 1.25rem;
+	flex: 0 0 auto;
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	align-self: stretch;
+	min-width: 1.5rem;
+	height: 1.25rem;
+	padding: 0 0.3rem;
 	font-size: 8px;
-	font-weight: 700;
+	font-weight: 600;
 	letter-spacing: 0.08em;
 	line-height: 1;
+	text-transform: uppercase;
 	color: #a1a1aa;
+	background: #141414;
+	border: 1px solid #222;
+	border-radius: 0.125rem;
+}
+
+.time-active-bar--rest .time-active-set {
+	min-width: 2.15rem;
+	color: #fb923c;
+	background: color-mix(in srgb, #9a3412 40%, #0a0a0a);
+	border-color: color-mix(in srgb, #f97316 35%, #222);
 }
 
 .time-active-progress {
 	flex: 1 1 auto;
 	display: flex;
 	align-items: center;
-	align-self: stretch;
 	min-width: 0;
-	padding: 0 0.125rem;
+	height: 0.625rem;
+	padding: 0 1px;
+	border-radius: 0.125rem;
+	background: #050505;
+	border: 1px solid #1a1a1a;
 	overflow: hidden;
 }
 
+.time-active-bar--rest .time-active-progress {
+	background: color-mix(in srgb, #431407 55%, #050505);
+	border-color: color-mix(in srgb, #9a3412 40%, #1a1a1a);
+}
+
 .timer-progress-cubes {
-	--timer-present-color: #ffffff;
-	--timer-past-color: #737373;
+	--timer-present-color: #f4f4f5;
+	--timer-past-color: #6b6b72;
+	--timer-future-color: #1c1c1c;
 	display: flex;
 	flex-wrap: nowrap;
-	align-items: center;
+	align-items: stretch;
 	justify-content: flex-start;
-	gap: clamp(1px, 0.25vw, 2px);
+	gap: 1px;
 	width: 100%;
-	height: clamp(4px, 1vw, 6px);
+	height: 100%;
 	min-width: 0;
 }
 
 .timer-progress-cubes--yellow {
 	--timer-present-color: var(--w-yellow-fg);
-	--timer-past-color: color-mix(in srgb, var(--w-yellow-fg) 18%, var(--w-yellow-bg));
-	--timer-future-color: color-mix(in srgb, #000 52%, var(--w-yellow-bg));
+	--timer-past-color: color-mix(in srgb, var(--w-yellow-fg) 28%, var(--w-yellow-bg));
+	--timer-future-color: color-mix(in srgb, #000 48%, var(--w-yellow-bg));
 }
 
 .timer-progress-cubes--met {
 	--timer-present-color: var(--w-green-fg);
-	--timer-past-color: color-mix(in srgb, #28a05a 32%, var(--w-green-bg));
+	--timer-past-color: color-mix(in srgb, #28a05a 42%, var(--w-green-bg));
+	--timer-future-color: color-mix(in srgb, #000 40%, var(--w-green-bg));
+}
+
+.timer-progress-cubes--rest {
+	--timer-present-color: #f97316;
+	--timer-past-color: #9a3412;
+	--timer-future-color: #431407;
+}
+
+.timer-progress-cubes--rest.timer-progress-cubes--met {
+	--timer-present-color: #fb923c;
+	--timer-past-color: #c2410f;
+	--timer-future-color: #7c2d12;
 }
 
 .time-active-actions {
 	flex: 0 0 auto;
 	display: flex;
 	align-items: center;
-	gap: 0.125rem;
-	align-self: stretch;
-	padding-left: 0.375rem;
-	margin-left: 0.125rem;
-	border-left: 1px solid #1e1e1e;
+	gap: 0.15rem;
+	padding-left: 0.25rem;
+	margin-left: 0.05rem;
+	border-left: 1px solid #222;
+}
+
+.time-active-bar--rest .time-active-actions {
+	border-left-color: color-mix(in srgb, #f97316 28%, #222);
 }
 
 .timer-control-btn {
@@ -1706,12 +1803,12 @@ input.prop-num-input::-webkit-outer-spin-button {
 	margin: 0;
 	padding: 0;
 	flex-shrink: 0;
-	color: #ffffff;
+	color: #e4e4e7;
 	background: transparent;
 	border: none;
-	border-radius: 0.375rem;
+	border-radius: 0.25rem;
 	cursor: pointer;
-	transition: color 0.15s ease, background-color 0.15s ease;
+	transition: color 0.12s ease, background-color 0.12s ease;
 }
 
 .timer-control-btn:hover {
@@ -1719,13 +1816,27 @@ input.prop-num-input::-webkit-outer-spin-button {
 	background-color: #1a1a1a;
 }
 
+.timer-control-btn:active {
+	color: #d4d4d8;
+	background-color: transparent;
+}
+
+.time-active-bar--rest .timer-control-btn {
+	color: #fdba74;
+}
+
+.time-active-bar--rest .timer-control-btn:hover {
+	color: #ffedd5;
+	background-color: color-mix(in srgb, #9a3412 35%, transparent);
+}
+
 .timer-progress-cube {
-	flex: 0 0 auto;
-	min-width: 1px;
+	flex: 1 1 0;
+	min-width: 0;
 	height: 100%;
-	aspect-ratio: 1;
-	border-radius: 1px;
-	background-color: #1a1a1a;
+	border-radius: 0;
+	background-color: var(--timer-future-color, #1c1c1c);
+	transition: background-color 80ms linear;
 }
 
 .timer-progress-cube--past {
@@ -1739,7 +1850,7 @@ input.prop-num-input::-webkit-outer-spin-button {
 .timer-progress-cube--trail {
 	background-color: color-mix(
 		in srgb,
-		var(--timer-present-color) 50%,
+		var(--timer-present-color) 55%,
 		var(--timer-past-color)
 	);
 }
@@ -1747,7 +1858,7 @@ input.prop-num-input::-webkit-outer-spin-button {
 .timer-progress-cubes--met .timer-progress-cube--trail {
 	background-color: color-mix(
 		in srgb,
-		var(--timer-present-color) 32%,
+		var(--timer-present-color) 38%,
 		var(--timer-past-color)
 	);
 }
@@ -1758,26 +1869,28 @@ input.prop-num-input::-webkit-outer-spin-button {
 
 .timer-progress-cube--lit {
 	background-color: var(--timer-present-color);
-	box-shadow: 0 0 3px 0.5px color-mix(in srgb, var(--timer-present-color) 50%, transparent);
+	box-shadow: 0 0 4px 0 color-mix(in srgb, var(--timer-present-color) 55%, transparent);
 }
 
 .timer-progress-cube--met {
-	background-color: var(--w-green-fg);
-	box-shadow: 0 0 3px 0.5px color-mix(in srgb, var(--w-green-fg) 50%, transparent);
+	background-color: var(--timer-present-color, var(--w-green-fg));
+	box-shadow: 0 0 4px 0 color-mix(in srgb, var(--timer-present-color, var(--w-green-fg)) 55%, transparent);
 }
 
 .timer-progress-cubes--running .timer-progress-cube--lit,
 .timer-progress-cubes--running .timer-progress-cube--met {
-	animation: timer-cube-glow 3s ease-in-out infinite;
+	animation: timer-cube-glow 1.15s ease-in-out infinite;
 }
 
 @keyframes timer-cube-glow {
 	0%,
 	100% {
-		box-shadow: 0 0 2px 0.5px color-mix(in srgb, var(--timer-present-color) 40%, transparent);
+		box-shadow: 0 0 2px 0 color-mix(in srgb, var(--timer-present-color) 35%, transparent);
+		opacity: 0.92;
 	}
 	50% {
-		box-shadow: 0 0 5px 1.5px color-mix(in srgb, var(--timer-present-color) 72%, transparent);
+		box-shadow: 0 0 6px 1px color-mix(in srgb, var(--timer-present-color) 70%, transparent);
+		opacity: 1;
 	}
 }
 
@@ -1788,10 +1901,12 @@ input.prop-num-input::-webkit-outer-spin-button {
 @keyframes timer-cube-glow-met {
 	0%,
 	100% {
-		box-shadow: 0 0 2px 0.5px color-mix(in srgb, var(--w-green-fg) 40%, transparent);
+		box-shadow: 0 0 2px 0 color-mix(in srgb, var(--timer-present-color, var(--w-green-fg)) 35%, transparent);
+		opacity: 0.92;
 	}
 	50% {
-		box-shadow: 0 0 5px 1.5px color-mix(in srgb, var(--w-green-fg) 72%, transparent);
+		box-shadow: 0 0 6px 1px color-mix(in srgb, var(--timer-present-color, var(--w-green-fg)) 70%, transparent);
+		opacity: 1;
 	}
 }
 
@@ -1802,8 +1917,10 @@ input.prop-num-input::-webkit-outer-spin-button {
 }
 
 .set-bubble--empty {
-	border-style: dotted !important;
+	border-style: dashed !important;
+	border-width: 1px !important;
 	border-color: #52525b !important;
+	background-color: #0a0a0a;
 }
 
 .set-bubble--empty.status-surface--skipped {
@@ -1855,15 +1972,15 @@ input.prop-num-input::-webkit-outer-spin-button {
 }
 
 .week-calendar-panel {
-	--week-calendar-ms: 260ms;
+	--week-calendar-ms: 280ms;
 	--week-day-stagger: 10ms;
 	--week-day-anim: 200ms;
 	contain: layout style;
-	transition: grid-template-rows var(--week-calendar-ms) ease-in;
+	transition: grid-template-rows var(--week-calendar-ms) cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .week-calendar-panel--open {
-	transition-timing-function: ease-out;
+	transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .day-strip:not(.week-calendar-open):not(.week-calendar-closing) .day-btn {
@@ -2045,17 +2162,44 @@ input.prop-num-input::-webkit-outer-spin-button {
 }
 
 .library-picker-panel {
-	--library-ui-ms: 220ms;
+	--library-ui-ms: 260ms;
 	display: grid;
 	grid-template-rows: 0fr;
-	transition: grid-template-rows var(--library-ui-ms) cubic-bezier(0.22, 1, 0.36, 1);
+	opacity: 0;
+	transform: translateY(-4px);
+	transition:
+		grid-template-rows var(--library-ui-ms) cubic-bezier(0.22, 1, 0.36, 1),
+		opacity calc(var(--library-ui-ms) * 0.85) cubic-bezier(0.22, 1, 0.36, 1),
+		transform var(--library-ui-ms) cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .library-picker-panel--open {
 	grid-template-rows: 1fr;
+	opacity: 1;
+	transform: translateY(0);
 }
 
 .library-picker-panel__inner {
+	overflow: hidden;
+	min-height: 0;
+}
+
+/* Stat / template property cards — soft height settle when content changes */
+.props-expand-shell {
+	display: grid;
+	grid-template-rows: 0fr;
+	opacity: 0;
+	transition:
+		grid-template-rows 220ms cubic-bezier(0.22, 1, 0.36, 1),
+		opacity 180ms ease;
+}
+
+.props-expand-shell--open {
+	grid-template-rows: 1fr;
+	opacity: 1;
+}
+
+.props-expand-shell__inner {
 	overflow: hidden;
 	min-height: 0;
 }
@@ -2098,6 +2242,11 @@ input.prop-num-input::-webkit-outer-spin-button {
 		opacity: 1;
 	}
 
+	.start-workout-glow {
+		animation: none;
+		box-shadow: 0 0 8px 1px rgb(255 255 255 / 0.12);
+	}
+
 	.library-actions,
 	.library-action-btn,
 	.library-picker-panel {
@@ -2125,9 +2274,12 @@ input.prop-num-input::-webkit-outer-spin-button {
 
 	.app-stage-reveal,
 	.boot-overlay,
+	.boot-overlay--exit .boot-panel-dialog,
 	.auth-confirm-reveal,
 	.settings-panel-actions-reveal {
-		transition-duration: 0.01ms;
+		transition-duration: 0.01ms !important;
+		transform: none !important;
+		filter: none !important;
 	}
 
 	.auth-confirm-reveal--open,
@@ -2476,11 +2628,95 @@ span.boot-panel-placeholder::after,
 }
 
 .app-stage-body {
+	/* Do NOT use position:absolute children with inset:0 here — that can
+	   cover the sticky week/CTA bar when transforms create containing blocks. */
 	flex: 1 1 0;
 	min-height: 0;
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
+	position: relative;
+	z-index: 0;
+}
+
+/* View shells fill the body flex slot (in-flow, not absolute over the CTA). */
+.app-view-shell {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 0;
+	min-height: 0;
+	min-width: 0;
+	overflow: hidden;
+	width: 100%;
+}
+
+/* During Svelte in/out, keep outgoing view from stacking extra height under the CTA. */
+.app-stage-body > .app-view-shell:not(:last-child) {
+	position: absolute;
+	inset: 0;
+	flex: none;
+	pointer-events: none;
+}
+
+/* Outer list row shell: owns enter/exit height+slide; drag translate lives on the child */
+.list-row-shell {
+	display: block;
+	width: 100%;
+	min-width: 0;
+}
+
+
+
+/* ── Stats screen ─────────────────────────────────────────── */
+.stats-screen {
+	min-height: 0;
+}
+
+.stats-card--open {
+	background-color: #0c0c0c;
+}
+
+.stats-card__head:focus-visible {
+	outline: 1px solid #3f3f46;
+	outline-offset: -1px;
+}
+
+.stats-card__value:focus {
+	border-color: #52525b;
+}
+
+.stats-meta__cell {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 0.2rem;
+	min-height: 2.35rem;
+	padding: 0.35rem 0.4rem;
+	border-radius: 0.25rem;
+	border: 1px solid #1e1e1e;
+	background: #0d0d0d;
+}
+
+.stats-meta__label {
+	font-size: 8px;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+	color: #52525b;
+	line-height: 1;
+}
+
+.stats-meta__value {
+	font-size: 11px;
+	font-weight: 500;
+	color: #e4e4e7;
+	line-height: 1;
+}
+
+.stats-chart {
+	/* keep SVG crisp on mobile */
+	-webkit-tap-highlight-color: transparent;
 }
 
 .track-workout-exercises {
@@ -2495,10 +2731,74 @@ span.boot-panel-placeholder::after,
 	mask-size: 100% 100%;
 	-webkit-mask-repeat: no-repeat;
 	mask-repeat: no-repeat;
+	/* Keep card border fully visible when edge-fade mask is applied */
+	padding: 1px;
 }
 
 .track-workout-exercises::-webkit-scrollbar {
 	display: none;
+}
+
+/*
+ * Exercise list card: border lives on the outer shell (no overflow clip).
+ * Inner clip rounds row backgrounds. This avoids the common
+ * border-radius + overflow:hidden corner-border cut-off.
+ */
+.track-ex-list {
+	border-radius: 0.5rem;
+	border: 1px solid #1e1e1e;
+	background-color: #141414;
+	/* paint border outside the clip stack */
+	isolation: isolate;
+}
+
+.track-ex-list--skipped {
+	background-color: var(--w-skipped-bg);
+	border-color: var(--w-skipped-border);
+	color: var(--w-skipped-fg);
+}
+
+.track-ex-list__clip {
+	border-radius: calc(0.5rem - 1px);
+	overflow: hidden;
+	/* Match outer bg so gaps never flash */
+	background-color: inherit;
+}
+
+/* List rows: outer card owns the shell outline; rows only use top dividers by default. */
+.track-ex-list .status-surface--row {
+	border-left: 0 !important;
+	border-right: 0 !important;
+	border-bottom: 0 !important;
+	/* top divider only when .border-t is present on the row */
+	border-top-width: 0;
+	border-top-style: solid;
+	border-top-color: #1e1e1e;
+	/* inset stroke so status outline never clips on rounded list corners */
+	box-shadow: none;
+}
+
+.track-ex-list .status-surface--row.border-t {
+	border-top-width: 1px !important;
+}
+
+.track-ex-list .status-surface--row.status-surface--skipped.border-t {
+	border-top-color: var(--w-skipped-border);
+}
+
+/* Finished / logged exercise: keep a clear green or yellow border around the row */
+.track-ex-list .status-surface--row.status-surface--green {
+	box-shadow: inset 0 0 0 1px var(--w-green-border);
+}
+
+.track-ex-list .status-surface--row.status-surface--yellow {
+	box-shadow: inset 0 0 0 1px var(--w-yellow-border);
+}
+
+/* Prefer status outline over the inter-row hairline on green/yellow rows */
+.track-ex-list .status-surface--row.status-surface--green.border-t,
+.track-ex-list .status-surface--row.status-surface--yellow.border-t {
+	border-top-color: transparent !important;
 }
 
 .no-scrollbar {
@@ -2511,8 +2811,21 @@ span.boot-panel-placeholder::after,
 }
 
 .app-stage-cta {
+	position: relative;
+	z-index: 6;
 	flex-shrink: 0;
-	padding-top: 0.25rem;
+	padding-top: 0.35rem;
+	width: 100%;
+	/* Solid plate so the bar never “vanishes” into content behind it */
+	background: #000;
+}
+
+.app-stage-cta .app-cta-grid {
+	width: 100%;
+	min-height: var(--cta-height);
+	display: grid;
+	grid-template-columns: repeat(5, minmax(0, 1fr));
+	gap: var(--app-gap);
 }
 
 .app-footer {
@@ -2526,15 +2839,24 @@ span.boot-panel-placeholder::after,
 	text-overflow: ellipsis;
 }
 
+/* Main app entrance after boot — rise + fade in as loading leaves */
 .app-stage-reveal {
 	opacity: 0;
 	pointer-events: none;
-	transition: opacity 520ms cubic-bezier(0.22, 1, 0.36, 1);
+	transform: translate3d(0, 14px, 0) scale(0.985);
+	filter: blur(6px);
+	transition:
+		opacity 560ms cubic-bezier(0.22, 1, 0.36, 1),
+		transform 620ms cubic-bezier(0.22, 1, 0.36, 1),
+		filter 520ms cubic-bezier(0.22, 1, 0.36, 1);
+	will-change: opacity, transform, filter;
 }
 
 .app-stage-reveal--active {
 	opacity: 1;
 	pointer-events: auto;
+	transform: translate3d(0, 0, 0) scale(1);
+	filter: blur(0px);
 }
 
 /* Basic markdown styles for changelog boxes in update/updated prompts */
@@ -2588,14 +2910,30 @@ span.boot-panel-placeholder::after,
 	background: #000000;
 	opacity: 1;
 	pointer-events: auto;
-	transition: opacity 280ms cubic-bezier(0.22, 1, 0.36, 1);
+	transform: scale(1);
+	filter: blur(0);
+	transition:
+		opacity 480ms cubic-bezier(0.22, 1, 0.36, 1),
+		transform 520ms cubic-bezier(0.22, 1, 0.36, 1),
+		filter 420ms cubic-bezier(0.22, 1, 0.36, 1);
+	will-change: opacity, transform, filter;
 }
 
 .boot-overlay--exit {
 	opacity: 0;
 	pointer-events: none;
+	/* Slight lift + soft blur as the main UI rises underneath */
+	transform: scale(1.03) translate3d(0, -8px, 0);
+	filter: blur(8px);
 }
 
+.boot-overlay--exit .boot-panel-dialog {
+	transform: scale(0.97);
+	opacity: 0.85;
+	transition:
+		transform 420ms cubic-bezier(0.22, 1, 0.36, 1),
+		opacity 360ms ease;
+}
 
 
 

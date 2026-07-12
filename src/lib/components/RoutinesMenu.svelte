@@ -9,6 +9,7 @@
   } from '$lib/db';
   import { runDbActivityBatch } from '$lib/dbActivity';
   import GeneratedAvatar from '$lib/components/GeneratedAvatar.svelte';
+  import { listItemSlideIn, listItemSlideOut } from '$lib/menuTransitions';
   import {
     ArrowLeft,
     Plus,
@@ -65,6 +66,50 @@
   let renameValue = $state('');
   let selectedAllId = $state<string | null>(null);
   let loading = $state(initialList.length === 0);
+
+  /** Stable each keys so temp→real id swaps don't remount/flash rows. */
+  let routineListKeyById = $state<Record<string, string>>(
+    Object.fromEntries(initialList.map((r) => [r.id, r.id])),
+  );
+  let suppressListEnterAnim = $state(false);
+  function routineListKey(id: string): string {
+    return routineListKeyById[id] ?? id;
+  }
+  function rememberRoutineKey(id: string, key: string = id) {
+    if (routineListKeyById[id] === key) return;
+    routineListKeyById = { ...routineListKeyById, [id]: key };
+  }
+  function promoteRoutineKey(fromId: string, toId: string) {
+    if (fromId === toId) return;
+    const key = routineListKeyById[fromId] ?? fromId;
+    const next = { ...routineListKeyById };
+    delete next[fromId];
+    next[toId] = key;
+    routineListKeyById = next;
+  }
+  function forgetRoutineKey(id: string) {
+    if (!(id in routineListKeyById)) return;
+    const next = { ...routineListKeyById };
+    delete next[id];
+    routineListKeyById = next;
+  }
+  function withSuppressedListEnter(run: () => void) {
+    suppressListEnterAnim = true;
+    run();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        suppressListEnterAnim = false;
+      });
+    });
+  }
+  function listRowIn(node: Element) {
+    if (suppressListEnterAnim) return { duration: 0 };
+    return listItemSlideIn(node);
+  }
+  function listRowOut(_node: Element) {
+    // Instant remove — long outros stack as ghosts when adding/deleting quickly.
+    return { duration: 0 };
+  }
 
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
   let destroyed = false;
@@ -260,10 +305,18 @@
           r.name.startsWith('IMPORTING '),
       );
       const serverIds = new Set(list.map((r) => r.id));
-      myList = [
+      const next = [
         ...list,
         ...pending.filter((p) => !serverIds.has(p.id)),
       ];
+      withSuppressedListEnter(() => {
+        let keys = { ...routineListKeyById };
+        for (const r of next) {
+          if (!keys[r.id]) keys[r.id] = r.id;
+        }
+        routineListKeyById = keys;
+        myList = next;
+      });
       bookmarks = new Set(list.filter((r) => r.source === 'bookmarked').map((r) => r.id));
       emitListChange();
     } catch (e) {
@@ -314,7 +367,12 @@
         }
       }
       if (destroyed || gen !== listGen || busyAction !== null) return;
-      myList = list;
+      withSuppressedListEnter(() => {
+        let keys: Record<string, string> = {};
+        for (const r of list) keys[r.id] = r.id;
+        routineListKeyById = keys;
+        myList = list;
+      });
       bookmarks = new Set(list.filter((r) => r.source === 'bookmarked').map((r) => r.id));
       emitListChange();
       await loadAllUsersSection();
@@ -360,6 +418,7 @@
       source: 'owned',
       is_readonly: false,
     };
+    rememberRoutineKey(optimistic.id, optimistic.id);
     myList = [...myList, optimistic];
     emitListChange();
     try {
@@ -368,17 +427,20 @@
       // Replace optimistic row in place (same position); never full-list swap
       const stillThere = myList.some((x) => x.id === optimistic.id);
       if (stillThere) {
+        promoteRoutineKey(optimistic.id, r.id);
         myList = myList.map((x) =>
           x.id === optimistic.id
             ? { ...r, source: 'owned' as const, is_readonly: false }
             : x,
         );
       } else if (!myList.some((x) => x.id === r.id)) {
+        rememberRoutineKey(r.id, r.id);
         myList = [...myList, { ...r, source: 'owned' as const, is_readonly: false }];
       }
       emitListChange();
       renameRoutine(r.id);
     } catch (e) {
+      forgetRoutineKey(optimistic.id);
       myList = myList.filter((x) => x.id !== optimistic.id);
       emitListChange();
       errorMsg = 'Failed to create routine';
@@ -465,6 +527,7 @@
     const snapshot = [...myList];
     const prevActive = activeRoutineId;
     // Optimistic remove first so UI never waits on network with the old row
+    forgetRoutineKey(id);
     myList = myList.filter((r) => r.id !== id);
     emitListChange();
 
@@ -485,12 +548,17 @@
       await runDbActivityBatch(() => db.deleteRoutine(id));
       // Ensure deleted id stays gone even if something partial reappeared
       if (myList.some((r) => r.id === id)) {
+        forgetRoutineKey(id);
         myList = myList.filter((r) => r.id !== id);
         emitListChange();
       }
     } catch (e) {
       myList = snapshot;
       activeRoutineId = prevActive;
+      // restore keys for snapshot rows
+      let keys = { ...routineListKeyById };
+      for (const r of snapshot) keys[r.id] = keys[r.id] ?? r.id;
+      routineListKeyById = keys;
       emitListChange();
       errorMsg = 'Failed to delete routine';
       console.error(e);
@@ -508,6 +576,7 @@
     const snapshot = [...myList];
     const prevActive = activeRoutineId;
     const wasActive = activeRoutineId === routineId;
+    forgetRoutineKey(routineId);
     myList = myList.filter((r) => !(r.source === 'bookmarked' && r.id === routineId));
     bookmarks.delete(routineId);
     bookmarks = new Set(bookmarks);
@@ -657,9 +726,11 @@
       source: 'owned',
       is_readonly: false,
     };
+    rememberRoutineKey(tempId, tempId);
 
     if (existingBm) {
       // Replace the bookmarked row in place (no extra row)
+      promoteRoutineKey(routineId, tempId);
       myList = myList.map((r) =>
         r.id === routineId
           ? {
@@ -711,10 +782,12 @@
         is_readonly: false,
       };
       // Swap COPYING row → real owned routine (keep position)
+      promoteRoutineKey(tempId, result.id);
       myList = myList
         .map((r) => (r.id === tempId ? ownedItem : r))
         .filter((r) => !(r.source === 'bookmarked' && r.id === routineId));
       if (!myList.some((r) => r.id === result.id)) {
+        rememberRoutineKey(result.id, result.id);
         myList = [...myList, ownedItem];
       }
       bookmarks.delete(routineId);
@@ -817,6 +890,7 @@
     }
 
     const peekName = peekRoutineNameFromText(text);
+    rememberRoutineKey(tempId, tempId);
     myList = [
       ...myList,
       {
@@ -838,8 +912,10 @@
         source: 'owned',
         is_readonly: false,
       };
+      promoteRoutineKey(tempId, result.id);
       myList = myList.map((r) => (r.id === tempId ? ownedItem : r));
       if (!myList.some((r) => r.id === result.id)) {
+        rememberRoutineKey(result.id, result.id);
         myList = [...myList, ownedItem];
       }
       emitListChange();
@@ -924,13 +1000,13 @@
       <div class="text-[10px] text-zinc-600 text-center py-4">No routines yet</div>
     {:else}
       <div
-        class="flex flex-col gap-1 min-w-0"
+        class="flex flex-col gap-1 min-w-0 overflow-x-hidden"
         role="list"
         bind:this={routineListBody}
         ondrop={handleDrop}
         ondragover={handleDragOver}
       >
-        {#each myList as routine, index (routine.id)}
+        {#each myList as routine, index (routineListKey(routine.id))}
           {@const isActive = activeRoutineId === routine.id}
           {@const isOwned = routine.source === 'owned'}
           {@const isBookmarked = routine.source === 'bookmarked'}
@@ -941,6 +1017,7 @@
             routine.name.startsWith('IMPORTING ')}
           {@const ownedIdx = isOwned ? ownedRoutines.findIndex((r) => r.id === routine.id) : -1}
           {@const tc = Number(routine.template_count) || 0}
+          <div class="list-row-shell" in:listRowIn out:listRowOut>
           <div
             class="flex items-stretch gap-1 h-9 min-w-0 {isOwned && !isPending ? 'cursor-grab active:cursor-grabbing' : ''}"
             data-routine-source={routine.source}
@@ -1122,6 +1199,7 @@
                 {/if}
               </div>
             </div>
+          </div>
           </div>
         {/each}
       </div>

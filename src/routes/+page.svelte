@@ -1,6 +1,20 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
-  import { fade } from 'svelte/transition';
+  import { fade, slide } from 'svelte/transition';
+  import {
+    listItemSlideIn,
+    listItemSlideOut,
+    menuPanelIn,
+    menuPanelOut,
+    menuViewIn,
+    menuViewOut,
+    OVERLAY_MS,
+    userMenuIn,
+    userMenuOut,
+    userMenuOverlayIn,
+    userMenuOverlayOut,
+  } from '$lib/menuTransitions';
+  import { cubicOut } from 'svelte/easing';
   import { PUBLIC_SUPABASE_URL } from '$env/static/public';
   import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type TrackedStat, type StatLogSnapshotRow, type WorkoutHistory, type RoutineWithOwner, type UserRoutineListItem } from '$lib/db';
   import GeneratedAvatar from '$lib/components/GeneratedAvatar.svelte';
@@ -212,6 +226,92 @@ const getStatIcon = getItemIcon;
    * Cleared on routine switch so empty routines don't inherit the previous list.
    */
   let routineEditorExtraTemplateIds = $state<Set<string>>(new Set());
+  /**
+   * Stable each-block keys for template rows so optimistic temp→real id swaps
+   * don't remount (which kills enter/exit animations and flashes the row).
+   */
+  let templateListKeyById = $state<Record<string, string>>({});
+  function templateListKey(id: string): string {
+    return templateListKeyById[id] ?? id;
+  }
+  function rememberTemplateListKey(id: string, key: string = id) {
+    if (templateListKeyById[id] === key) return;
+    templateListKeyById = { ...templateListKeyById, [id]: key };
+  }
+  function promoteTemplateListKey(fromId: string, toId: string) {
+    if (fromId === toId) return;
+    const key = templateListKeyById[fromId] ?? fromId;
+    const next = { ...templateListKeyById };
+    delete next[fromId];
+    next[toId] = key;
+    templateListKeyById = next;
+  }
+  function forgetTemplateListKey(id: string) {
+    if (!(id in templateListKeyById)) return;
+    const next = { ...templateListKeyById };
+    delete next[id];
+    templateListKeyById = next;
+  }
+
+  /** Stable keys for exercise / stat editor rows (survive temp→real id on save). */
+  let exerciseListKeyById = $state<Record<string, string>>({});
+  let statListKeyById = $state<Record<string, string>>({});
+  function listKey(map: Record<string, string>, id: string): string {
+    return map[id] ?? id;
+  }
+  function rememberListKey(
+    map: Record<string, string>,
+    id: string,
+    key: string = id,
+  ): Record<string, string> {
+    if (map[id] === key) return map;
+    return { ...map, [id]: key };
+  }
+  function promoteListKey(
+    map: Record<string, string>,
+    fromId: string,
+    toId: string,
+  ): Record<string, string> {
+    if (fromId === toId) return map;
+    const key = map[fromId] ?? fromId;
+    const next = { ...map };
+    delete next[fromId];
+    next[toId] = key;
+    return next;
+  }
+  function forgetListKey(map: Record<string, string>, id: string): Record<string, string> {
+    if (!(id in map)) return map;
+    const next = { ...map };
+    delete next[id];
+    return next;
+  }
+
+  /** Skip enter animations when bulk-hydrating a list (open editor / load). Deletes still animate. */
+  let suppressListEnterAnim = $state(false);
+  function withSuppressedListEnter(run: () => void) {
+    suppressListEnterAnim = true;
+    run();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        suppressListEnterAnim = false;
+      });
+    });
+  }
+  function listRowIn(node: Element) {
+    if (suppressListEnterAnim) return { duration: 0 };
+    return listItemSlideIn(node);
+  }
+  /** Template list delete: slide out. */
+  function listRowOut(node: Element) {
+    return listItemSlideOut(node);
+  }
+  /**
+   * Stats/exercise lists: never use a long outro. Svelte keeps outro nodes in the DOM;
+   * rapid add/delete stacks them as "ghost" rows. Instant remove is the only reliable fix.
+   */
+  function listRowOutInstant(_node: Element) {
+    return { duration: 0 };
+  }
 
   /**
    * Templates shown in the routine builder for the *active* routine only:
@@ -577,24 +677,30 @@ const getStatIcon = getItemIcon;
   function enterRoutineBuilder(opts: { fromWeeklyPlan?: boolean } = {}) {
     if (workoutState === 'active') return;
     if (!opts.fromWeeklyPlan && !showHeaderEditActions) return;
-    templateError = null;
-    templateErrorFading = false;
-    editingRoutineTemplateNameId = null;
-    routineTemplateNameEditOriginal = null;
-    refreshRoutinesPreload();
-    const newAssignments: Record<number, string | null> = {};
-    for (const s of schedule) {
-      const tid = s.template_id ?? null;
-      if (tid) {
-        const tpl = templates.find((t) => t.id === tid);
-        newAssignments[s.day_of_week] = isTemplateAssignable(tpl) ? tid : null;
-      } else {
-        newAssignments[s.day_of_week] = null;
+    withSuppressedListEnter(() => {
+      templateError = null;
+      templateErrorFading = false;
+      editingRoutineTemplateNameId = null;
+      routineTemplateNameEditOriginal = null;
+      refreshRoutinesPreload();
+      const newAssignments: Record<number, string | null> = {};
+      for (const s of schedule) {
+        const tid = s.template_id ?? null;
+        if (tid) {
+          const tpl = templates.find((t) => t.id === tid);
+          newAssignments[s.day_of_week] = isTemplateAssignable(tpl) ? tid : null;
+        } else {
+          newAssignments[s.day_of_week] = null;
+        }
       }
-    }
-    builderAssignments = newAssignments;
-    builderEditingDay = selectedWeekday;
-    currentView = 'swap_template';
+      builderAssignments = newAssignments;
+      builderEditingDay = selectedWeekday;
+      // Seed stable keys for existing templates so first paint doesn't animate them all
+      let keys = { ...templateListKeyById };
+      for (const t of templates) keys = rememberListKey(keys, t.id);
+      templateListKeyById = keys;
+      currentView = 'swap_template';
+    });
   }
   let isSyncing = $state(false);
   let hasInitialLoad = $state(false);
@@ -659,6 +765,7 @@ const getStatIcon = getItemIcon;
   const BOOT_ACCOUNT_REVEAL_HOLD_MS = 900;
 
   function onBootOverlayTransitionEnd(e: TransitionEvent) {
+    // Complete once on opacity (primary exit); avoid double-fire from transform/filter.
     if (e.propertyName !== 'opacity' || !bootOverlayExiting) return;
     bootOverlayVisible = false;
     bootOverlayExiting = false;
@@ -670,6 +777,8 @@ const getStatIcon = getItemIcon;
       bootOverlayVisible = true;
       bootOverlayExiting = false;
       bootAccountReveal = false;
+      // Keep main UI hidden under boot so reveal can animate on exit.
+      stageRevealActive = false;
       return;
     }
     let cancelled = false;
@@ -694,17 +803,22 @@ const getStatIcon = getItemIcon;
       if (cancelled) return;
       await preloadSupabaseBackend();
       if (cancelled) return;
-      stageRevealActive = true;
+      // Hold filled boot card briefly, then crossfade: overlay out + main UI in.
       bootAccountReveal = true;
       revealHoldTimer = setTimeout(() => {
         if (cancelled) return;
         bootOverlayExiting = true;
+        // Start main menu entrance in the same frame as overlay exit.
+        void tick().then(() => {
+          if (cancelled) return;
+          stageRevealActive = true;
+        });
         exitFallbackTimer = setTimeout(() => {
           if (cancelled || !bootOverlayExiting) return;
           bootOverlayVisible = false;
           bootOverlayExiting = false;
           bootAccountReveal = false;
-        }, 340);
+        }, 520);
       }, BOOT_ACCOUNT_REVEAL_HOLD_MS);
     })();
 
@@ -1119,7 +1233,9 @@ const getStatIcon = getItemIcon;
   let metPhaseShift = $state(0);
 
   // Dynamic cube count derived from measured progress width (for square cubes + fill)
-  let activeCubeCount = $derived(Math.max(8, Math.floor((timerBarProgressWidth || 200) / 8)));
+  let activeCubeCount = $derived(
+    Math.max(12, Math.min(36, Math.floor((timerBarProgressWidth || 200) / 6))),
+  );
 
   // Target for the currently active timed set (to compute met in JS for phase capture)
   let activeTimerTargetSeconds = $state(0);
@@ -1366,6 +1482,7 @@ const getStatIcon = getItemIcon;
     const copy = { ...exercise };
     normalizeDraftExercise(copy);
     copy.display_order = draftExercises.length;
+    exerciseListKeyById = rememberListKey(exerciseListKeyById, exercise.id);
     draftExercises = [...draftExercises, copy];
     selectExercise(exercise.id);
     selectedLibraryExerciseId = null;
@@ -1476,7 +1593,21 @@ const getStatIcon = getItemIcon;
       (currentView === 'stats' && workoutState !== 'active'),
   );
   let ctaBarVisible = $derived(
-    (currentView === 'track' ? (activeTemplate || isNoWorkoutCtaMode) : true) &&
+    // Track: keep the trio visible for the full session lifecycle (idle/active/done/skipped)
+    // and for rest/unlogged/past logs. Do not require activeWorkoutTemplate — finish clears it.
+    (currentView === 'track'
+      ? !!(
+          activeTemplate ||
+          activeWorkoutTemplate ||
+          isNoWorkoutCtaMode ||
+          workoutState === 'active' ||
+          workoutState === 'done' ||
+          workoutState === 'skipped' ||
+          (isViewingToday && todayLog) ||
+          isViewingPastDoneLog ||
+          isViewingPastSkippedLog
+        )
+      : true) &&
       (currentView === 'track' ||
         currentView === 'swap_template' ||
         currentView === 'edit_template' ||
@@ -1487,6 +1618,9 @@ const getStatIcon = getItemIcon;
         viewedLog ||
         selectedDateStr > REAL_TODAY_STR ||
         isNoWorkoutCtaMode ||
+        workoutState === 'active' ||
+        workoutState === 'done' ||
+        workoutState === 'skipped' ||
         currentView !== 'track'),
   );
   /** Reps/times/weight inputs — only while a live session is running. */
@@ -2450,33 +2584,92 @@ const getStatIcon = getItemIcon;
     countdownSeconds: number;
     countdownRunning: boolean;
     timerStartTimestamp: number | null;
+    /** Target seconds for the timed set (stable across template edits). */
+    targetSeconds?: number;
+  };
+
+  type ActiveRestBackup = {
+    exerciseId: string;
+    setIndex: number;
+    remainingSeconds: number;
+    startTimestamp: number | null;
+    targetSeconds?: number;
+  };
+
+  type PendingRestBackup = {
+    exerciseId: string;
+    setIndex: number;
+    targetSeconds: number;
+    /** Wall-clock when the rest fade should finish and the rest timer start. */
+    startAt: number;
   };
 
   type ActiveSessionBackup = {
+    v?: number;
+    userId?: string | null;
     date: string;
     templateId: string | null;
     templateName?: string;
     trackedReps: Record<string, number>;
     completedTimers: Record<string, { result: string; met: boolean; target?: number }>;
     workoutStartedAt: number;
+    /** Wall-clock ms when this payload was written (for merge / freshness). */
+    savedAt?: number;
     ongoingTimer?: OngoingTimerBackup | null;
-    activeRest?: {
-      exerciseId: string;
-      setIndex: number;
-      remainingSeconds: number;
-      startTimestamp: number | null;
-      targetSeconds?: number;
-    } | null;
+    activeRest?: ActiveRestBackup | null;
+    /** Rest fade in progress (1s delay before rest timer). */
+    pendingRest?: PendingRestBackup | null;
   };
+
+  const ACTIVE_SESSION_BACKUP_VERSION = 2;
+  let activeSessionHeartbeat: ReturnType<typeof setInterval> | null = null;
 
   function ongoingTimerBackupFromState(): OngoingTimerBackup | null {
     if (activeTimerExerciseId == null || activeTimerSetIndex == null) return null;
+    // Prefer wall-clock elapsed when running so kill/background mid-second is accurate.
+    let secs = countdownSeconds;
+    if (countdownRunning && timerStartTimestamp != null) {
+      secs = Math.max(0, Math.floor((Date.now() - timerStartTimestamp) / 1000));
+    }
     return {
       exerciseId: activeTimerExerciseId,
       setIndex: activeTimerSetIndex,
-      countdownSeconds,
+      countdownSeconds: secs,
       countdownRunning,
       timerStartTimestamp: countdownRunning ? timerStartTimestamp : null,
+      targetSeconds: activeTimerTargetSeconds > 0 ? activeTimerTargetSeconds : undefined,
+    };
+  }
+
+  function activeRestBackupFromState(): ActiveRestBackup | null {
+    if (activeRestExerciseId == null || activeRestSetIndex == null) return null;
+    let remaining = restCountdownSeconds;
+    if (restCountdownRunning && restTimerStartTimestamp != null && restCurrentTargetSeconds > 0) {
+      const elapsed = Math.floor((Date.now() - restTimerStartTimestamp) / 1000);
+      remaining = Math.max(0, restCurrentTargetSeconds - elapsed);
+    }
+    return {
+      exerciseId: activeRestExerciseId,
+      setIndex: activeRestSetIndex,
+      remainingSeconds: remaining,
+      startTimestamp: restCountdownRunning ? restTimerStartTimestamp : null,
+      targetSeconds: restCurrentTargetSeconds,
+    };
+  }
+
+  function pendingRestBackupFromState(): PendingRestBackup | null {
+    if (restFadeExerciseId == null || restFadeSetIndex == null) return null;
+    const tpl = activeWorkoutTemplate ?? activeTemplate;
+    const ex = tpl?.exercises?.find((e) => e.id === restFadeExerciseId);
+    const targetSeconds =
+      ex != null ? (ex.rest_minutes || 0) * 60 + (ex.rest_seconds || 0) : 0;
+    if (targetSeconds <= 0) return null;
+    // Fade is REST_START_DELAY_MS long; we don't store start of fade, so start rest soon.
+    return {
+      exerciseId: restFadeExerciseId,
+      setIndex: restFadeSetIndex,
+      targetSeconds,
+      startAt: Date.now(),
     };
   }
 
@@ -2485,27 +2678,31 @@ const getStatIcon = getItemIcon;
     if (workoutState !== 'active' || !isViewingToday) {
       localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
       if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+      stopActiveSessionHeartbeat();
       return;
     }
     const template = activeWorkoutTemplate ?? activeTemplate;
     const payload: ActiveSessionBackup = {
+      v: ACTIVE_SESSION_BACKUP_VERSION,
+      userId: currentUser?.id ?? null,
       date: REAL_TODAY_STR,
       templateId: template?.id ?? null,
       templateName: template?.name,
       trackedReps: { ...trackedReps },
       completedTimers: { ...completedTimers },
       workoutStartedAt: workoutStartedAt ?? Date.now(),
+      savedAt: Date.now(),
       ongoingTimer: ongoingTimerBackupFromState(),
-      activeRest: activeRestExerciseId && activeRestSetIndex != null ? {
-        exerciseId: activeRestExerciseId,
-        setIndex: activeRestSetIndex,
-        remainingSeconds: restCountdownSeconds,
-        startTimestamp: restCountdownRunning ? restTimerStartTimestamp : null,
-        targetSeconds: restCurrentTargetSeconds,
-      } : null,
+      activeRest: activeRestBackupFromState(),
+      pendingRest: activeRestBackupFromState() ? null : pendingRestBackupFromState(),
     };
-    localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(payload));
+    try {
+      localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(payload));
+    } catch (err) {
+      console.warn('[session] failed to write active session backup', err);
+    }
     if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+    ensureActiveSessionHeartbeat();
   }
 
   function readActiveSessionBackup(): ActiveSessionBackup | null {
@@ -2521,7 +2718,14 @@ const getStatIcon = getItemIcon;
       }
       if (!raw) return null;
       const parsed = JSON.parse(raw) as ActiveSessionBackup;
-      if (parsed?.date !== REAL_TODAY_STR) return null;
+      if (parsed?.date !== REAL_TODAY_STR) {
+        // Stale day — drop so it cannot revive tomorrow.
+        clearActiveSessionBackup();
+        return null;
+      }
+      if (parsed.userId && currentUser?.id && parsed.userId !== currentUser.id) {
+        return null;
+      }
       return parsed;
     } catch {
       return null;
@@ -2529,8 +2733,50 @@ const getStatIcon = getItemIcon;
   }
 
   function clearActiveSessionBackup() {
+    stopActiveSessionHeartbeat();
     if (typeof localStorage !== 'undefined') localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
     if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+  }
+
+  function ensureActiveSessionHeartbeat() {
+    if (typeof window === 'undefined') return;
+    if (activeSessionHeartbeat != null) return;
+    if (workoutState !== 'active') return;
+    // Periodic local snapshot so force-kills still leave a recent backup (timers use wall-clock).
+    activeSessionHeartbeat = setInterval(() => {
+      if (workoutState !== 'active' || !isViewingToday) {
+        stopActiveSessionHeartbeat();
+        return;
+      }
+      writeActiveSessionBackup();
+    }, 2500);
+  }
+
+  function stopActiveSessionHeartbeat() {
+    if (activeSessionHeartbeat != null) {
+      clearInterval(activeSessionHeartbeat);
+      activeSessionHeartbeat = null;
+    }
+  }
+
+  /** Recalc wall-clock timers after background/focus and re-snapshot local state. */
+  function resyncActiveSessionFromWallClock() {
+    if (workoutState !== 'active') return;
+    if (workoutStartedAt != null) {
+      workoutDuration = Math.max(0, Math.round((Date.now() - workoutStartedAt) / 1000));
+    }
+    if (activeTimerExerciseId != null && timerStartTimestamp != null && countdownRunning) {
+      countdownSeconds = Math.max(0, Math.floor((Date.now() - timerStartTimestamp) / 1000));
+    }
+    if (activeRestExerciseId != null && restTimerStartTimestamp != null && restCountdownRunning) {
+      const elapsed = Math.floor((Date.now() - restTimerStartTimestamp) / 1000);
+      restCountdownSeconds = Math.max(0, restCurrentTargetSeconds - elapsed);
+      if (restCountdownSeconds <= 0) {
+        restCountdownSeconds = 0;
+        restCountdownRunning = false;
+      }
+    }
+    writeActiveSessionBackup();
   }
 
   function countLoggedSets(
@@ -2568,7 +2814,11 @@ const getStatIcon = getItemIcon;
     }
     if (backup.activeRest) {
       restoreActiveRest(backup.activeRest, template);
+    } else if (backup.pendingRest) {
+      restorePendingRest(backup.pendingRest);
     }
+    ensureActiveSessionHeartbeat();
+    writeActiveSessionBackup();
     return true;
   }
 
@@ -2586,13 +2836,14 @@ const getStatIcon = getItemIcon;
     if (!r) return;
     activeRestExerciseId = r.exerciseId;
     activeRestSetIndex = r.setIndex;
-    const tplRest = (template?.exercises?.find(e => e.id === r.exerciseId)?.rest_minutes || 0) * 60 + (template?.exercises?.find(e => e.id === r.exerciseId)?.rest_seconds || 0);
+    const tplEx = template?.exercises?.find((e) => e.id === r.exerciseId);
+    const tplRest = (tplEx?.rest_minutes || 0) * 60 + (tplEx?.rest_seconds || 0);
     restCurrentTargetSeconds = r.targetSeconds ?? (tplRest || r.remainingSeconds);
     restCountdownSeconds = r.remainingSeconds;
     restCountdownRunning = !!r.startTimestamp;
     restTimerStartTimestamp = r.startTimestamp;
     if (restCountdownRunning && r.startTimestamp) {
-      // resume tick
+      // resume tick from wall clock
       const elapsed = Math.floor((Date.now() - r.startTimestamp) / 1000);
       restCountdownSeconds = Math.max(0, restCurrentTargetSeconds - elapsed);
       if (restCountdownSeconds > 0) {
@@ -2603,16 +2854,49 @@ const getStatIcon = getItemIcon;
         startRestVisualInterval();
         writeActiveSessionBackup();
       } else {
+        // Rest finished while away — clear cleanly
         stopRestTimer();
       }
+    } else if (restCountdownSeconds > 0) {
+      // Paused rest (no startTimestamp): keep frozen remaining time visible
+      restCountdownRunning = false;
+      restVisualMsPerDot = 0;
+      restVisualRawStep = restVisualDotCount;
     }
   }
 
+  function restorePendingRest(p: PendingRestBackup) {
+    if (!p || p.targetSeconds <= 0) return;
+    // If the fade window already elapsed while away, start rest immediately.
+    if (Date.now() >= p.startAt) {
+      startRestTimer(p.exerciseId, p.setIndex, p.targetSeconds);
+      return;
+    }
+    const delay = Math.max(0, p.startAt - Date.now());
+    if (restFadeTimer) clearTimeout(restFadeTimer);
+    restFadeExerciseId = p.exerciseId;
+    restFadeSetIndex = p.setIndex;
+    restFadeTimer = setTimeout(() => {
+      restFadeTimer = null;
+      const stillMatching =
+        restFadeExerciseId === p.exerciseId && restFadeSetIndex === p.setIndex;
+      restFadeExerciseId = null;
+      restFadeSetIndex = null;
+      if (stillMatching) {
+        startRestTimer(p.exerciseId, p.setIndex, p.targetSeconds);
+      }
+    }, delay);
+  }
+
   function tryRestoreActiveRestFromBackup(backup: ActiveSessionBackup | null) {
-    if (!backup?.activeRest) return;
+    if (!backup) return;
     if (activeRestExerciseId) return;
     const tpl = activeWorkoutTemplate ?? activeTemplate;
-    restoreActiveRest(backup.activeRest, tpl);
+    if (backup.activeRest) {
+      restoreActiveRest(backup.activeRest, tpl);
+    } else if (backup.pendingRest) {
+      restorePendingRest(backup.pendingRest);
+    }
   }
 
   function tryRestoreActiveSessionFromStorageAndLog(): boolean {
@@ -2625,16 +2909,20 @@ const getStatIcon = getItemIcon;
           countLoggedSets(backup.trackedReps, backup.completedTimers) >
             countLoggedSets(trackedReps, completedTimers)
         ) {
+          // Local snapshot is ahead of DB (e.g. offline sets) — prefer local.
           applyActiveSessionBackup(backup);
           void persistWorkoutProgressNow();
         } else {
           tryRestoreOngoingTimerFromBackup(backup);
           tryRestoreActiveRestFromBackup(backup);
+          ensureActiveSessionHeartbeat();
+          writeActiveSessionBackup();
         }
         return true;
       }
     }
 
+    // No in-progress DB row — still recover from localStorage (offline start, etc.).
     if (backup && applyActiveSessionBackup(backup)) {
       void persistWorkoutProgressNow();
       return true;
@@ -3215,11 +3503,16 @@ const getStatIcon = getItemIcon;
   }
 
   function openStatsEditor() {
-    draftStats = trackedStats.map((s, i) => ({ ...toTrackedStat(s, i) }));
-    selectedDraftStatId = draftStats.length > 0 ? draftStats[0].id : null;
-    editingStatNameId = null;
-    statSaveError = null;
-    currentView = 'edit_stats';
+    withSuppressedListEnter(() => {
+      draftStats = trackedStats.map((s, i) => ({ ...toTrackedStat(s, i) }));
+      let keys: Record<string, string> = {};
+      for (const s of draftStats) keys = rememberListKey(keys, s.id);
+      statListKeyById = keys;
+      selectedDraftStatId = draftStats.length > 0 ? draftStats[0].id : null;
+      editingStatNameId = null;
+      statSaveError = null;
+      currentView = 'edit_stats';
+    });
   }
 
   function exitStatsEditor() {
@@ -3258,6 +3551,7 @@ const getStatIcon = getItemIcon;
       return;
     }
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    statListKeyById = rememberListKey(statListKeyById, tempId, tempId);
     draftStats = [
       ...draftStats,
       {
@@ -3280,6 +3574,7 @@ const getStatIcon = getItemIcon;
   function deleteSelectedStat() {
     if (!selectedDraftStatId) return;
     const id = selectedDraftStatId;
+    statListKeyById = forgetListKey(statListKeyById, id);
     draftStats = draftStats.filter((s) => s.id !== id);
     selectedDraftStatId = draftStats.length > 0 ? draftStats[draftStats.length - 1].id : null;
     editingStatNameId = null;
@@ -3306,16 +3601,25 @@ const getStatIcon = getItemIcon;
       const saved = await db.saveTrackedStats(snapStats);
       const prevDraft = draftStats;
       const prevSelected = selectedDraftStatId;
-      draftStats = saved.map((s) => ({ ...s }));
-      trackedStats = draftStats.map((s) => ({ ...s }));
-      const nextSelected = prevDraft.findIndex((s) => s.id === prevSelected);
-      if (nextSelected >= 0 && saved[nextSelected]) {
-        selectedDraftStatId = saved[nextSelected].id;
-      } else if (prevSelected && saved.some((s) => s.id === prevSelected)) {
-        selectedDraftStatId = prevSelected;
-      } else {
-        selectedDraftStatId = saved[0]?.id ?? null;
-      }
+      withSuppressedListEnter(() => {
+        let nextStatKeys = statListKeyById;
+        saved.forEach((s, i) => {
+          const prevId = prevDraft[i]?.id;
+          if (prevId && prevId !== s.id) nextStatKeys = promoteListKey(nextStatKeys, prevId, s.id);
+          else if (s.id) nextStatKeys = rememberListKey(nextStatKeys, s.id);
+        });
+        statListKeyById = nextStatKeys;
+        draftStats = saved.map((s) => ({ ...s }));
+        trackedStats = draftStats.map((s) => ({ ...s }));
+        const nextSelected = prevDraft.findIndex((s) => s.id === prevSelected);
+        if (nextSelected >= 0 && saved[nextSelected]) {
+          selectedDraftStatId = saved[nextSelected].id;
+        } else if (prevSelected && saved.some((s) => s.id === prevSelected)) {
+          selectedDraftStatId = prevSelected;
+        } else {
+          selectedDraftStatId = saved[0]?.id ?? null;
+        }
+      });
       statSaveError = null;
     } catch (err) {
       console.error('stat save failed', err);
@@ -3374,6 +3678,23 @@ const getStatIcon = getItemIcon;
 
   function getStatTodayInputValue(statId: string): number {
     return statLogs[statId]?.[REAL_TODAY_STR] ?? 0;
+  }
+
+  function getStatLatestEntry(statId: string): { date: string; value: number } | null {
+    const logs = statLogs[statId];
+    if (!logs) return null;
+    const dates = Object.keys(logs).sort();
+    if (dates.length === 0) return null;
+    const date = dates[dates.length - 1];
+    return { date, value: logs[date] };
+  }
+
+  function rangeModeLabel(mode: RangeMode): string {
+    if (mode === '3weeks') return '3W';
+    if (mode === '3m') return '3M';
+    if (mode === '6m') return '6M';
+    if (mode === 'ytd') return 'YTD';
+    return 'ALL';
   }
 
   function setStatTodayInputDraft(statId: string, value: number) {
@@ -3937,28 +4258,32 @@ const getStatIcon = getItemIcon;
 				bootMessage = 'Almost ready…';
 			}
 			if (!options.preserveSession) {
-				if (!todayLog) {
-					workoutState = 'idle';
-					activeWorkoutTemplate = null;
-				} else if (logIsSkipped(todayLog)) {
+				const localBackup = readActiveSessionBackup();
+				// Restore when DB says in-progress OR we only have a same-day local snapshot
+				// (offline start / first save never reached the server).
+				// NOTE: previously `if (!todayLog) idle` ran first and made local-only restore dead code.
+				if (logIsSkipped(todayLog)) {
 					workoutState = 'skipped';
 					activeWorkoutTemplate = null;
-				} else if (
-					isWorkoutInProgress(todayLog) ||
-					(!todayLog && readActiveSessionBackup())
-				) {
+					if (localBackup) clearActiveSessionBackup();
+				} else if (isWorkoutInProgress(todayLog) || (!!localBackup && !todayLog)) {
 					if (!tryRestoreActiveSessionFromStorageAndLog()) {
 						workoutState = 'idle';
 						activeWorkoutTemplate = null;
 						clearActiveSessionBackup();
 					}
+				} else if (!todayLog) {
+					workoutState = 'idle';
+					activeWorkoutTemplate = null;
 				} else {
+					// Completed workout for today — drop any leftover active-session snapshot.
 					workoutState = 'done';
 					activeWorkoutTemplate = null;
 					workoutDuration = durationSecondsFromLog(todayLog);
 					clearInterval(workoutTimer);
 					workoutTimer = null;
 					workoutStartedAt = null;
+					if (localBackup) clearActiveSessionBackup();
 				}
 				justFinishedStatus = null;
 			}
@@ -4065,6 +4390,8 @@ const getStatIcon = getItemIcon;
           newcomerBootstrapPending = false;
           bootMessage = 'Checking session…';
           bootSections = [];
+          // Don't leak in-progress sets across accounts on this device.
+          if (event === 'SIGNED_OUT') clearActiveSessionBackup();
         }
       })();
     });
@@ -4088,13 +4415,34 @@ const getStatIcon = getItemIcon;
       }
     })();
 
-    const onPageHide = () => {
+    const persistOnBackground = () => {
+      if (workoutState !== 'active') return;
+      writeActiveSessionBackup();
+      flushWorkoutProgressSave();
+    };
+    const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
-        writeActiveSessionBackup();
-        flushWorkoutProgressSave();
+        persistOnBackground();
+      } else if (document.visibilityState === 'visible') {
+        resyncActiveSessionFromWallClock();
       }
     };
-    document.addEventListener('visibilitychange', onPageHide);
+    const onPageHide = () => {
+      persistOnBackground();
+    };
+    const onFreeze = () => {
+      persistOnBackground();
+    };
+    // beforeunload: best-effort last write (localStorage is sync; network flush may not complete).
+    const onBeforeUnload = () => {
+      writeActiveSessionBackup();
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
+    // Page Lifecycle API (Chrome): fire when the page is frozen in the background.
+    document.addEventListener('freeze', onFreeze);
+    window.addEventListener('beforeunload', onBeforeUnload);
 
     return () => {
       stopSupabaseBackgroundSync();
@@ -4102,7 +4450,13 @@ const getStatIcon = getItemIcon;
       unsubDbActivitySnapshot();
       if (dbIoFlashTimer) clearTimeout(dbIoFlashTimer);
       subscription.unsubscribe();
-      document.removeEventListener('visibilitychange', onPageHide);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+      document.removeEventListener('freeze', onFreeze);
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      // Last chance while the component tears down.
+      writeActiveSessionBackup();
+      stopActiveSessionHeartbeat();
     };
   });
   onDestroy(() => {
@@ -4113,7 +4467,9 @@ const getStatIcon = getItemIcon;
       templateNamePersistTimer = null;
     }
     void persistTemplateExercisesNow();
+    writeActiveSessionBackup();
     flushWorkoutProgressSave();
+    stopActiveSessionHeartbeat();
     if (dbIoFlashTimer) clearTimeout(dbIoFlashTimer);
     clearInterval(workoutTimer);
     clearInterval(countdownTimer);
@@ -4203,6 +4559,7 @@ const getStatIcon = getItemIcon;
     }, 1000);
     beginHeaderTimerFadeIn();
     writeActiveSessionBackup();
+    ensureActiveSessionHeartbeat();
     void persistWorkoutProgressNow();
   }
 
@@ -4544,6 +4901,10 @@ const getStatIcon = getItemIcon;
     activeTimerSetIndex = timer.setIndex;
     countdownRunning = timer.countdownRunning;
     configureExerciseVisualTimer(timer.exerciseId);
+    activeTimerTargetSeconds =
+      timer.targetSeconds != null && timer.targetSeconds > 0
+        ? timer.targetSeconds
+        : (ex.target_minutes || 0) * 60 + (ex.target_seconds || 0);
 
     if (timer.countdownRunning && timer.timerStartTimestamp != null) {
       timerStartTimestamp = timer.timerStartTimestamp;
@@ -4555,15 +4916,16 @@ const getStatIcon = getItemIcon;
       startExerciseCountdownInterval();
       startExerciseVisualInterval();
     } else {
-      timerStartTimestamp = null;
-      countdownSeconds = timer.countdownSeconds;
+      // Paused: freeze at last known elapsed; rebuild wall-clock base for resume.
+      timerStartTimestamp = Date.now() - Math.max(0, timer.countdownSeconds) * 1000;
+      countdownSeconds = Math.max(0, timer.countdownSeconds);
       visualRawStep =
         visualMsPerDot > 0
           ? Math.floor((countdownSeconds * 1000) / visualMsPerDot)
           : 0;
       currentVisualDot = visualRawStep;
     }
-    wasMet = false;
+    wasMet = activeTimerTargetSeconds > 0 && countdownSeconds >= activeTimerTargetSeconds;
     metPhaseShift = 0;
   }
 
@@ -5010,6 +5372,7 @@ const getStatIcon = getItemIcon;
         showTemplateColorPicker = false;
         currentView = returnView;
         if (!deletedId.startsWith('temp-')) {
+          forgetTemplateListKey(deletedId);
           templates = templates.filter((t) => t.id !== deletedId);
           void clearTemplateFromAllDays(deletedId);
           void db.deleteTemplate(deletedId).catch((err) => {
@@ -5017,6 +5380,9 @@ const getStatIcon = getItemIcon;
             templateSaveError = formatDbError(err);
             void loadData({ preserveSession: true });
           });
+        } else {
+          forgetTemplateListKey(deletedId);
+          templates = templates.filter((t) => t.id !== deletedId);
         }
       }
     }, 16);
@@ -5329,6 +5695,7 @@ const getStatIcon = getItemIcon;
         display_order: nextOrder,
         exercises: [],
       };
+      rememberTemplateListKey(tempId, tempId);
       templates = [...templates, optimistic];
       // Scope new templates to this routine so the list is not empty after create
       routineEditorExtraTemplateIds = new Set([...routineEditorExtraTemplateIds, tempId]);
@@ -5348,6 +5715,7 @@ const getStatIcon = getItemIcon;
             );
             return null;
           }
+          promoteTemplateListKey(tempId, template.id);
           templates = templates.map((t) => (t.id === tempId ? template : t));
           // Swap temp id → real id in routine-scoped set
           const extras = new Set(routineEditorExtraTemplateIds);
@@ -5378,6 +5746,7 @@ const getStatIcon = getItemIcon;
           return template.id;
         } catch (e) {
           console.error('Create template failed', e);
+          forgetTemplateListKey(tempId);
           templates = templates.filter((t) => t.id !== tempId);
 
           // clean up assignments pointing to the failed temp
@@ -5964,17 +6333,9 @@ const getStatIcon = getItemIcon;
         flushWorkoutProgressSave();
       }).catch(() => {});
       App.addListener('resume', () => {
+        resyncActiveSessionFromWallClock();
         if (workoutState === 'active') {
-          if (workoutStartedAt != null) {
-            workoutDuration = Math.max(0, Math.round((Date.now() - workoutStartedAt) / 1000));
-          }
-          if (activeTimerExerciseId != null && timerStartTimestamp != null && countdownRunning) {
-            countdownSeconds = Math.max(0, Math.floor((Date.now() - timerStartTimestamp) / 1000));
-          }
-          if (activeRestExerciseId != null && restTimerStartTimestamp != null && restCountdownRunning) {
-            const elapsed = Math.floor((Date.now() - restTimerStartTimestamp) / 1000);
-            restCountdownSeconds = Math.max(0, restCurrentTargetSeconds - elapsed);
-          }
+          flushWorkoutProgressSave();
         }
       }).catch(() => {});
     }
@@ -6441,6 +6802,7 @@ const getStatIcon = getItemIcon;
       ? templates.find((t) => t.id === replacementId)
       : null;
     const safeReplacement = isTemplateAssignable(replacementTpl) ? replacementId : null;
+    forgetTemplateListKey(deletedId);
     templates = templates.filter((t) => t.id !== deletedId);
     const nextAssignments = { ...builderAssignments };
     for (let i = 0; i < 7; i++) {
@@ -6537,24 +6899,31 @@ const getStatIcon = getItemIcon;
 
     // Single batch: open shell + exercise list immediately (no empty-then-fill lag).
     // Properties panel is deferred one frame — it's the heaviest form subtree.
-    templateEditorReturnView = returnView;
-    editingTemplateId = id;
-    exerciseTypeFieldStash = {};
-    draftTemplateName = name;
-    draftTemplateColor = color;
-    draftTemplateIcon = icon;
-    draftExercises = next;
-    selectedExerciseId = null;
-    editingExerciseNameId = null;
-    templateSaveError = null;
-    showTemplateColorPicker = false;
-    showTemplateIconPicker = false;
-    showExerciseLibraryPicker = false;
-    libraryPickerClosing = false;
-    selectedLibraryExerciseId = null;
-    librarySearchQuery = '';
-    deletedLibraryExerciseIds = new Set();
-    currentView = 'edit_template';
+    withSuppressedListEnter(() => {
+      templateEditorReturnView = returnView;
+      editingTemplateId = id;
+      exerciseTypeFieldStash = {};
+      draftTemplateName = name;
+      draftTemplateColor = color;
+      draftTemplateIcon = icon;
+      let exKeys: Record<string, string> = {};
+      for (const e of next) {
+        if (e?.id) exKeys = rememberListKey(exKeys, e.id);
+      }
+      exerciseListKeyById = exKeys;
+      draftExercises = next;
+      selectedExerciseId = null;
+      editingExerciseNameId = null;
+      templateSaveError = null;
+      showTemplateColorPicker = false;
+      showTemplateIconPicker = false;
+      showExerciseLibraryPicker = false;
+      libraryPickerClosing = false;
+      selectedLibraryExerciseId = null;
+      librarySearchQuery = '';
+      deletedLibraryExerciseIds = new Set();
+      currentView = 'edit_template';
+    });
 
     if (firstId) {
       const openId = id;
@@ -6632,28 +7001,43 @@ const getStatIcon = getItemIcon;
     const selectedIndex = draftExercises.findIndex((e) => e.id === prevSelected);
     const prevDraft = draftExercises;
 
-    patchTemplateInCache(templateId, tpl?.name ?? draftTemplateName, saved, draftTemplateColor);
-    mergeSavedExercisesIntoLibrary(saved);
-    draftExercises = saved.map((ex) => ({ ...ex }));
+    // Suppress enter so save reconciliation never re-animates the whole list
+    // (that stacked with deletes as ghost rows).
+    withSuppressedListEnter(() => {
+      patchTemplateInCache(templateId, tpl?.name ?? draftTemplateName, saved, draftTemplateColor);
+      mergeSavedExercisesIntoLibrary(saved);
 
-    const nextStash = { ...exerciseTypeFieldStash };
-    saved.forEach((savedEx, i) => {
-      const prevId = prevDraft[i]?.id;
-      if (prevId && prevId !== savedEx.id && nextStash[prevId]) {
-        nextStash[savedEx.id] = mergeExerciseTypeStash(
-          nextStash[savedEx.id],
-          nextStash[prevId],
-        );
-        delete nextStash[prevId];
+      let nextExKeys = exerciseListKeyById;
+      saved.forEach((savedEx, i) => {
+        const prevId = prevDraft[i]?.id as string | undefined;
+        if (prevId && prevId !== savedEx.id) {
+          nextExKeys = promoteListKey(nextExKeys, prevId, savedEx.id);
+        } else if (savedEx.id) {
+          nextExKeys = rememberListKey(nextExKeys, savedEx.id);
+        }
+      });
+      exerciseListKeyById = nextExKeys;
+      draftExercises = saved.map((ex) => ({ ...ex }));
+
+      const nextStash = { ...exerciseTypeFieldStash };
+      saved.forEach((savedEx, i) => {
+        const prevId = prevDraft[i]?.id;
+        if (prevId && prevId !== savedEx.id && nextStash[prevId]) {
+          nextStash[savedEx.id] = mergeExerciseTypeStash(
+            nextStash[savedEx.id],
+            nextStash[prevId],
+          );
+          delete nextStash[prevId];
+        }
+      });
+      exerciseTypeFieldStash = nextStash;
+
+      if (selectedIndex >= 0 && saved[selectedIndex]) {
+        selectedExerciseId = saved[selectedIndex].id;
+      } else if (prevSelected && saved.some((ex) => ex.id === prevSelected)) {
+        selectedExerciseId = prevSelected;
       }
     });
-    exerciseTypeFieldStash = nextStash;
-
-    if (selectedIndex >= 0 && saved[selectedIndex]) {
-      selectedExerciseId = saved[selectedIndex].id;
-    } else if (prevSelected && saved.some((ex) => ex.id === prevSelected)) {
-      selectedExerciseId = prevSelected;
-    }
   }
 
   async function persistTemplateExercisesNow() {
@@ -6816,6 +7200,7 @@ const getStatIcon = getItemIcon;
     if (currentView === 'edit_template' && draftExercises.length > 0) {
       const { [id]: _removed, ...restStash } = exerciseTypeFieldStash;
       exerciseTypeFieldStash = restStash;
+      exerciseListKeyById = forgetListKey(exerciseListKeyById, id);
       draftExercises = draftExercises.filter((e: any) => e.id !== id);
       if (editingTemplateId) {
         const tpl = templates.find((t) => t.id === editingTemplateId);
@@ -6905,6 +7290,7 @@ const getStatIcon = getItemIcon;
     closeLibraryPicker();
     // Creates a brand new exercise row on save (temp- id → INSERT in saveTemplateExercises).
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    exerciseListKeyById = rememberListKey(exerciseListKeyById, tempId, tempId);
     const newEx: any = {
       id: tempId,
       name: 'NEW EXERCISE',
@@ -6937,6 +7323,7 @@ const getStatIcon = getItemIcon;
   function deleteSelectedExercise() {
     if (!selectedExerciseId) return;
     const id = selectedExerciseId;
+    exerciseListKeyById = forgetListKey(exerciseListKeyById, id);
     draftExercises = draftExercises.filter((e: any) => e.id !== id);
     if (editingTemplateId) {
       const tpl = templates.find((t) => t.id === editingTemplateId);
@@ -7203,7 +7590,7 @@ const getStatIcon = getItemIcon;
           {:else if workoutState === 'idle'}
               <button
                 type="button"
-                class="{workoutCenterBtnClass} border-transparent bg-white text-black"
+                class="{workoutCenterBtnClass} start-workout-glow border-transparent bg-white text-black"
                 onclick={handleStartWorkoutTap}
               >
                 <span
@@ -7323,14 +7710,20 @@ const getStatIcon = getItemIcon;
 
   {#if showSettingsPanel}
     <div
-      class="settings-panel-overlay"
+      class="settings-panel-overlay settings-panel-overlay--user-menu"
       role="dialog"
       aria-modal="true"
       aria-label="Account and backend"
       tabindex="-1"
+      in:userMenuOverlayIn
+      out:userMenuOverlayOut
       onclick={(e) => { if (e.target === e.currentTarget) closeSettingsPanel(); }}
     >
-      <div class="settings-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left">
+      <div
+        class="settings-panel-dialog settings-panel-dialog--user-menu rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left"
+        in:userMenuIn
+        out:userMenuOut
+      >
         <div class="settings-panel-header">
           <div class="settings-panel-header__title">
             <div class="settings-panel-brand" aria-hidden="true">
@@ -7695,8 +8088,13 @@ const getStatIcon = getItemIcon;
       aria-modal="true"
       aria-label="Update available"
       tabindex="-1"
+      transition:fade={{ duration: OVERLAY_MS }}
     >
-      <div class="settings-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left">
+      <div
+        class="settings-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left"
+        in:menuPanelIn
+        out:menuPanelOut
+      >
         <div class="settings-panel-header">
           <div class="settings-panel-header__title">
             <div class="settings-panel-brand" aria-hidden="true">
@@ -7818,8 +8216,13 @@ const getStatIcon = getItemIcon;
       aria-modal="true"
       aria-label="App updated"
       tabindex="-1"
+      transition:fade={{ duration: OVERLAY_MS }}
     >
-      <div class="settings-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left">
+      <div
+        class="settings-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left"
+        in:menuPanelIn
+        out:menuPanelOut
+      >
         <div class="settings-panel-header">
           <div class="settings-panel-header__title">
             <div class="settings-panel-brand" aria-hidden="true">
@@ -8211,6 +8614,12 @@ const getStatIcon = getItemIcon;
   </div>
 
   <div class="app-stage-body flex-1 min-h-0 flex flex-col overflow-hidden min-w-0">
+  {#key currentView}
+  <div
+    class="app-view-shell flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden"
+    in:menuViewIn
+    out:menuViewOut
+  >
   {#if currentView === 'track'}
     {@const isPast = selectedDateStr < REAL_TODAY_STR && !isViewingToday}
     {@const hasLog = !!viewedLog}
@@ -8409,7 +8818,7 @@ const getStatIcon = getItemIcon;
         <p class="text-[10px] text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{templateSaveError}</p>
       {/if}
       <div
-        class="tpl-header status-surface status-surface--prompt rounded-xl px-3 py-1 flex flex-col gap-0.5 {headerSurfaceStatus === 'green'
+        class="tpl-header status-surface status-surface--prompt rounded-lg px-3 py-1 flex flex-col gap-0.5 {headerSurfaceStatus === 'green'
           ? 'status-surface--green'
           : headerSurfaceStatus === 'yellow'
             ? 'status-surface--yellow'
@@ -8442,7 +8851,7 @@ const getStatIcon = getItemIcon;
               {#if showHeaderEditActions}
                 <button
                   type="button"
-                  class="w-10 h-10 rounded-lg shrink-0 flex items-center justify-center border bg-transparent self-center hover:bg-[#1a1a1a] hover:text-white {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'}"
+                  class="w-10 h-10 rounded-md shrink-0 flex items-center justify-center border bg-transparent self-center hover:bg-[#1a1a1a] hover:text-white {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'}"
                   onclick={() => enterRoutineBuilder()}
                   title="Routine editor"
                 ><CalendarDays class="size-5" /></button>
@@ -8481,7 +8890,7 @@ const getStatIcon = getItemIcon;
               {#if showHeaderEditActions}
                 <button
                   type="button"
-                  class="w-10 h-10 rounded-lg shrink-0 flex items-center justify-center border bg-transparent self-center hover:bg-[#1a1a1a] hover:text-white {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'}"
+                  class="w-10 h-10 rounded-md shrink-0 flex items-center justify-center border bg-transparent self-center hover:bg-[#1a1a1a] hover:text-white {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'}"
                   onclick={() => openTemplateEditor()}
                   title="Edit Exercises"
                 ><Pencil class="size-5" /></button>
@@ -8518,15 +8927,17 @@ const getStatIcon = getItemIcon;
       </div>
 
       <!-- Exercises in one shared box separated by horizontal dividers, with list numbers on left (like editor list) -->
+      <!-- Outer scroll scroller; card border lives on a non-overflow shell so radius corners aren't clipped. -->
       <div
         class="track-workout-exercises flex-1 min-h-0 overflow-y-auto no-scrollbar"
         use:scrollEdgeFade
       >
       <div
-        class="rounded-xl overflow-hidden border {isFuture ? 'opacity-80' : ''} {headerSkipped
-          ? 'status-surface status-surface--skipped'
-          : 'bg-[#141414] border-[#1e1e1e]'}"
+        class="track-ex-list {isFuture ? 'opacity-80' : ''} {headerSkipped
+          ? 'track-ex-list--skipped'
+          : ''}"
       >
+        <div class="track-ex-list__clip">
         {#each (dispTemplate?.exercises || []) as exercise, index}
           {@const status = getExerciseStatus(exercise)}
           {@const exRed = headerSkipped || status === 'skipped'}
@@ -8550,11 +8961,11 @@ const getStatIcon = getItemIcon;
           {@const displayCurrentWeight = formatOneDecimal(loggedEx?.weight_before ?? exercise.current_weight ?? 0)}
           {@const displayIncrementKg = formatOneDecimal(exercise.increment)}
           <div
-            class="p-3 flex gap-1 min-w-0 status-surface {exSurfaceClass} {(hasActiveRestThis || isFadingToRestThis) ? '!bg-orange-900 text-orange-200' : ''} {hasActiveRestElsewhere ? 'opacity-70' : ''} {isFadingToRestThis ? 'transition-colors duration-1000' : ''} {workoutExercisesEditable ? 'hover:brightness-110' : ''} {index > 0 ? (exRed ? 'border-t border-[color:var(--w-skipped-border)]' : 'border-t border-[#1e1e1e]') : ''}"
+            class="track-ex-row p-3 flex gap-1 min-w-0 status-surface status-surface--row {exSurfaceClass} {(hasActiveRestThis || isFadingToRestThis) ? '!bg-orange-900 text-orange-200' : ''} {hasActiveRestElsewhere ? 'opacity-70' : ''} {isFadingToRestThis ? 'transition-colors duration-1000' : ''} {workoutExercisesEditable ? 'hover:brightness-110' : ''} {index > 0 ? (exRed ? 'border-t border-[color:var(--w-skipped-border)]' : 'border-t border-[#1e1e1e]') : ''}"
           >
             <!-- list number on left: boxed, vertically centered in strip, slightly larger -->
             <div
-              class={`exercise-index w-6 flex-shrink-0 flex items-center justify-center rounded text-[10px] font-medium status-surface ${exSurfaceClass} ${(hasActiveRestThis || isFadingToRestThis) ? (isFadingToRestThis ? 'transition-colors duration-1000 ' : '') + '!bg-orange-800 text-orange-400' : ''} ${exRed ? 'text-current' : 'text-zinc-400'}`}
+              class={`exercise-index w-6 flex-shrink-0 flex items-center justify-center rounded-sm text-[10px] font-medium status-surface ${exSurfaceClass} ${(hasActiveRestThis || isFadingToRestThis) ? (isFadingToRestThis ? 'transition-colors duration-1000 ' : '') + '!bg-orange-800 text-orange-400' : ''} ${exRed ? 'text-current' : 'text-zinc-400'}`}
             >
               {index + 1}
             </div>
@@ -8563,12 +8974,12 @@ const getStatIcon = getItemIcon;
               <div class="flex-1 pr-2 min-w-0">
                 <div class="ex-name-row {workoutExercisesEditable ? 'hover:brightness-110' : ''}">
                   {#if exercise.exercise_type === 'reps'}
-                    <Dumbbell class="size-3.5 shrink-0 transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-white'}" />
+                    <Dumbbell class="size-3.5 shrink-0 transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-zinc-500'}" />
                   {:else}
-                    <Timer class="size-3.5 shrink-0 transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-white'}" />
+                    <Timer class="size-3.5 shrink-0 transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-zinc-500'}" />
                   {/if}
                   <div class="flex items-center min-w-0 flex-1 gap-1">
-                    <span class="ex-name text-sm font-extrabold tracking-wide truncate transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-white'}">{exercise.name}</span>
+                    <span class="ex-name text-sm font-medium tracking-wide truncate transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-white'}">{exercise.name}</span>
                     {#if showUntouchedBadge(exercise)}
                       <span class="untouched-badge">UNTOUCHED</span>
                     {:else if showPrBadge(exercise, loggedEx)}
@@ -8634,6 +9045,7 @@ const getStatIcon = getItemIcon;
                 class:timer-progress-cubes--running={running}
                 class:timer-progress-cubes--met={met}
                 class:timer-progress-cubes--yellow={yellow && !met}
+                class:timer-progress-cubes--rest={isRest}
               >
                 {#each Array(cubeCount) as _, i}
                   {@const isCurrent = i === displayDot}
@@ -8653,7 +9065,6 @@ const getStatIcon = getItemIcon;
                     class:timer-progress-cube--future={effectiveIsFuture}
                     class:timer-progress-cube--lit={effectiveIsCurrent && !met}
                     class:timer-progress-cube--met={met && effectiveIsCurrent}
-                    style={isRest ? `background-color: ${effectiveIsPast && !effectiveIsTrail ? '#9a3412' : effectiveIsTrail ? '#c2410f' : effectiveIsFuture ? '#431407' : effectiveIsCurrent && !met ? '#f97316' : '#ea580c'};` : undefined}
                   ></div>
                 {/each}
               </div>
@@ -8682,7 +9093,7 @@ const getStatIcon = getItemIcon;
                         {@const isFutureLocked = isFutureSetLockedByOrder(exercise.id, s, false)}
                         {@const canLogThisSet = isSetUnlockedForLogging(exercise.id, s, false)}
                         <div
-                          class="set-bubble relative h-7 rounded-lg flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
+                          class="set-bubble relative h-7 rounded-md flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
                             {setBubbleSkipped
                               ? 'set-bubble--empty status-surface--skipped'
                               : bubbleStatus === 'empty'
@@ -8714,7 +9125,7 @@ const getStatIcon = getItemIcon;
                             </div>
                           {:else if isEditingThisSet}
                             <input type="text" inputmode="numeric" autocomplete="off" id="input-{exercise.id}-{s}" placeholder={exercise.target_reps.toString()}
-                              class="prop-num-input absolute inset-0 z-10 w-full h-full bg-transparent border-none outline-none text-center font-sans text-[10px] font-extrabold text-white"
+                              class="prop-num-input absolute inset-0 z-10 w-full h-full bg-transparent border-none outline-none text-center font-sans text-[10px] font-medium text-white"
                               use:clampedNumericProp={{
                                 kind: 'trackedReps',
                                 getValue: () => repsValue ?? 0,
@@ -8735,7 +9146,7 @@ const getStatIcon = getItemIcon;
                               disabled={!workoutExercisesEditable || hasActiveRestElsewhere || !canLogThisSet}
                             >
                               <span class="sl text-[8px] tracking-wider opacity-60 block leading-none text-zinc-400">S{s + 1}</span>
-                              <span class="sv text-[11px] font-extrabold block text-current leading-none">{repsValue !== undefined ? repsValue : '—'}</span>
+                              <span class="sv text-[11px] font-medium block text-current leading-none tabular-nums">{repsValue !== undefined ? repsValue : '—'}</span>
                             </button>
                           {/if}
                         </div>
@@ -8746,7 +9157,7 @@ const getStatIcon = getItemIcon;
                   <div class="time-set-lane">
                     {#if hasActiveTimerThis && activeTimerSetIndex !== null}
                       {@const s = activeTimerSetIndex}
-                      {@const timerCubeCount = Math.max(8, Math.floor((timerBarProgressWidth || 200) / 8))}
+                      {@const timerCubeCount = Math.max(12, Math.min(36, Math.floor((timerBarProgressWidth || 200) / 6)))}
                       {@const timerMet = timeTotal > 0 && countdownSeconds >= timeTotal}
                       {@const rawDot = visualRawStep}
                       {@const cycle = timerCubeCount * 2}
@@ -8772,7 +9183,7 @@ const getStatIcon = getItemIcon;
                             onclick={toggleExerciseTimer}
                             aria-label={countdownRunning ? 'Pause timer' : 'Resume timer'}
                           >
-                            {#if countdownRunning}<Pause class="size-3.5 fill-current" />{:else}<Play class="size-3.5 fill-current" />{/if}
+                            {#if countdownRunning}<Pause class="size-4 fill-current" />{:else}<Play class="size-4 fill-current" />{/if}
                           </button>
                           <button
                             type="button"
@@ -8780,7 +9191,7 @@ const getStatIcon = getItemIcon;
                             aria-label="Stop and save set"
                             onclick={() => stopAndSaveTimedSet(exercise.id, s, timeTotal)}
                           >
-                            <Square class="size-3.5 fill-current" />
+                            <Square class="size-4 fill-current" />
                           </button>
                         </div>
                       </div>
@@ -8804,7 +9215,7 @@ const getStatIcon = getItemIcon;
                           {@const isFutureLocked = isFutureSetLockedByOrder(exercise.id, s, true)}
                           {@const canLogThisSet = isSetUnlockedForLogging(exercise.id, s, true)}
                           <div
-                            class="set-bubble relative h-7 rounded-lg flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
+                            class="set-bubble relative h-7 rounded-md flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
                               {setBubbleSkipped
                                 ? 'set-bubble--empty status-surface--skipped'
                                 : bubbleStatus === 'empty'
@@ -8834,7 +9245,7 @@ const getStatIcon = getItemIcon;
                                 disabled={!workoutExercisesEditable || hasActiveRestElsewhere || !canLogThisSet}
                               >
                                 <span class="sl text-[8px] tracking-wider opacity-60 block leading-none text-zinc-400">S{s + 1}</span>
-                                <span class="sv text-[11px] font-extrabold block text-current leading-none tabular-nums">{saved ? saved.result : '—'}</span>
+                                <span class="sv text-[11px] font-medium block text-current leading-none tabular-nums">{saved ? saved.result : '—'}</span>
                               </button>
                             {/if}
                           </div>
@@ -8848,7 +9259,7 @@ const getStatIcon = getItemIcon;
               <!-- Rest progress bar layer (crossfades in) -->
               {#if hasActiveRestThis || isFadingToRestThis}
                 {@const s = activeRestSetIndex ?? 0}
-                {@const timerCubeCount = Math.max(8, Math.floor((timerBarProgressWidth || 200) / 8))}
+                {@const timerCubeCount = Math.max(12, Math.min(36, Math.floor((timerBarProgressWidth || 200) / 6)))}
                 {@const timerMet = restCurrentTargetSeconds > 0 && restCountdownSeconds <= 0}
                 {@const rawDot = restVisualRawStep}
                 {@const cycle = timerCubeCount * 2}
@@ -8867,7 +9278,7 @@ const getStatIcon = getItemIcon;
                   transition:fade={{ duration: 1000 }}
                 >
                   <div class="time-set-lane">
-                    <div class="time-active-bar" style="color: #f97316;">
+                    <div class="time-active-bar time-active-bar--rest">
                       <span class="time-active-set">REST</span>
                       <div class="time-active-progress" bind:clientWidth={timerBarProgressWidth}>
                         {@render timerProgressCubes(restCountdownRunning, timerMet, false, timerCubeCount, displayDot, direction, inReverse, true)}
@@ -8880,7 +9291,7 @@ const getStatIcon = getItemIcon;
                           aria-label="Stop rest"
                           onclick={() => stopRestTimer()}
                         >
-                          <Square class="size-3.5 fill-current" />
+                          <Square class="size-4 fill-current" />
                         </button>
                       </div>
                     </div>
@@ -8891,6 +9302,7 @@ const getStatIcon = getItemIcon;
             </div>
           </div>
         {/each}
+        </div>
       </div>
       </div>
       </div>
@@ -9011,14 +9423,20 @@ const getStatIcon = getItemIcon;
             </button>
           </div>
 
-          <div class="flex flex-col gap-1" role="list" bind:this={templateListBody} ondrop={activeRoutineIsReadonly ? undefined : handleTemplateDrop} ondragover={activeRoutineIsReadonly ? undefined : handleTemplateDragOver}>
-          {#each builderTemplates as template, index (template.id)}
+          <div class="flex flex-col gap-1 overflow-x-hidden" role="list" bind:this={templateListBody} ondrop={activeRoutineIsReadonly ? undefined : handleTemplateDrop} ondragover={activeRoutineIsReadonly ? undefined : handleTemplateDragOver}>
+          {#each builderTemplates as template, index (templateListKey(template.id))}
             {@const isEmpty = template.exercises.length === 0}
             {@const rawSelectedId = builderAssignments[builderEditingDay] ?? null}
             {@const isSelected = rawSelectedId === template.id}
             {@const isRealAssigned = builderAssignedTemplateId === template.id}
             {@const tColor = getTemplateColor(template.color ?? DEFAULT_TEMPLATE_COLOR)}
             {@const TplIcon = getItemIcon(template.icon ?? DEFAULT_TEMPLATE_ICON)}
+            <!-- Outer shell owns enter/exit motion; inner owns drag translate so they never fight. -->
+            <div
+              class="list-row-shell"
+              in:listRowIn
+              out:listRowOut
+            >
             <div
               class="flex items-stretch gap-1 h-8 {activeRoutineIsReadonly ? '' : 'cursor-grab active:cursor-grabbing'}"
               data-list-row
@@ -9160,6 +9578,7 @@ const getStatIcon = getItemIcon;
                 </div>
               </div>
             </div>
+            </div>
           {/each}
           </div>
         </div>
@@ -9180,41 +9599,47 @@ const getStatIcon = getItemIcon;
     </div>
 
   {:else if currentView === 'stats'}
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-2 flex-1 min-h-0 overflow-y-auto no-scrollbar">
-      <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2">
+    <div class="stats-screen flex flex-col flex-1 min-h-0 overflow-hidden rounded-lg border border-[#1e1e1e] bg-[#141414]">
+      <div class="stats-screen__header shrink-0 flex items-center gap-2 px-3 py-2 border-b border-[#1e1e1e]">
         <button
           type="button"
-          class="w-7 h-7 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
+          class="w-8 h-8 shrink-0 rounded-md border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center hover:bg-[#1a1a1a]"
           title="Go back"
           onclick={() => { selectedStatsViewStatId = null; exitStatsView(); }}
         >
-          <ArrowLeft class="size-3.5" />
+          <ArrowLeft class="size-4" />
         </button>
-        <span class="flex-1 text-[11px] font-bold tracking-[0.15em] text-zinc-400 leading-none">STATS</span>
+        <div class="flex-1 min-w-0">
+          <div class="text-[11px] font-medium tracking-[0.14em] text-zinc-400 leading-none">STATS</div>
+          <div class="text-[10px] text-zinc-600 leading-none mt-1 tabular-nums">
+            {trackedStats.length} tracked
+          </div>
+        </div>
         <button
           type="button"
-          class="h-7 px-2.5 gap-1.5 rounded-lg shrink-0 flex items-center justify-center border border-[#1e1e1e] bg-transparent text-zinc-400 hover:bg-[#1a1a1a] hover:text-white text-[10px] font-bold tracking-wide"
+          class="h-8 px-2.5 gap-1.5 rounded-md shrink-0 flex items-center justify-center border border-[#1e1e1e] bg-transparent text-zinc-400 hover:bg-[#1a1a1a] hover:text-white text-[10px] font-medium tracking-wide"
           onclick={openStatsEditor}
           title="Edit stats"
         >
           <Pencil class="size-3.5 shrink-0" />
-          <span>EDIT STATS</span>
+          <span>EDIT</span>
         </button>
       </div>
 
+      <div class="stats-screen__body flex-1 min-h-0 overflow-y-auto no-scrollbar p-2.5 space-y-2">
       {#if trackedStats.length === 0}
-        <div class="text-center py-6 space-y-3">
-          <div class="text-xs text-zinc-500">No stats defined yet.</div>
+        <div class="stats-empty flex flex-col items-center justify-center gap-3 py-12 px-4 text-center border border-dashed border-[#1e1e1e] rounded-lg bg-[#0d0d0d]">
+          <div class="text-xs text-zinc-500 leading-snug">No stats yet.<br />Track weight, sleep, or anything you log often.</div>
           <button
             type="button"
-            class="h-7 px-3 bg-[#141414] border border-[#1e1e1e] text-[10px] font-bold rounded-lg hover:border-[#2a2a2a]"
+            class="h-8 px-3 border border-[#2a2a2a] bg-[#141414] text-[10px] font-medium tracking-wide rounded-md text-zinc-300 hover:border-[#3a3a3a] hover:text-white"
             onclick={openStatsEditor}
           >
-            CREATE STATS
+            CREATE STAT
           </button>
         </div>
       {:else}
-        <div class="flex flex-col gap-1 min-w-0">
+        <div class="flex flex-col gap-2 min-w-0">
           {#each trackedStats as stat (stat.id)}
             {@const isSelected = selectedStatsViewStatId === stat.id}
             {@const IconComponent = getStatIcon(stat.icon)}
@@ -9223,34 +9648,60 @@ const getStatIcon = getItemIcon;
                 typeof stat.color === 'number' ? stat.color : DEFAULT_TEMPLATE_COLOR,
               ),
             )}
+            {@const latest = getStatLatestEntry(stat.id)}
+            {@const todayVal = getStatTodayInputValue(stat.id)}
+            <div
+              class="stats-card rounded-lg border bg-[#0d0d0d] overflow-hidden transition-colors"
+              class:stats-card--open={isSelected}
+              style="border-color: {isSelected ? statHex : '#1e1e1e'}; --stat-accent: {statHex};"
+            >
               <div
-                class="rounded-lg border transition-all cursor-pointer"
-                class:bg-[#1a1a1a]={isSelected}
-                class:bg-[#0d0d0d]={!isSelected}
-                style="border-color: {isSelected ? statHex : '#1e1e1e'}"
+                class="stats-card__head w-full flex items-center gap-2.5 px-2.5 py-2 text-left hover:bg-[#121212] transition-colors cursor-pointer"
+                role="button"
+                tabindex="0"
+                aria-expanded={isSelected}
                 onclick={() => { selectedStatsViewStatId = selectedStatsViewStatId === stat.id ? null : stat.id; }}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    selectedStatsViewStatId = selectedStatsViewStatId === stat.id ? null : stat.id;
+                  }
+                }}
               >
-                <div class="flex items-center gap-1.5 p-1.5">
-                  <div
-                    class="template-list-color-squircle shrink-0 w-5 h-5 flex items-center justify-center self-center"
-                    style="background-color: {statHex}"
-                    aria-hidden="true"
-                  >
-                    <IconComponent class="size-3 text-black/80" strokeWidth={ITEM_ICON_STROKE} />
-                  </div>
-                  <div class="flex-1 min-w-0 flex items-center">
-                    <span class="font-medium text-xs truncate leading-none text-zinc-300">{stat.name}</span>
-                  </div>
-                  <div class="flex items-center gap-1.5 shrink-0">
-                    {#if stat.unit}
-                      <span class="text-[10px] uppercase text-zinc-500 leading-none">{stat.unit}</span>
+                <div
+                  class="template-list-color-squircle shrink-0 w-8 h-8 flex items-center justify-center"
+                  style="background-color: {statHex}"
+                  aria-hidden="true"
+                >
+                  <IconComponent class="size-4 text-black/80" strokeWidth={ITEM_ICON_STROKE} />
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm font-medium text-white truncate leading-none">{stat.name}</div>
+                  <div class="mt-1 flex items-center gap-1.5 text-[10px] text-zinc-500 leading-none tabular-nums">
+                    {#if latest}
+                      <span>last {shortDateLabel(latest.date)}</span>
+                      <span class="text-zinc-700">·</span>
+                      <span style="color: {statHex}">{latest.value}{stat.unit ? ` ${stat.unit}` : ''}</span>
+                    {:else}
+                      <span>no entries yet</span>
                     {/if}
-                    <input
-                      type="text"
-                      inputmode="decimal"
-                      autocomplete="off"
-                      placeholder={String(stat.start_value || 0)}
-                      class="prop-num-input w-14 h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none"
+                    {#if stat.has_target && stat.target_value != null}
+                      <span class="text-zinc-700">·</span>
+                      <span>goal {stat.target_value}{stat.unit ? ` ${stat.unit}` : ''}</span>
+                    {/if}
+                  </div>
+                </div>
+                <div class="shrink-0 flex items-center gap-1.5" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
+                  {#if stat.unit}
+                    <span class="text-[9px] uppercase tracking-wide text-zinc-600 leading-none hidden sm:inline">{stat.unit}</span>
+                  {/if}
+                  <input
+                    type="text"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    placeholder={String(stat.start_value || 0)}
+                    class="prop-num-input stats-card__value w-16 h-8 bg-black border border-[#1e1e1e] text-center text-sm font-medium text-white rounded-md outline-none focus:border-zinc-500 tabular-nums"
+                    style={todayVal > 0 ? `border-color: color-mix(in srgb, ${statHex} 55%, #1e1e1e);` : undefined}
                     use:clampedNumericProp={{
                       kind: 'statLog',
                       getValue: () => {
@@ -9279,222 +9730,279 @@ const getStatIcon = getItemIcon;
                       if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
                     }}
                     onclick={(e) => e.stopPropagation()}
+                    aria-label={`Today value for ${stat.name}`}
                   />
                 </div>
               </div>
 
               {#if isSelected}
                 {@const sid = selectedStatsViewStatId as string}
-                <div class="pb-1.5 px-1.5" onclick={(e) => e.stopPropagation()}>
-                  <div class="border-t border-[#1e1e1e] pt-1.5">
-                      {#if true}
-                      {@const editDate = statEditEntry ?? REAL_TODAY_STR}
-                      {@const containerW = 560}
-                      {@const containerH = 200}
-                      {@const padL = 40}
-                      {@const padR = 12}
-                      {@const padT = 12}
-                      {@const padB = 32}
-                      {@const plotW = containerW - padL - padR}
-                      {@const plotH = containerH - padT - padB}
-                      {@const msDay = 24 * 60 * 60 * 1000}
-                      {@const hasData = chartData.length > 0}
-                      {@const rangeStartDate = statRangeMode === '3weeks'
-                        ? new Date(REAL_TODAY.getTime() - 21 * msDay)
-                        : statRangeMode === '3m'
-                          ? new Date(REAL_TODAY.getFullYear(), REAL_TODAY.getMonth() - 3, REAL_TODAY.getDate())
-                          : statRangeMode === '6m'
-                            ? new Date(REAL_TODAY.getFullYear(), REAL_TODAY.getMonth() - 6, REAL_TODAY.getDate())
-                            : statRangeMode === 'ytd'
-                              ? new Date(REAL_TODAY.getFullYear() - 1, REAL_TODAY.getMonth(), REAL_TODAY.getDate())
-                              : hasData ? new Date(chartData[0].date + 'T00:00:00') : REAL_TODAY}
-                      {@const startDate = rangeStartDate}
-                      {@const endDate = REAL_TODAY}
-                      {@const totalDays = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / msDay) + 1)}
-                      {@const spacingX = totalDays > 1 ? plotW / Math.max(1, totalDays - 1) : 0}
-                      {@const xTickCount = Math.min(5, totalDays)}
-                      {@const xTicks = Array.from({length: xTickCount}, (_, i) => {
-                        const dayIdx = Math.round((i / Math.max(1, xTickCount - 1)) * Math.max(0, totalDays - 1));
-                        const dateStr = toDateStr(new Date(startDate.getTime() + dayIdx * msDay));
-                        return { dayIdx, x: padL + dayIdx * spacingX, date: dateStr };
-                      })}
-                      <div class="flex items-center gap-0 mb-2" onclick={(e) => e.stopPropagation()}>
-                        <div class="flex items-center gap-2 bg-[#060606] border border-[#1e1e1e] rounded-lg h-8 flex-1 min-w-0" onclick={(e) => e.stopPropagation()}>
-                          <div class="flex items-center gap-2 px-2.5 flex-1 min-w-0 h-full">
-                            <div class="w-[68px] text-[10px] text-zinc-500 font-mono uppercase tracking-wide text-center leading-none shrink-0">{shortDateLabel(editDate)}</div>
-                            <input
-                              type="text"
-                              inputmode="decimal"
-                              autocomplete="off"
-                              class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-none text-center text-xs font-semibold text-white outline-none"
-                              use:clampedNumericProp={{
-                                kind: 'statLog',
-                                getValue: () => statLogs[sid]?.[editDate] ?? 0,
-                                setValue: (v) => {
-                                  const prev = statLogs[sid] ?? {};
-                                  statLogs = {
-                                    ...statLogs,
-                                    [sid]: { ...prev, [editDate]: v },
-                                  };
-                                },
-                              }}
-                              onblur={() => {
-                                persistStatLogEntry(sid, editDate, statLogs[sid]?.[editDate] ?? 0);
-                              }}
-                              onkeydown={(e) => {
-                                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
-                                if (e.key === 'Escape') { statEditEntry = REAL_TODAY_STR; }
-                              }}
+                {@const editDate = statEditEntry ?? REAL_TODAY_STR}
+                {@const containerW = 560}
+                {@const containerH = 188}
+                {@const padL = 36}
+                {@const padR = 10}
+                {@const padT = 14}
+                {@const padB = 28}
+                {@const plotW = containerW - padL - padR}
+                {@const plotH = containerH - padT - padB}
+                {@const msDay = 24 * 60 * 60 * 1000}
+                {@const hasData = chartData.length > 0}
+                {@const values = hasData ? chartData.map((d) => d.value) : []}
+                {@const rawMin = hasData ? Math.min(...values) : 0}
+                {@const rawMax = hasData ? Math.max(...values) : 0}
+                {@const targetVal = stat.has_target && stat.target_value != null ? stat.target_value : null}
+                {@const minVal = hasData ? (targetVal !== null ? Math.min(rawMin, targetVal) : rawMin) : 0}
+                {@const maxVal = hasData ? (targetVal !== null ? Math.max(rawMax, targetVal) : rawMax) : 1}
+                {@const range = maxVal - minVal || 1}
+                {@const rangeStartDate = statRangeMode === '3weeks'
+                  ? new Date(REAL_TODAY.getTime() - 21 * msDay)
+                  : statRangeMode === '3m'
+                    ? new Date(REAL_TODAY.getFullYear(), REAL_TODAY.getMonth() - 3, REAL_TODAY.getDate())
+                    : statRangeMode === '6m'
+                      ? new Date(REAL_TODAY.getFullYear(), REAL_TODAY.getMonth() - 6, REAL_TODAY.getDate())
+                      : statRangeMode === 'ytd'
+                        ? new Date(REAL_TODAY.getFullYear() - 1, REAL_TODAY.getMonth(), REAL_TODAY.getDate())
+                        : hasData ? new Date(chartData[0].date + 'T00:00:00') : REAL_TODAY}
+                {@const startDate = rangeStartDate}
+                {@const endDate = REAL_TODAY}
+                {@const totalDays = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / msDay) + 1)}
+                {@const spacingX = totalDays > 1 ? plotW / Math.max(1, totalDays - 1) : 0}
+                {@const xTickCount = Math.min(5, totalDays)}
+                {@const xTicks = Array.from({ length: xTickCount }, (_, i) => {
+                  const dayIdx = Math.round((i / Math.max(1, xTickCount - 1)) * Math.max(0, totalDays - 1));
+                  const dateStr = toDateStr(new Date(startDate.getTime() + dayIdx * msDay));
+                  return { dayIdx, x: padL + dayIdx * spacingX, date: dateStr };
+                })}
+                {@const yTickCount = 3}
+                {@const yTicks = Array.from({ length: yTickCount }, (_, i) => {
+                  const val = minVal + (i / Math.max(1, yTickCount - 1)) * range;
+                  return {
+                    val,
+                    y: padT + plotH - ((val - minVal) / range) * plotH,
+                  };
+                })}
+                {@const targetY = targetVal !== null ? padT + plotH - ((targetVal - minVal) / range) * plotH : null}
+                {@const lineColor = statHex}
+                {@const rangeIdx = Math.max(0, rangeModes.indexOf(statRangeMode))}
+                <div
+                  class="stats-card__panel border-t border-[#1e1e1e] bg-[#0a0a0a] px-2.5 pt-2.5 pb-2.5 space-y-2"
+                  onclick={(e) => e.stopPropagation()}
+                  transition:slide={{ duration: 220, easing: cubicOut }}
+                >
+                  <!-- Entry editor + range -->
+                  <div class="stats-toolbar flex flex-col gap-2 sm:flex-row sm:items-stretch">
+                    <div class="stats-entry flex items-center gap-0 h-8 flex-1 min-w-0 rounded-md border border-[#1e1e1e] bg-[#060606] overflow-hidden">
+                      <div class="w-[4.25rem] shrink-0 h-full flex items-center justify-center border-r border-[#1e1e1e] bg-[#0d0d0d]">
+                        <span class="text-[10px] font-mono text-zinc-400 tabular-nums leading-none">{shortDateLabel(editDate)}</span>
+                      </div>
+                      <input
+                        type="text"
+                        inputmode="decimal"
+                        autocomplete="off"
+                        class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-none text-center text-sm font-medium text-white outline-none tabular-nums"
+                        use:clampedNumericProp={{
+                          kind: 'statLog',
+                          getValue: () => statLogs[sid]?.[editDate] ?? 0,
+                          setValue: (v) => {
+                            const prev = statLogs[sid] ?? {};
+                            statLogs = {
+                              ...statLogs,
+                              [sid]: { ...prev, [editDate]: v },
+                            };
+                          },
+                        }}
+                        onblur={() => {
+                          persistStatLogEntry(sid, editDate, statLogs[sid]?.[editDate] ?? 0);
+                        }}
+                        onkeydown={(e) => {
+                          if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+                          if (e.key === 'Escape') { statEditEntry = REAL_TODAY_STR; }
+                        }}
+                      />
+                      {#if stat.unit}
+                        <span class="pr-2 text-[9px] uppercase tracking-wide text-zinc-600 shrink-0">{stat.unit}</span>
+                      {/if}
+                      <button
+                        type="button"
+                        class="w-8 h-full shrink-0 flex items-center justify-center border-l border-[#1e1e1e] text-zinc-500 hover:text-red-400 hover:bg-[#120808] transition-colors"
+                        onclick={() => {
+                          deleteStatLogEntry(sid, editDate);
+                          if (editDate !== REAL_TODAY_STR) statEditEntry = REAL_TODAY_STR;
+                        }}
+                        aria-label="Delete entry"
+                        title="Delete entry"
+                      >
+                        <Trash2 class="size-3.5" />
+                      </button>
+                    </div>
+
+                    <div
+                      class="stats-range relative grid grid-cols-5 h-8 shrink-0 rounded-md border border-[#1e1e1e] bg-[#060606] px-0.5"
+                      style="min-width: min(100%, 13.5rem);"
+                      role="group"
+                      aria-label="Chart range"
+                    >
+                      <div
+                        class="pointer-events-none absolute top-0.5 bottom-0.5 rounded-sm bg-white transition-transform duration-200 ease-out"
+                        style="width: calc((100% - 4px) / 5); left: 2px; transform: translateX(calc({rangeIdx} * 100%))"
+                      ></div>
+                      {#each rangeModes as mode}
+                        <button
+                          type="button"
+                          class="relative z-10 h-full flex items-center justify-center text-[9px] font-medium tracking-[0.1em] transition-colors {statRangeMode === mode ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                          onclick={(e) => { e.stopPropagation(); statRangeMode = mode; }}
+                        >{rangeModeLabel(mode)}</button>
+                      {/each}
+                    </div>
+                  </div>
+
+                  <!-- Chart -->
+                  <div class="stats-chart relative rounded-md border border-[#1e1e1e] bg-[#080808] overflow-hidden">
+                    {#if !hasData}
+                      <div class="h-[188px] flex flex-col items-center justify-center gap-1 text-center px-4">
+                        <div class="text-[11px] text-zinc-500">No data in this range</div>
+                        <div class="text-[10px] text-zinc-600">Log a value above, or pick another range.</div>
+                      </div>
+                    {:else}
+                      <svg
+                        viewBox="0 0 {containerW} {containerH}"
+                        width="100%"
+                        height="188"
+                        class="block select-none"
+                        onclick={(e) => {
+                          e.stopPropagation();
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const svgX = (e.clientX - rect.left) * (containerW / rect.width);
+                          const ratio = Math.max(0, Math.min(1, (svgX - padL) / plotW));
+                          const dayIdx = Math.round(ratio * Math.max(0, totalDays - 1));
+                          const dateStr = toDateStr(new Date(startDate.getTime() + dayIdx * msDay));
+                          statEditEntry = dateStr;
+                        }}
+                      >
+                        <rect x="0" y="0" width={containerW} height={containerH} fill="#080808" />
+                        <!-- plot frame -->
+                        <rect x={padL} y={padT} width={plotW} height={plotH} fill="#0c0c0c" stroke="#161616" stroke-width="1" />
+
+                        {#each yTicks as tick}
+                          <line x1={padL} y1={tick.y} x2={padL + plotW} y2={tick.y} stroke="#161616" stroke-width="1" />
+                          <text x={padL - 5} y={tick.y + 3.5} text-anchor="end" fill="#52525b" font-size="10" font-family="ui-monospace, monospace">{tick.val % 1 === 0 ? tick.val.toFixed(0) : tick.val.toFixed(1)}</text>
+                        {/each}
+                        {#each xTicks as tick}
+                          <line x1={tick.x} y1={padT} x2={tick.x} y2={padT + plotH} stroke="#141414" stroke-width="1" />
+                          <text x={tick.x} y={padT + plotH + 16} text-anchor="middle" fill="#52525b" font-size="10" font-family="ui-monospace, monospace">{shortDateLabel(tick.date)}</text>
+                        {/each}
+
+                        {#if targetY !== null}
+                          <line x1={padL} y1={targetY} x2={padL + plotW} y2={targetY} stroke="#4ade80" stroke-width="1" stroke-dasharray="4 4" opacity="0.55" />
+                          <text x={padL + plotW - 2} y={targetY - 4} text-anchor="end" fill="#4ade80" font-size="9" opacity="0.8">GOAL</text>
+                        {/if}
+
+                        {#each chartData.slice(0, -1) as _, i}
+                          {@const d0 = chartData[i]}
+                          {@const d1 = chartData[i + 1]}
+                          {@const d0Date = new Date(d0.date + 'T00:00:00')}
+                          {@const d1Date = new Date(d1.date + 'T00:00:00')}
+                          {@const idx0 = Math.round((d0Date.getTime() - startDate.getTime()) / msDay)}
+                          {@const idx1 = Math.round((d1Date.getTime() - startDate.getTime()) / msDay)}
+                          {@const x0 = padL + idx0 * spacingX}
+                          {@const y0 = padT + plotH - ((d0.value - minVal) / range) * plotH}
+                          {@const x1 = padL + idx1 * spacingX}
+                          {@const y1 = padT + plotH - ((d1.value - minVal) / range) * plotH}
+                          {@const gapDays = idx1 - idx0}
+                          {#if gapDays > 1}
+                            {@const leftIdx = idx0 + 1}
+                            {@const rightIdx = idx1 - 1}
+                            {@const xLeft = padL + leftIdx * spacingX}
+                            {@const xRight = padL + rightIdx * spacingX}
+                            {@const rectX = xLeft - spacingX / 2}
+                            {@const rectW = Math.max(spacingX, (rightIdx - leftIdx + 1) * spacingX)}
+                            <rect x={rectX} y={padT} width={rectW} height={plotH} fill="#eab308" fill-opacity="0.05" />
+                            <line x1={xLeft} y1={padT} x2={xLeft} y2={padT + plotH} stroke="#a16207" stroke-width="1" stroke-dasharray="2 3" opacity="0.7" />
+                            {#if gapDays > 2}
+                              <line x1={xRight} y1={padT} x2={xRight} y2={padT + plotH} stroke="#a16207" stroke-width="1" stroke-dasharray="2 3" opacity="0.7" />
+                            {/if}
+                          {:else if targetVal !== null && (d0.value <= targetVal) !== (d1.value <= targetVal)}
+                            {@const t = Math.abs((targetVal - d0.value) / (d1.value - d0.value || 1))}
+                            {@const midX = x0 + t * (x1 - x0)}
+                            {@const midY = y0 + t * (y1 - y0)}
+                            {@const isD0Met = d0.value <= targetVal}
+                            <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={lineColor} stroke-opacity={isD0Met ? 1 : 0.28} stroke-width="2" stroke-linecap="round" />
+                            <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={lineColor} stroke-opacity={isD0Met ? 0.28 : 1} stroke-width="2" stroke-linecap="round" />
+                          {:else}
+                            {@const dimSeg = targetVal !== null && !(d0.value <= targetVal && d1.value <= targetVal)}
+                            <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={lineColor} stroke-opacity={dimSeg ? 0.28 : 1} stroke-width="2" stroke-linecap="round" />
+                          {/if}
+                        {/each}
+
+                        {#each chartData as d}
+                          {@const dDate = new Date(d.date + 'T00:00:00')}
+                          {@const dayIdx = Math.round((dDate.getTime() - startDate.getTime()) / msDay)}
+                          {@const x = padL + dayIdx * spacingX}
+                          {@const y = padT + plotH - ((d.value - minVal) / range) * plotH}
+                          {@const isLatest = d.date === chartData[chartData.length - 1].date}
+                          {@const isPtSelected = statEditEntry === d.date}
+                          {@const met = targetVal === null || d.value <= targetVal}
+                          {#if isPtSelected}
+                            <line x1={x} y1={padT} x2={x} y2={padT + plotH} stroke="#e4e4e7" stroke-width="1" stroke-dasharray="3 3" opacity="0.45" />
+                          {/if}
+                          <g
+                            role="button"
+                            tabindex="0"
+                            style="cursor: pointer"
+                            onclick={(e) => {
+                              e.stopPropagation();
+                              statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date;
+                            }}
+                            onkeydown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date;
+                              }
+                            }}
+                          >
+                            <circle
+                              cx={x}
+                              cy={y}
+                              r={isPtSelected ? 4.5 : isLatest ? 3.5 : 2.75}
+                              fill={lineColor}
+                              fill-opacity={met ? 1 : 0.3}
+                              stroke={isPtSelected ? '#fff' : lineColor}
+                              stroke-opacity={isPtSelected ? 1 : met ? 1 : 0.3}
+                              stroke-width={isPtSelected ? 1.5 : 1}
                             />
-                            <button
-                              type="button"
-                              class="w-6 h-6 shrink-0 flex items-center justify-center rounded text-zinc-500 hover:text-red-400 transition-colors"
-                              onclick={() => {
-                                deleteStatLogEntry(sid, editDate);
-                                if (editDate !== REAL_TODAY_STR) statEditEntry = REAL_TODAY_STR;
-                              }}
-                              aria-label="Delete entry"
-                              title="Delete entry"
-                            >
-                              <Trash2 class="size-3" />
-                            </button>
-                          </div>
-                          <div class="w-px h-5 bg-[#1e1e1e] shrink-0"></div>
-                          <div class="relative grid grid-cols-5 h-8 shrink-0 px-1" style="width: 220px;" role="group" aria-label="Chart range">
-                            <div
-                              class="pointer-events-none absolute top-0.5 bottom-0.5 rounded bg-white transition-transform duration-200 ease-out"
-                              style="width: calc(20% - 4px); transform: translateX({statRangeMode === '3weeks' ? '2px' : statRangeMode === '3m' ? 'calc(100% + 4px)' : statRangeMode === '6m' ? 'calc(200% + 8px)' : statRangeMode === 'ytd' ? 'calc(300% + 12px)' : 'calc(400% + 16px)'})"
-                            ></div>
-                            {#each rangeModes as mode, idx}
-                              <button
-                                type="button"
-                                class="relative z-10 h-full flex items-center justify-center text-[9px] font-black tracking-[0.12em] transition-colors {statRangeMode === mode ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
-                                onclick={(e) => { e.stopPropagation(); statRangeMode = mode; }}
-                              >{mode === '3weeks' ? '3W' : mode === '3m' ? '3M' : mode === '6m' ? '6M' : mode === 'ytd' ? 'YTD' : 'ALL'}</button>
-                            {/each}
-                          </div>
+                          </g>
+                        {/each}
+                      </svg>
+                    {/if}
+                  </div>
+
+                  {#if hasData}
+                    <div class="stats-meta grid grid-cols-3 gap-1.5">
+                      <div class="stats-meta__cell">
+                        <div class="stats-meta__label">MIN</div>
+                        <div class="stats-meta__value tabular-nums">{rawMin}{stat.unit ? ` ${stat.unit}` : ''}</div>
+                      </div>
+                      <div class="stats-meta__cell">
+                        <div class="stats-meta__label">MAX</div>
+                        <div class="stats-meta__value tabular-nums">{rawMax}{stat.unit ? ` ${stat.unit}` : ''}</div>
+                      </div>
+                      <div class="stats-meta__cell">
+                        <div class="stats-meta__label">LATEST</div>
+                        <div class="stats-meta__value tabular-nums" style="color: {statHex}">
+                          {chartData[chartData.length - 1].value}{stat.unit ? ` ${stat.unit}` : ''}
                         </div>
                       </div>
-
-                        <div class="relative rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] overflow-hidden">
-                          <svg viewBox="0 0 {containerW} {containerH}" width="100%" height="200" style="display: block;" onclick={(e) => {
-                            e.stopPropagation();
-                            const rect = e.currentTarget.getBoundingClientRect();
-                            const svgX = (e.clientX - rect.left) * (containerW / rect.width);
-                            const ratio = Math.max(0, Math.min(1, (svgX - padL) / plotW));
-                            const dayIdx = Math.round(ratio * Math.max(0, totalDays - 1));
-                            const dateStr = toDateStr(new Date(startDate.getTime() + dayIdx * msDay));
-                            statEditEntry = dateStr;
-                          }}>
-                            <rect x="0" y="0" width={containerW} height={containerH} fill="#0a0a0a" />
-                            {#if hasData}
-                              {@const values = chartData.map(d => d.value)}
-                              {@const rawMin = Math.min(...values)}
-                              {@const rawMax = Math.max(...values)}
-                              {@const targetVal = stat.has_target && stat.target_value != null ? stat.target_value : null}
-                              {@const minVal = targetVal !== null ? Math.min(rawMin, targetVal) : rawMin}
-                              {@const maxVal = targetVal !== null ? Math.max(rawMax, targetVal) : rawMax}
-                              {@const range = maxVal - minVal || 1}
-                              {@const targetY = targetVal !== null ? padT + plotH - ((targetVal - minVal) / range) * plotH : null}
-                              {@const yTickCount = 3}
-                              {@const yTicks = Array.from({length: yTickCount}, (_, i) => ({
-                                val: minVal + (i / (yTickCount - 1)) * range,
-                                y: padT + plotH - ((minVal + (i / (yTickCount - 1)) * range - minVal) / range) * plotH
-                              }))}
-                              {@const numPoints = chartData.length}
-                              {@const firstPtDate = new Date(chartData[0].date + 'T00:00:00')}
-                              {@const lastPtDate = new Date(chartData[numPoints - 1].date + 'T00:00:00')}
-                              {@const firstIdx = Math.round((firstPtDate.getTime() - startDate.getTime()) / msDay)}
-                              {@const lastIdx = Math.round((lastPtDate.getTime() - startDate.getTime()) / msDay)}
-                              {#if firstIdx > 0}
-                                {@const preW = firstIdx * spacingX}
-                                <rect x={padL} y={padT} width={preW} height={plotH} fill="#eab308" fill-opacity="0.04" />
-                                <line x1={padL + preW} y1={padT} x2={padL + preW} y2={padT + plotH} stroke="#eab308" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
-                              {/if}
-                              {#if lastIdx < totalDays - 1}
-                                {@const postX = padL + (lastIdx + 1) * spacingX}
-                                {@const postW = (totalDays - 1 - lastIdx) * spacingX}
-                                <rect x={postX} y={padT} width={postW} height={plotH} fill="#eab308" fill-opacity="0.04" />
-                                <line x1={postX} y1={padT} x2={postX} y2={padT + plotH} stroke="#eab308" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
-                              {/if}
-                              {#if targetY !== null}
-                              <line x1={padL} y1={targetY} x2={containerW - padR} y2={targetY} stroke="#4ADE80" stroke-width="1" stroke-dasharray="4,4" opacity="0.6" />
-                              {/if}
-                              {#each chartData.slice(0, -1) as _, i}
-                              {@const d0 = chartData[i]}
-                              {@const d1 = chartData[i + 1]}
-                              {@const d0Date = new Date(d0.date + 'T00:00:00')}
-                              {@const d1Date = new Date(d1.date + 'T00:00:00')}
-                              {@const idx0 = Math.round((d0Date.getTime() - startDate.getTime()) / msDay)}
-                              {@const idx1 = Math.round((d1Date.getTime() - startDate.getTime()) / msDay)}
-                              {@const x0 = padL + idx0 * spacingX}
-                              {@const y0 = padT + plotH - ((d0.value - minVal) / range) * plotH}
-                              {@const x1 = padL + idx1 * spacingX}
-                              {@const y1 = padT + plotH - ((d1.value - minVal) / range) * plotH}
-                              {@const gapDays = idx1 - idx0}
-                              {#if gapDays > 1}
-                                {@const missingCount = gapDays - 1}
-                                {@const leftIdx = idx0 + 1}
-                                {@const rightIdx = idx1 - 1}
-                                {@const xLeft = padL + leftIdx * spacingX}
-                                {@const xRight = padL + rightIdx * spacingX}
-                                {#if missingCount === 1}
-                                <line x1={xLeft} y1={padT} x2={xLeft} y2={padT + plotH} stroke="#eab308" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
-                                {:else}
-                                  {@const rectX = xLeft - spacingX/2}
-                                  {@const rectW = (rightIdx - leftIdx + 1) * spacingX}
-                                  <rect x={rectX} y={padT} width={rectW} height={plotH} fill="#eab308" fill-opacity="0.06" />
-                                  <line x1={xLeft} y1={padT} x2={xLeft} y2={padT + plotH} stroke="#eab308" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
-                                  <line x1={xRight} y1={padT} x2={xRight} y2={padT + plotH} stroke="#eab308" stroke-width="1" stroke-dasharray="2,3" opacity="0.9" />
-                                {/if}
-                              {:else}
-                                {#if targetVal !== null && (d0.value <= targetVal) !== (d1.value <= targetVal)}
-                                  {@const t = Math.abs((targetVal - d0.value) / (d1.value - d0.value))}
-                                  {@const midX = x0 + t * (x1 - x0)}
-                                  {@const midY = y0 + t * (y1 - y0)}
-                                  {@const isD0Met = d0.value <= targetVal}
-                                  <line x1={x0} y1={y0} x2={midX} y2={midY} stroke={isD0Met ? '#4ADE80' : '#022c22'} stroke-width="2" stroke-linecap="round" />
-                                  <line x1={midX} y1={midY} x2={x1} y2={y1} stroke={isD0Met ? '#022c22' : '#4ADE80'} stroke-width="2" stroke-linecap="round" />
-                                {:else}
-                                  {@const segColor = targetVal !== null && (d0.value <= targetVal && d1.value <= targetVal) ? '#4ADE80' : '#022c22'}
-                                  <line x1={x0} y1={y0} x2={x1} y2={y1} stroke={segColor} stroke-width="2" stroke-linecap="round" />
-                                {/if}
-                              {/if}
-                              {/each}
-                              {#each chartData as d, i}
-                              {@const dDate = new Date(d.date + 'T00:00:00')}
-                              {@const dayIdx = Math.round((dDate.getTime() - startDate.getTime()) / msDay)}
-                              {@const x = padL + dayIdx * spacingX}
-                              {@const y = padT + plotH - ((d.value - minVal) / range) * plotH}
-                              {@const isLatest = d.date === chartData[chartData.length - 1].date}
-                              {@const isPtSelected = statEditEntry === d.date}
-                              {@const ptColor = targetVal !== null && d.value <= targetVal ? '#4ADE80' : '#022c22'}
-                              {#if isPtSelected}
-                                <line x1={x} y1={padT} x2={x} y2={padT + plotH} stroke="#fff" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.5" />
-                              {/if}
-                              <g role="button" tabindex="0" style="cursor: pointer" onclick={(e) => { e.stopPropagation(); statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date; }} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); statEditEntry = statEditEntry === d.date ? REAL_TODAY_STR : d.date; } }}>
-                                <rect x={x - (isPtSelected ? 3.5 : isLatest ? 2.5 : 2)} y={y - (isPtSelected ? 3.5 : isLatest ? 2.5 : 2)} width={isPtSelected ? 7 : isLatest ? 5 : 4} height={isPtSelected ? 7 : isLatest ? 5 : 4} rx={isPtSelected ? 2 : isLatest ? 1.5 : 1.5} fill={ptColor} stroke={isPtSelected ? '#fff' : ptColor} stroke-width={isPtSelected ? 1.5 : 1} />
-                              </g>
-                              {/each}
-                              {#each yTicks as tick}
-                              <line x1={padL} y1={tick.y} x2={containerW - padR} y2={tick.y} stroke="#111" stroke-width="0.5" />
-                              <text x={padL - 6} y={tick.y + 4} text-anchor="end" fill="#555" font-size="11">{tick.val.toFixed(1)}</text>
-                              {/each}
-                            {/if}
-                            {#each xTicks as tick}
-                            <line x1={tick.x} y1={padT} x2={tick.x} y2={padT + plotH} stroke="#111" stroke-width="0.5" />
-                            <text x={tick.x} y={padT + plotH + 18} text-anchor="middle" fill="#555" font-size="11">{shortDateLabel(tick.date)}</text>
-                            {/each}
-                          </svg>
-                        </div>
-                      {/if}
-                  </div>
+                    </div>
+                  {/if}
                 </div>
               {/if}
             </div>
           {/each}
         </div>
       {/if}
+      </div>
     </div>
 
   {:else if currentView === 'edit_stats'}
@@ -9605,14 +10113,14 @@ const getStatIcon = getItemIcon;
         </div>
 
         <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
-          <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0" role="list" bind:this={statListBody} ondrop={handleStatDrop} ondragover={handleStatDragOver}>
+          <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0 overflow-x-hidden" role="list" bind:this={statListBody} ondrop={handleStatDrop} ondragover={handleStatDragOver}>
             {#if draftStats.length === 0}
               <div class="text-center py-4 border border-dashed border-[#1e1e1e] rounded-lg text-[10px] text-zinc-500 leading-snug">
                 No stats yet.<br />
                 Tap NEW to create one.
               </div>
             {/if}
-            {#each draftStats as stat, index (stat.id)}
+            {#each draftStats as stat, index (listKey(statListKeyById, stat.id))}
               {@const isSelected = selectedDraftStatId === stat.id}
               {@const RowIcon = getStatIcon(stat.icon)}
               {@const rowColor = getTemplateColor(
@@ -9620,6 +10128,7 @@ const getStatIcon = getItemIcon;
                   typeof stat.color === 'number' ? stat.color : DEFAULT_TEMPLATE_COLOR,
                 ),
               )}
+              <div class="list-row-shell" in:listRowIn out:listRowOutInstant>
               <div
                 class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing"
                 data-list-row
@@ -9694,6 +10203,7 @@ const getStatIcon = getItemIcon;
                     {/if}
                   </div>
                 </div>
+              </div>
               </div>
             {/each}
           </div>
@@ -9980,7 +10490,7 @@ const getStatIcon = getItemIcon;
           </div>
 
           <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
-            <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0" role="list" bind:this={exerciseListBody} ondrop={handleExerciseDrop} ondragover={handleExerciseDragOver}>
+            <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0 overflow-x-hidden" role="list" bind:this={exerciseListBody} ondrop={handleExerciseDrop} ondragover={handleExerciseDragOver}>
               {#if draftExercises.length === 0}
                 <div class="text-center py-4 border border-dashed border-[#1e1e1e] rounded-lg text-[10px] text-zinc-500 leading-snug">
                   No exercises yet.<br />
@@ -9992,10 +10502,11 @@ const getStatIcon = getItemIcon;
                 </div>
               {/if}
 
-              {#each draftExercises as exercise, index (exercise.id)}
+              {#each draftExercises as exercise, index (listKey(exerciseListKeyById, exercise.id))}
                 {@const isSelected = selectedExerciseId === exercise.id}
+                <div class="list-row-shell" in:listRowIn out:listRowOutInstant>
                 <div
-                  class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing [content-visibility:auto] [contain-intrinsic-size:auto_32px]"
+                  class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing"
                   data-list-row
                   style="transform: translateY({dragShift(draggedIndex, dragOverIndex, index)}px); transition: transform 150ms ease; {draggedIndex === index ? 'opacity: 0.25;' : ''}"
                   draggable="true"
@@ -10066,6 +10577,7 @@ const getStatIcon = getItemIcon;
                     </div>
                   </div>
                 </div>
+                </div>
               {/each}
             </div>
 
@@ -10101,94 +10613,94 @@ const getStatIcon = getItemIcon;
               </div>
             </div>
 
-            {#if showExerciseLibraryPicker || libraryPickerClosing}
-              <div
-                class="library-picker-panel"
-                class:library-picker-panel--open={showExerciseLibraryPicker && !libraryPickerClosing}
-              >
-                <div class="library-picker-panel__inner {(showExerciseLibraryPicker && !libraryPickerClosing) ? '' : 'pointer-events-none'}">
-                  <div class="mt-1.5 rounded border border-[#1e1e1e] bg-[#0d0d0d] p-1.5 space-y-1.5 max-h-52 flex flex-col min-h-0">
-                    <div class="relative shrink-0">
-                      <Search class="size-3 absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
-                      <input
-                        type="text"
-                        inputmode="search"
-                        autocomplete="off"
-                        spellcheck="false"
-                        placeholder=""
-                        enterkeyhint="search"
-                        class="library-search-input w-full h-7 pl-7 pr-2 rounded border border-[#1e1e1e] bg-[#141414] text-xs text-zinc-200 outline-none focus:border-[#2a2a2a] caret-zinc-200"
-                        bind:value={librarySearchQuery}
-                        onclick={(e) => e.stopPropagation()}
-                      />
-                      {#if !librarySearchQuery}
-                        <span
-                          class="library-search-caret absolute left-7 top-1/2 -translate-y-1/2 w-px h-3.5 bg-zinc-300 pointer-events-none"
-                          aria-hidden="true"
-                        ></span>
-                      {/if}
-                    </div>
-                    <div class="space-y-1 max-h-40 overflow-y-auto no-scrollbar min-h-0">
-                      {#if availableLibraryForPicker.length === 0}
-                        <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
-                          {exerciseLibrary.length === 0
-                            ? 'No saved exercises yet. Create one with NEW.'
-                            : 'All your exercises are already in this template.'}
-                        </p>
-                      {:else if filteredLibraryForPicker.length === 0}
-                        <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
-                          No exercises match “{librarySearchQuery.trim()}”.
-                        </p>
-                      {:else}
-                        {#each filteredLibraryForPicker as libraryEx (libraryEx.id)}
-                          {@const isReps = libraryEx.exercise_type === 'reps'}
-                          {@const isSelectedLib = selectedLibraryExerciseId === libraryEx.id}
-                          {@const summary = isReps
-                            ? `${libraryEx.target_sets || 0}×${libraryEx.target_reps || 0}`
-                            : `${libraryEx.target_sets || 0}× ${libraryEx.target_minutes || 0}m${String(libraryEx.target_seconds || 0).padStart(2, '0')}s`}
-                          {@const weight = isReps && libraryEx.current_weight != null ? ` · ${libraryEx.current_weight}kg` : ''}
-                          <div
-                            class="w-full h-7 min-w-0 px-1.5 rounded border text-xs transition flex items-center gap-1.5 cursor-pointer {isSelectedLib 
-                              ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-200' 
-                              : 'bg-[#141414] border-[#1e1e1e] text-zinc-500 hover:bg-[#1a1a1a] hover:border-[#2a2a2a] hover:text-zinc-400'}"
-                            onclick={() => selectLibraryExercise(libraryEx.id)}
-                            title={isSelectedLib ? '' : 'Select to move or delete'}
-                          >
-                            <div class="flex items-center gap-1.5 flex-1 min-w-0">
-                              {#if isReps}
-                                <Dumbbell class="size-3 shrink-0 text-zinc-400" />
-                              {:else}
-                                <Timer class="size-3 shrink-0 text-zinc-400" />
-                              {/if}
-                              <span class="truncate leading-none text-left font-medium">{libraryEx.name}</span>
-                              <span class="ml-auto text-[10px] text-zinc-500 tabular-nums shrink-0">{summary}{weight}</span>
-                            </div>
-                            {#if isSelectedLib}
-                              <button
-                                type="button"
-                                class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-[#2a2a2a] bg-[#1e1e1e] text-zinc-400 hover:text-white hover:border-[#3a3a3a] transition-colors"
-                                onclick={(e) => { e.stopPropagation(); moveLibraryExerciseToTemplate(libraryEx); }}
-                                title="Move into this template"
-                              >
-                                <ChevronUp class="size-3 pointer-events-none" />
-                              </button>
-                              <button
-                                type="button"
-                                class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-red-900/70 bg-red-950/40 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
-                                onclick={(e) => { e.stopPropagation(); deleteLibraryExercise(libraryEx); }}
-                                title="Delete from library (removes from all templates)"
-                              >
-                                <Trash2 class="size-3 pointer-events-none" />
-                              </button>
+            <div
+              class="library-picker-panel"
+              class:library-picker-panel--open={showExerciseLibraryPicker && !libraryPickerClosing}
+              aria-hidden={!(showExerciseLibraryPicker && !libraryPickerClosing)}
+            >
+              <div class="library-picker-panel__inner {(showExerciseLibraryPicker && !libraryPickerClosing) ? '' : 'pointer-events-none'}">
+                <div class="mt-1.5 rounded border border-[#1e1e1e] bg-[#0d0d0d] p-1.5 space-y-1.5 max-h-52 flex flex-col min-h-0">
+                  <div class="relative shrink-0">
+                    <Search class="size-3 absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+                    <input
+                      type="text"
+                      inputmode="search"
+                      autocomplete="off"
+                      spellcheck="false"
+                      placeholder=""
+                      enterkeyhint="search"
+                      class="library-search-input w-full h-7 pl-7 pr-2 rounded border border-[#1e1e1e] bg-[#141414] text-xs text-zinc-200 outline-none focus:border-[#2a2a2a] caret-zinc-200"
+                      bind:value={librarySearchQuery}
+                      onclick={(e) => e.stopPropagation()}
+                      tabindex={showExerciseLibraryPicker && !libraryPickerClosing ? 0 : -1}
+                    />
+                    {#if !librarySearchQuery}
+                      <span
+                        class="library-search-caret absolute left-7 top-1/2 -translate-y-1/2 w-px h-3.5 bg-zinc-300 pointer-events-none"
+                        aria-hidden="true"
+                      ></span>
+                    {/if}
+                  </div>
+                  <div class="space-y-1 max-h-40 overflow-y-auto no-scrollbar min-h-0">
+                    {#if availableLibraryForPicker.length === 0}
+                      <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
+                        {exerciseLibrary.length === 0
+                          ? 'No saved exercises yet. Create one with NEW.'
+                          : 'All your exercises are already in this template.'}
+                      </p>
+                    {:else if filteredLibraryForPicker.length === 0}
+                      <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
+                        No exercises match “{librarySearchQuery.trim()}”.
+                      </p>
+                    {:else}
+                      {#each filteredLibraryForPicker as libraryEx (libraryEx.id)}
+                        {@const isReps = libraryEx.exercise_type === 'reps'}
+                        {@const isSelectedLib = selectedLibraryExerciseId === libraryEx.id}
+                        {@const summary = isReps
+                          ? `${libraryEx.target_sets || 0}×${libraryEx.target_reps || 0}`
+                          : `${libraryEx.target_sets || 0}× ${libraryEx.target_minutes || 0}m${String(libraryEx.target_seconds || 0).padStart(2, '0')}s`}
+                        {@const weight = isReps && libraryEx.current_weight != null ? ` · ${libraryEx.current_weight}kg` : ''}
+                        <div
+                          class="w-full h-7 min-w-0 px-1.5 rounded border text-xs transition flex items-center gap-1.5 cursor-pointer {isSelectedLib 
+                            ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-200' 
+                            : 'bg-[#141414] border-[#1e1e1e] text-zinc-500 hover:bg-[#1a1a1a] hover:border-[#2a2a2a] hover:text-zinc-400'}"
+                          onclick={() => selectLibraryExercise(libraryEx.id)}
+                          title={isSelectedLib ? '' : 'Select to move or delete'}
+                        >
+                          <div class="flex items-center gap-1.5 flex-1 min-w-0">
+                            {#if isReps}
+                              <Dumbbell class="size-3 shrink-0 text-zinc-400" />
+                            {:else}
+                              <Timer class="size-3 shrink-0 text-zinc-400" />
                             {/if}
+                            <span class="truncate leading-none text-left font-medium">{libraryEx.name}</span>
+                            <span class="ml-auto text-[10px] text-zinc-500 tabular-nums shrink-0">{summary}{weight}</span>
                           </div>
-                        {/each}
-                      {/if}
-                    </div>
+                          {#if isSelectedLib}
+                            <button
+                              type="button"
+                              class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-[#2a2a2a] bg-[#1e1e1e] text-zinc-400 hover:text-white hover:border-[#3a3a3a] transition-colors"
+                              onclick={(e) => { e.stopPropagation(); moveLibraryExerciseToTemplate(libraryEx); }}
+                              title="Move into this template"
+                            >
+                              <ChevronUp class="size-3 pointer-events-none" />
+                            </button>
+                            <button
+                              type="button"
+                              class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-red-900/70 bg-red-950/40 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
+                              onclick={(e) => { e.stopPropagation(); deleteLibraryExercise(libraryEx); }}
+                              title="Delete from library (removes from all templates)"
+                            >
+                              <Trash2 class="size-3 pointer-events-none" />
+                            </button>
+                          {/if}
+                        </div>
+                      {/each}
+                    {/if}
                   </div>
                 </div>
               </div>
-            {/if}
+            </div>
           </div>
 
           <div class="col-start-2 row-start-2 flex flex-col min-h-0 self-stretch border-l border-[#1e1e1e] pl-2">
@@ -10466,6 +10978,8 @@ const getStatIcon = getItemIcon;
       />
     </div>
   {/if}
+  </div>
+  {/key}
   </div>
   {:else if !bootOverlayVisible}
     <div class="flex flex-1 flex-col items-center justify-center pt-0 pb-10 px-2 gap-6 text-center min-h-0 -translate-y-6">

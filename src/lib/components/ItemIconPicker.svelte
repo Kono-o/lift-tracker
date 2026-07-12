@@ -1,11 +1,13 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     clampItemIcon,
     getItemIcon,
     ITEM_ICONS,
     ITEM_ICON_STROKE,
   } from '$lib/itemIcons';
+  import { menuPopoverIn, menuPopoverOut } from '$lib/menuTransitions';
+  import { portal } from '$lib/portal';
 
   let {
     iconIndex = 0,
@@ -35,23 +37,38 @@
   function placePanel() {
     if (!anchorEl || typeof window === 'undefined') return;
     const r = anchorEl.getBoundingClientRect();
-    const panelW = 336;
-    const panelH = 280;
+    const panelW = panelEl?.offsetWidth || 336;
+    const panelH = panelEl?.offsetHeight || 280;
+    const gap = 6;
     let left = r.right - panelW;
-    let top = r.bottom + 6;
+    let top = r.bottom + gap;
     if (left < 8) left = 8;
-    if (left + panelW > window.innerWidth - 8) left = window.innerWidth - panelW - 8;
-    if (top + panelH > window.innerHeight - 8) top = Math.max(8, r.top - panelH - 6);
-    pos = { top, left };
+    if (left + panelW > window.innerWidth - 8) {
+      left = Math.max(8, window.innerWidth - panelW - 8);
+    }
+    if (top + panelH > window.innerHeight - 8) {
+      top = Math.max(8, r.top - panelH - gap);
+    }
+    // Snap to integer CSS pixels to avoid subpixel blur
+    pos = { top: Math.round(top), left: Math.round(left) };
   }
 
   $effect(() => {
     if (!open) return;
+    let cancelled = false;
     placePanel();
+    void tick().then(() => {
+      if (cancelled) return;
+      placePanel();
+      requestAnimationFrame(() => {
+        if (!cancelled) placePanel();
+      });
+    });
     const onScroll = () => placePanel();
     window.addEventListener('resize', onScroll);
     window.addEventListener('scroll', onScroll, true);
     return () => {
+      cancelled = true;
       window.removeEventListener('resize', onScroll);
       window.removeEventListener('scroll', onScroll, true);
     };
@@ -79,10 +96,13 @@
 {#if open}
   <div
     bind:this={panelEl}
+    use:portal
     class="item-icon-picker fixed z-[200] w-[336px] rounded-xl border border-[#2a2a2a] bg-[#141414] shadow-xl shadow-black/50 p-3 flex flex-col gap-2.5"
     style="top: {pos.top}px; left: {pos.left}px;"
     role="dialog"
     aria-label="Pick icon"
+    in:menuPopoverIn
+    out:menuPopoverOut
   >
     <div class="flex items-center gap-2.5">
       <div

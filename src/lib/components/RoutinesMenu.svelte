@@ -128,7 +128,11 @@
   });
 
   $effect(() => {
-    if (initialAllRoutines.length > 0) allRoutines = initialAllRoutines;
+    if (initialAllRoutines.length > 0) {
+      allRoutines = currentUserId
+        ? initialAllRoutines.filter((r) => r.user_id !== currentUserId)
+        : initialAllRoutines;
+    }
   });
 
   $effect(() => {

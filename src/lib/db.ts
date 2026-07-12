@@ -2083,16 +2083,9 @@ export const db = {
 			if (planErr) throw planErr;
 
 			if (!plan || plan.length === 0) {
-				// Routine has no saved schedule — derive from current schedule table
-				const { data: currentSched, error: curErr } = await supabase
-					.from("schedule")
-					.select("day_of_week, template_id")
-					.eq("user_id", uid);
-				if (curErr) throw curErr;
 				const allDays: Array<{ day_of_week: number; template_id: string | null }> = [];
 				for (let dow = 0; dow < 7; dow++) {
-					const row = (currentSched ?? []).find((s) => s.day_of_week === dow);
-					allDays.push({ day_of_week: dow, template_id: row?.template_id ?? null });
+					allDays.push({ day_of_week: dow, template_id: null });
 				}
 				await supabase.from("routine_schedules").insert(
 					allDays.map((s) => ({ routine_id: routineId, day_of_week: s.day_of_week, template_id: s.template_id })),

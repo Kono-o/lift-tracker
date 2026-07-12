@@ -2,6 +2,20 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.9] - 2026-07-13
+
+**Polish release** on multi-routines. Same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.
+
+### Routines UX
+- Bookmark icon before the name (selected and unselected)
+- Copy bookmark replaces that row (no extra COPYING row); bookmark removed after copy
+- Faster batched copy (no N+1); fixed stuck COPYING (busy flag blocked activate)
+- COPYING… soft breathe animation
+- Rename owned routines via pencil / double-click
+- Import button always full label; export → import order; icons swapped per UX
+- Routine editor header: name + MY ROUTINES only (no title)
+- Bookmark chip: `ROUTINE IS A BOOKMARK (READ ONLY) from @user` — right-aligned; WEEK OVERVIEW left when needed
+
 ## [1.0.8] - 2026-07-13
 
 **Feature release** — multi-routines, bookmarks, discovery, import/export. Built and signed with the **exact same long-lived release key** (fingerprint 37:04:C3:...) as all prior 1.0.x releases so in-app updates continue to install cleanly.

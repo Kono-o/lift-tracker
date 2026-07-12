@@ -1847,6 +1847,21 @@ input.prop-num-input::-webkit-outer-spin-button {
 	min-height: 0;
 }
 
+/* Soft pulse while a routine copy is in progress */
+@keyframes routine-copying-breathe {
+	0%,
+	100% {
+		opacity: 0.35;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+
+.routine-copying-breathe {
+	animation: routine-copying-breathe 1.25s ease-in-out infinite;
+}
+
 .library-actions {
 	--library-ui-ms: 220ms;
 	display: grid;

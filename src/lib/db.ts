@@ -2449,12 +2449,20 @@ export const db = {
 	async copyRoutine(sourceRoutineId: string): Promise<Routine & { source_name: string; source_username: string }> {
 		const uid = await requireUserId();
 
-		const { data: srcRoutine, error: routineErr } = await supabase
-			.from("routines")
-			.select("id, user_id, name")
-			.eq("id", sourceRoutineId)
-			.single();
+		const [{ data: srcRoutine, error: routineErr }, { data: srcSched, error: schedErr }] =
+			await Promise.all([
+				supabase
+					.from("routines")
+					.select("id, user_id, name")
+					.eq("id", sourceRoutineId)
+					.single(),
+				supabase
+					.from("routine_schedules")
+					.select("day_of_week, template_id")
+					.eq("routine_id", sourceRoutineId),
+			]);
 		if (routineErr) throw routineErr;
+		if (schedErr) throw schedErr;
 		const src = srcRoutine as { id: string; user_id: string; name: string };
 
 		const { data: ownerRow } = await supabase
@@ -2464,100 +2472,106 @@ export const db = {
 			.maybeSingle();
 		const srcUsername = (ownerRow?.username as string) ?? "unknown";
 
-		const { data: srcSched, error: schedErr } = await supabase
-			.from("routine_schedules")
-			.select("day_of_week, template_id")
-			.eq("routine_id", sourceRoutineId);
-		if (schedErr) throw schedErr;
+		const tIds = [
+			...new Set(
+				((srcSched ?? []) as Array<{ template_id: string | null }>)
+					.filter((s) => s.template_id)
+					.map((s) => s.template_id as string),
+			),
+		];
 
-		const tIds = new Set(
-			((srcSched ?? []) as Array<{ template_id: string | null }>)
-				.filter((s) => s.template_id)
-				.map((s) => s.template_id as string),
-		);
-
-		const templateCopies: Array<{
-			oldId: string;
-			newId: string;
-			name: string;
-			color: number;
-		}> = [];
+		const tplIdMap = new Map<string, string>();
 		const exIdMap = new Map<string, string>();
 
-		for (const oldTid of tIds) {
-			const { data: tpl, error: tplErr } = await supabase
-				.from("templates")
-				.select("id, name, color")
-				.eq("id", oldTid)
-				.single();
-			if (tplErr) throw tplErr;
+		if (tIds.length > 0) {
+			// Batch-fetch templates + all links + all exercises (avoids N+1 hangs)
+			const [{ data: tpls, error: tErr }, { data: allLinks, error: lErr }] =
+				await Promise.all([
+					supabase.from("templates").select("id, name, color").in("id", tIds),
+					supabase
+						.from("template_exercises")
+						.select("template_id, exercise_id, display_order")
+						.in("template_id", tIds)
+						.order("display_order"),
+				]);
+			if (tErr) throw tErr;
+			if (lErr) throw lErr;
 
-			const { data: links, error: linkErr } = await supabase
-				.from("template_exercises")
-				.select("exercise_id, display_order")
-				.eq("template_id", oldTid)
-				.order("display_order");
-			if (linkErr) throw linkErr;
+			const links = (allLinks ?? []) as Array<{
+				template_id: string;
+				exercise_id: string;
+				display_order: number;
+			}>;
+			const exIds = [...new Set(links.map((l) => l.exercise_id))];
+			let exRows: any[] = [];
+			if (exIds.length > 0) {
+				const { data: exs, error: exErr } = await supabase
+					.from("exercises")
+					.select(
+						"id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment",
+					)
+					.in("id", exIds);
+				if (exErr) throw exErr;
+				exRows = exs ?? [];
+			}
+			// Clone exercises once each (client UUIDs so mapping is reliable)
+			if (exRows.length > 0) {
+				const insertEx = exRows.map((ex) => {
+					const newId = crypto.randomUUID();
+					exIdMap.set(ex.id, newId);
+					return {
+						id: newId,
+						user_id: uid,
+						name: ex.name,
+						exercise_type: ex.exercise_type,
+						target_sets: ex.target_sets,
+						target_reps: ex.target_reps,
+						target_minutes: ex.target_minutes,
+						target_seconds: ex.target_seconds,
+						rest_minutes: ex.rest_minutes,
+						rest_seconds: ex.rest_seconds,
+						increment: ex.increment,
+						current_weight: null,
+					};
+				});
+				const { error: newExErr } = await supabase.from("exercises").insert(insertEx);
+				if (newExErr) throw newExErr;
+			}
 
-			const { data: newTpl, error: newTplErr } = await supabase
-				.from("templates")
-				.insert({
-					user_id: uid,
-					name: tpl.name,
-					color: tpl.color ?? 0,
-					display_order: 0,
-				})
-				.select("id, user_id, name, color, display_order")
-				.single();
-			if (newTplErr) throw newTplErr;
+			// Clone templates (client UUIDs)
+			const tplList = (tpls ?? []) as Array<{ id: string; name: string; color: number }>;
+			if (tplList.length > 0) {
+				const insertTpls = tplList.map((t) => {
+					const newId = crypto.randomUUID();
+					tplIdMap.set(t.id, newId);
+					return {
+						id: newId,
+						user_id: uid,
+						name: t.name,
+						color: t.color ?? 0,
+						display_order: 0,
+					};
+				});
+				const { error: newTplErr } = await supabase.from("templates").insert(insertTpls);
+				if (newTplErr) throw newTplErr;
+			}
 
-			templateCopies.push({
-				oldId: oldTid,
-				newId: newTpl.id,
-				name: newTpl.name,
-				color: (newTpl as any).color ?? 0,
-			});
-
-			for (const link of links as Array<{ exercise_id: string; display_order: number }>) {
-				const oldExId = link.exercise_id;
-
-				if (!exIdMap.has(oldExId)) {
-					const { data: ex, error: exErr } = await supabase
-						.from("exercises")
-						.select("*")
-						.eq("id", oldExId)
-						.single();
-					if (exErr) throw exErr;
-
-					const { data: newEx, error: newExErr } = await supabase
-						.from("exercises")
-						.insert({
-							user_id: uid,
-							name: ex.name,
-							exercise_type: ex.exercise_type,
-							target_sets: ex.target_sets,
-							target_reps: ex.target_reps,
-							target_minutes: ex.target_minutes,
-							target_seconds: ex.target_seconds,
-							rest_minutes: ex.rest_minutes,
-							rest_seconds: ex.rest_seconds,
-							increment: ex.increment,
-							current_weight: null,
-						})
-						.select()
-						.single();
-					if (newExErr) throw newExErr;
-					exIdMap.set(oldExId, newEx.id);
-				}
-
-				const { error: teErr } = await supabase
-					.from("template_exercises")
-					.insert({
-						template_id: newTpl.id,
-						exercise_id: exIdMap.get(oldExId)!,
+			// Batch template_exercises links
+			const teRows = links
+				.map((link) => {
+					const newTid = tplIdMap.get(link.template_id);
+					const newEid = exIdMap.get(link.exercise_id);
+					if (!newTid || !newEid) return null;
+					return {
+						template_id: newTid,
+						exercise_id: newEid,
 						user_id: uid,
 						display_order: link.display_order,
-					});
+					};
+				})
+				.filter((r): r is NonNullable<typeof r> => r != null);
+			if (teRows.length > 0) {
+				const { error: teErr } = await supabase.from("template_exercises").insert(teRows);
 				if (teErr) throw teErr;
 			}
 		}
@@ -2579,7 +2593,6 @@ export const db = {
 			.single();
 		if (newRoutineErr) throw newRoutineErr;
 
-		const tplIdMap = new Map(templateCopies.map((t) => [t.oldId, t.newId]));
 		const allDays: Array<{ routine_id: string; day_of_week: number; template_id: string | null }> = [];
 		for (let dow = 0; dow < 7; dow++) {
 			const srcDay = ((srcSched ?? []) as Array<{ day_of_week: number; template_id: string | null }>).find(
@@ -2592,9 +2605,7 @@ export const db = {
 				template_id: oldTid && tplIdMap.has(oldTid) ? tplIdMap.get(oldTid)! : null,
 			});
 		}
-		const { error: insSchedErr } = await supabase
-			.from("routine_schedules")
-			.insert(allDays);
+		const { error: insSchedErr } = await supabase.from("routine_schedules").insert(allDays);
 		if (insSchedErr) throw insSchedErr;
 
 		const templateCount = allDays.filter((d) => d.template_id != null).length;

@@ -196,9 +196,11 @@
   }
 
   async function reloadList() {
+    // Don't clobber in-flight copy/create optimistic rows
+    if (busyAction !== null) return;
     try {
       const list = await db.getUserRoutineList();
-      if (destroyed) return;
+      if (destroyed || busyAction !== null) return;
       myList = list;
       bookmarks = new Set(list.filter((r) => r.source === 'bookmarked').map((r) => r.id));
       emitListChange();
@@ -208,17 +210,18 @@
   }
 
   async function loadAllUsersSection() {
+    if (busyAction !== null) return;
     try {
       const [routines, bm] = await Promise.all([
         db.getAllUsersAndRoutines(),
         db.getUserBookmarks(),
       ]);
-      if (destroyed) return;
+      if (destroyed || busyAction !== null) return;
       allRoutines = currentUserId
         ? routines.filter((r) => r.user_id !== currentUserId)
         : routines;
+      // Don't overwrite bookmark set during copy; only refresh when idle
       bookmarks = new Set(bm.map((b) => b.routine_id));
-      // Refresh bookmarked names/counts from live source
       if (myList.some((r) => r.source === 'bookmarked')) {
         await reloadList();
       }
@@ -470,33 +473,97 @@
   }
 
   async function copyRoutine(routineId: string) {
+    if (busyAction !== null) return;
     errorMsg = null;
-    const optimistic: UserRoutineListItem = {
-      id: 'temp-' + Date.now(),
-      user_id: currentUserId,
-      name: 'COPYING…',
-      created_at: '',
-      template_count: 0,
-      source: 'owned',
-      is_readonly: false,
-    };
-    myList = [...myList, optimistic];
+    const wasBookmarked =
+      bookmarks.has(routineId) ||
+      myList.some((r) => r.id === routineId && r.source === 'bookmarked');
+    const existingBm = myList.find((r) => r.id === routineId && r.source === 'bookmarked');
+    const snapshot = [...myList];
+    const bookmarksSnapshot = new Set(bookmarks);
+    const prevActive = activeRoutineId;
+    const tempId = 'temp-copy-' + Date.now();
+    busyAction = 'copy:' + routineId;
+
+    if (existingBm) {
+      // Replace the bookmarked row in place (no extra row)
+      myList = myList.map((r) =>
+        r.id === routineId
+          ? {
+              id: tempId,
+              user_id: currentUserId,
+              name: 'COPYING…',
+              created_at: r.created_at,
+              template_count: r.template_count ?? 0,
+              display_order: r.display_order,
+              source: 'owned' as const,
+              is_readonly: false,
+            }
+          : r,
+      );
+      bookmarks.delete(routineId);
+      bookmarks = new Set(bookmarks);
+      if (activeRoutineId === routineId) activeRoutineId = tempId;
+    } else {
+      myList = [
+        ...myList,
+        {
+          id: tempId,
+          user_id: currentUserId,
+          name: 'COPYING…',
+          created_at: '',
+          template_count: 0,
+          source: 'owned' as const,
+          is_readonly: false,
+        },
+      ];
+    }
+    emitListChange();
+
     try {
-      const result = (await runDbActivityBatch(() => db.copyRoutine(routineId))) as Routine & {
+      // Don't nest under extra busy guards; copy is the slow path
+      const result = (await db.copyRoutine(routineId)) as Routine & {
         source_name: string;
         source_username: string;
       };
-      myList = myList.map((x) =>
-        x.id === optimistic.id
-          ? { ...result, source: 'owned' as const, is_readonly: false }
-          : x,
-      );
+
+      if (wasBookmarked) {
+        try {
+          await db.removeBookmarkFromList(routineId);
+        } catch (e) {
+          console.error('Failed to remove bookmark after copy', e);
+        }
+      }
+
+      const ownedItem: UserRoutineListItem = {
+        ...result,
+        source: 'owned',
+        is_readonly: false,
+      };
+      // Swap COPYING row → real owned routine (keep position)
+      myList = myList
+        .map((r) => (r.id === tempId ? ownedItem : r))
+        .filter((r) => !(r.source === 'bookmarked' && r.id === routineId));
+      if (!myList.some((r) => r.id === result.id)) {
+        myList = [...myList, ownedItem];
+      }
+      bookmarks.delete(routineId);
+      bookmarks = new Set(bookmarks);
       emitListChange();
+
+      // Clear busy *before* activate — activateRoutine no-ops while busyAction is set
+      busyAction = null;
       await activateRoutine(result.id);
     } catch (e) {
-      myList = myList.filter((x) => x.id !== optimistic.id);
+      myList = snapshot;
+      bookmarks = bookmarksSnapshot;
+      activeRoutineId = prevActive;
+      emitListChange();
       errorMsg = 'Failed to copy routine';
       console.error(e);
+      busyAction = null;
+    } finally {
+      if (busyAction?.startsWith('copy:')) busyAction = null;
     }
   }
 
@@ -612,7 +679,7 @@
       disabled={importBusy || busyAction !== null}
     >
       <Download class="size-4 shrink-0" />
-      <span class="text-[10px] font-bold tracking-wide leading-none hidden sm:inline">IMPORT</span>
+      <span class="text-[10px] font-bold tracking-wide leading-none shrink-0">IMPORT</span>
     </button>
   </div>
 
@@ -668,6 +735,12 @@
               onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleRowClick(routine); } }}
             >
               <div class="flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
+                {#if isBookmarked}
+                  <span class="shrink-0 inline-flex text-emerald-400" title="Bookmarked (live link)">
+                    <Bookmark class="size-3.5" fill="currentColor" strokeWidth={2} />
+                  </span>
+                {/if}
+
                 {#if renamingId === routine.id && isOwned}
                   <input
                     autocomplete="off"
@@ -692,6 +765,10 @@
                     }}
                     onblur={() => saveRename(routine.id)}
                   />
+                {:else if routine.name === 'COPYING…' || routine.id.startsWith('temp-copy-')}
+                  <span
+                    class="routine-copying-breathe font-medium text-xs flex-1 min-w-0 truncate leading-none uppercase {isActive ? 'text-white' : 'text-zinc-400'}"
+                  >COPYING…</span>
                 {:else}
                   <span
                     class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none uppercase {isActive ? 'text-white' : 'text-zinc-400'} {isOwned ? 'cursor-text' : ''}"
@@ -711,12 +788,6 @@
                 >
                   {tc} TEMPLATE{tc === 1 ? '' : 'S'}
                 </span>
-
-                {#if isBookmarked && !isActive}
-                  <span class="shrink-0 inline-flex text-emerald-400" title="Bookmarked (live link)">
-                    <Bookmark class="size-4" fill="currentColor" strokeWidth={2} />
-                  </span>
-                {/if}
 
                 {#if isActive}
                   <span class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none"

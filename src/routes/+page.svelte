@@ -8757,8 +8757,6 @@ function getStatIcon(id: number): typeof Dna {
         >
           <ArrowLeft class="size-4" />
         </button>
-        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0 hidden xs:inline sm:inline">{activeRoutineIsReadonly ? 'ROUTINE (VIEW)' : 'ROUTINE EDITOR'}</span>
-        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0 sm:hidden">{activeRoutineIsReadonly ? 'VIEW' : 'EDITOR'}</span>
         <div class="flex-1 min-w-0 flex items-center">
           <span
             class="w-full h-8 flex items-center justify-center px-2 rounded border border-[#2a2a2a] bg-black text-xs font-medium truncate leading-none text-center text-white"
@@ -8770,16 +8768,24 @@ function getStatIcon(id: number): typeof Dna {
           title="My Routines"
           onclick={() => openRoutinesMenu()}
         >
-          <List class="size-3.5" />
-          <span class="hidden sm:inline">MY ROUTINES</span>
+          <List class="size-3.5 shrink-0" />
+          <span class="shrink-0">MY ROUTINES</span>
         </button>
       </div>
-      <div class="relative flex items-center justify-center min-h-[18px]">
-        <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none text-center">
+      <div
+        class="flex items-center min-h-[18px] gap-2 {activeRoutineIsReadonly
+          ? 'justify-between'
+          : 'justify-center'}"
+      >
+        <span
+          class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none shrink-0 {activeRoutineIsReadonly
+            ? 'text-left'
+            : 'text-center'}"
+        >
           {activeRoutineIsReadonly ? 'WEEK OVERVIEW' : 'CLICK DAY TO ASSIGN'}
         </span>
         {#if activeRoutineIsReadonly}
-          <span class="absolute right-0 top-1/2 -translate-y-1/2 max-w-[56%] truncate inline-flex items-center gap-1 text-[10px] font-normal uppercase tracking-wide leading-none px-2 py-1.5 rounded border border-emerald-900/50 bg-emerald-950/40 text-emerald-300/90">
+          <span class="min-w-0 max-w-[70%] truncate inline-flex items-center justify-end gap-1 text-[10px] font-normal uppercase tracking-wide leading-none px-2 py-1.5 rounded border border-emerald-900/50 bg-emerald-950/40 text-emerald-300/90">
             <span class="truncate">ROUTINE IS A BOOKMARK</span>
             <Bookmark class="size-3.5 shrink-0 text-emerald-400" fill="currentColor" strokeWidth={2} />
             <span class="shrink-0">(READ ONLY)</span>

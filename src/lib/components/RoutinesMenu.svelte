@@ -270,7 +270,6 @@
   }
 
   async function toggleBookmark(routineId: string) {
-    busyAction = routineId;
     errorMsg = null;
     const wasBookmarked = bookmarks.has(routineId);
     if (wasBookmarked) {
@@ -282,34 +281,29 @@
     try {
       if (wasBookmarked) {
         const bm = (await db.getUserBookmarks()).find((b) => b.routine_id === routineId);
-        if (bm) await runDbActivityBatch(() => db.unbookmarkRoutine(bm.id));
+        if (bm) await db.unbookmarkRoutine(bm.id);
       } else {
-        await runDbActivityBatch(() => db.bookmarkRoutine(routineId));
+        await db.bookmarkRoutine(routineId);
       }
     } catch (e) {
       if (wasBookmarked) bookmarks.add(routineId); else bookmarks.delete(routineId);
       bookmarks = new Set(bookmarks);
       errorMsg = 'Failed to toggle bookmark';
       console.error(e);
-    } finally {
-      busyAction = null;
     }
   }
 
   async function copyRoutine(routineId: string) {
-    busyAction = routineId;
     errorMsg = null;
     const optimistic: Routine = { id: 'temp-' + Date.now(), user_id: '', name: 'COPYING…', created_at: '', template_count: 0 };
     myRoutines = [...myRoutines, optimistic];
     try {
-      const newRoutine = await runDbActivityBatch(() => db.copyRoutine(routineId));
+      const newRoutine = await db.copyRoutine(routineId);
       myRoutines = myRoutines.map((x) => x.id === optimistic.id ? newRoutine : x);
     } catch (e) {
       myRoutines = myRoutines.filter((x) => x.id !== optimistic.id);
       errorMsg = 'Failed to copy routine';
       console.error(e);
-    } finally {
-      busyAction = null;
     }
   }
 
@@ -481,7 +475,6 @@
   <div>
     <div class="flex items-center gap-2 mb-1.5">
       <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">ALL USERS</span>
-      <span class="text-[8px] text-zinc-600">(auto-refresh)</span>
     </div>
 
     {#if allRoutines.length === 0}
@@ -524,7 +517,6 @@
                       : `background-color: transparent; color: #888; border-color: #333;`}
                     title={bookmarks.has(routine.id) ? 'Remove bookmark' : 'Bookmark routine'}
                     onclick={(e) => { e.stopPropagation(); toggleBookmark(routine.id); }}
-                    disabled={busyAction !== null}
                   >
                     {#if bookmarks.has(routine.id)}
                       <Bookmark class="size-3.5 pointer-events-none" fill="currentColor" />
@@ -537,7 +529,6 @@
                     class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-blue-900/80 bg-blue-950/50 text-blue-400 hover:text-blue-300 hover:border-blue-800 transition-colors"
                     title="Copy routine to your account"
                     onclick={(e) => { e.stopPropagation(); copyRoutine(routine.id); }}
-                    disabled={busyAction !== null}
                   >
                     <Copy class="size-3.5 pointer-events-none" />
                   </button>

@@ -2998,7 +2998,16 @@ function getStatIcon(id: number): typeof Dna {
   async function closeRoutinesMenu() {
     templateError = null;
     templateErrorFading = false;
-    await loadData({ preserveSession: true });
+    // Refresh schedule and templates via getAppData
+    if (currentUser?.id) {
+      try {
+        const app = await db.getAppData(currentUser.id);
+        schedule = app.schedule;
+        templates = app.templates;
+      } catch (e) {
+        console.error('closeRoutinesMenu refresh failed', e);
+      }
+    }
     const byDay = new Map<number, string | null>();
     for (const s of schedule) byDay.set(s.day_of_week, s.template_id);
     const newAssignments: Record<number, string | null> = {};

@@ -217,6 +217,11 @@
       e.preventDefault();
       return;
     }
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.('button, input, a, [data-no-drag]')) {
+      e.preventDefault();
+      return;
+    }
     const ownedIdx = ownedRoutines.findIndex((r) => r.id === item.id);
     if (ownedIdx < 0) {
       e.preventDefault();
@@ -1144,15 +1149,17 @@
                     {#if canDeleteOwned}
                       <button
                         type="button"
+                        data-no-drag
+                        draggable="false"
                         class="relative overflow-hidden w-7 h-7 shrink-0 flex items-center justify-center rounded border transition-colors {deleteRoutineHoldId === routine.id && deleteRoutineHoldProgress > 0
                           ? 'border-red-500 text-red-300'
                           : 'border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800'}"
                         title="Hold 0.8s to delete routine"
                         disabled={busyAction !== null}
-                        onmousedown={(e) => startDeleteRoutineHold(e, routine.id)}
+                        onmousedown={(e) => { e.stopPropagation(); startDeleteRoutineHold(e, routine.id); }}
                         onmouseup={stopDeleteRoutineHold}
                         onmouseleave={stopDeleteRoutineHold}
-                        ontouchstart={(e) => startDeleteRoutineHold(e, routine.id)}
+                        ontouchstart={(e) => { e.stopPropagation(); startDeleteRoutineHold(e, routine.id); }}
                         ontouchend={stopDeleteRoutineHold}
                         ontouchcancel={stopDeleteRoutineHold}
                         onclick={(e) => e.stopPropagation()}

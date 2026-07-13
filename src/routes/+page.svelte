@@ -9547,14 +9547,15 @@ const getStatIcon = getItemIcon;
                     <button
                       type="button"
                       data-no-drag
+                      draggable="false"
                       class="relative overflow-hidden w-6 h-6 shrink-0 flex items-center justify-center rounded border transition-colors {deleteTemplateHoldId === template.id && deleteTemplateProgress > 0
                         ? 'border-red-500 text-red-300'
                         : 'border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800'}"
                       title="Hold 0.8s to delete template"
-                      onmousedown={(e) => startDeleteTemplateHold(e, template.id)}
+                      onmousedown={(e) => { e.stopPropagation(); startDeleteTemplateHold(e, template.id); }}
                       onmouseup={stopDeleteTemplateHold}
                       onmouseleave={stopDeleteTemplateHold}
-                      ontouchstart={(e) => startDeleteTemplateHold(e, template.id)}
+                      ontouchstart={(e) => { e.stopPropagation(); startDeleteTemplateHold(e, template.id); }}
                       ontouchend={stopDeleteTemplateHold}
                       ontouchcancel={stopDeleteTemplateHold}
                       onclick={(e) => e.stopPropagation()}

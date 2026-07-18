@@ -358,19 +358,8 @@
     errorMsg = null;
     const gen = listGen;
     try {
-      let list = await db.getUserRoutineList();
+      const list = await db.getUserRoutineList();
       if (destroyed || gen !== listGen || busyAction !== null) return;
-      if (list.filter((r) => r.source === 'owned').length === 0) {
-        const created = await db.ensureDefaultRoutine();
-        if (destroyed || gen !== listGen || busyAction !== null) return;
-        if (created) {
-          list = await db.getUserRoutineList();
-          if (destroyed || gen !== listGen || busyAction !== null) return;
-          if (!activeRoutineId) {
-            activeRoutineId = created.id;
-          }
-        }
-      }
       if (destroyed || gen !== listGen || busyAction !== null) return;
       withSuppressedListEnter(() => {
         let keys: Record<string, string> = {};

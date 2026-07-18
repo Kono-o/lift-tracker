@@ -1185,8 +1185,9 @@ export const db = {
 			supabase.from("workout_history").delete().eq("user_id", uid),
 			supabase.from("stat_logs").delete().eq("user_id", uid),
 			supabase.from("tracked_stats").delete().eq("user_id", uid),
-			supabase.from("schedule").delete().eq("user_id", uid),
+			supabase.from("routine_bookmarks").delete().eq("user_id", uid),
 			supabase.from("routines").delete().eq("user_id", uid),
+			supabase.from("schedule").delete().eq("user_id", uid),
 		]);
 
 		for (const r of results) {
@@ -2443,21 +2444,15 @@ export const db = {
 			.single();
 		if (error) throw error;
 
-		// Seed a default template so the routine is not empty
-		const { data: tpl } = await supabase.rpc("create_template", {
-			p_routine_id: data.id,
-			p_name: "NEW TEMPLATE",
-		});
-
-		// Seed 7-day schedule with Monday assigned to the new template
+		// Seed empty 7-day schedule
 		const days = Array.from({ length: 7 }, (_, dow) => ({
 			routine_id: data.id,
 			day_of_week: dow,
-			template_id: dow === 0 && tpl ? (tpl as any).id : null,
+			template_id: null,
 		}));
 		await supabase.from("routine_schedules").insert(days);
 
-		return { ...data, template_count: tpl ? 1 : 0 } as Routine;
+		return { ...data, template_count: 0 } as Routine;
 	},
 
 	/** Rename a routine (owned only — RLS enforces). */

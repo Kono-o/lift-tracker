@@ -2,6 +2,26 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.13] - 2026-07-18
+
+**Cleanup + fixes** — same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.
+
+### Routines UX
+- Routines list starts blank (no auto-created default routine)
+- "CREATE ROUTINE" button only shows when no routine is selected
+- Empty routine (selected but no templates) shows rest day view instead of onboarding
+- New routines start with empty schedule (no pre-seeded template)
+
+### Account deletion
+- Fixed `delete_own_account` RPC — was referencing dropped `templates.user_id` column, causing deletion to fail
+- Fixed `get_own_data_usage` RPC — same stale reference
+- Fixed API fallback route and client-side `deleteAllUserData` for new schema
+- Full migration applied to production database
+
+### Internal
+- DELETE ALL button (exercise library) font size reduced
+- Removed stale `templates_user_id_idx` from base schema
+
 ## [1.0.12] - 2026-07-18
 
 **Schema overhaul + routine editor fixes** — same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.

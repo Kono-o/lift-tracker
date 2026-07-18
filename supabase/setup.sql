@@ -209,7 +209,7 @@ create index exercises_user_id_idx on public.exercises (user_id);
 create index template_exercises_template_id_idx on public.template_exercises (template_id);
 create index template_exercises_exercise_id_idx on public.template_exercises (exercise_id);
 create index template_exercises_user_id_idx on public.template_exercises (user_id);
-create index templates_user_id_idx on public.templates (user_id);
+
 create index exercise_personal_bests_user_id_idx on public.exercise_personal_bests (user_id);
 create index schedule_template_id_idx on public.schedule (template_id)
   where template_id is not null;
@@ -622,7 +622,8 @@ begin
   delete from public.workout_history where user_id = uid;
   delete from public.stat_logs where user_id = uid;
   delete from public.tracked_stats where user_id = uid;
-  delete from public.templates where user_id = uid;
+  delete from public.routine_bookmarks where user_id = uid;
+  delete from public.routines where user_id = uid;
   delete from public.schedule where user_id = uid;
   delete from public.usernames where user_id = uid;
 
@@ -645,7 +646,7 @@ set search_path = public
 as $$
   select jsonb_build_object(
     'templates',
-      coalesce((select count(*)::int from public.templates where user_id = auth.uid()), 0),
+      coalesce((select count(*)::int from public.templates t join public.routines r on r.id = t.routine_id where r.user_id = auth.uid()), 0),
     'exercises',
       coalesce((select count(*)::int from public.exercises where user_id = auth.uid()), 0),
     'schedule',
@@ -661,7 +662,7 @@ as $$
     'estimated_bytes',
       (
         coalesce(
-          (select sum(octet_length(row_to_json(t)::text))::bigint from public.templates t where t.user_id = auth.uid()),
+          (select sum(octet_length(row_to_json(t)::text))::bigint from public.templates t join public.routines r on r.id = t.routine_id where r.user_id = auth.uid()),
           0
         )
         + coalesce(
@@ -1124,7 +1125,7 @@ grant execute on function public.complete_workout_session(date, uuid, text, inte
 -- 10. Routine / template RPCs (exactly one HTTP round-trip per user action)
 -- -----------------------------------------------------------------------------
 
-create or replace function public.create_template(p_name text)
+create or replace function public.create_template(p_routine_id uuid, p_name text)
 returns jsonb
 language plpgsql
 security definer
@@ -1140,6 +1141,13 @@ begin
     raise exception 'Not authenticated';
   end if;
 
+  if not exists (
+    select 1 from public.routines r
+    where r.id = p_routine_id and r.user_id = uid
+  ) then
+    raise exception 'Routine not found';
+  end if;
+
   safe_name := upper(trim(coalesce(p_name, '')));
   if char_length(safe_name) = 0 then
     safe_name := 'NEW TEMPLATE';
@@ -1151,10 +1159,10 @@ begin
   select coalesce(max(t.display_order), -1) + 1
   into next_order
   from public.templates t
-  where t.user_id = uid;
+  where t.routine_id = p_routine_id;
 
-  insert into public.templates (user_id, name, color, display_order)
-  values (uid, safe_name, 242, next_order)
+  insert into public.templates (routine_id, name, color, icon, display_order, exercise_ids)
+  values (p_routine_id, safe_name, 242, 1, next_order, '{}')
   returning * into row;
 
   return to_jsonb(row);
@@ -1395,8 +1403,8 @@ begin
 end;
 $$;
 
-revoke all on function public.create_template(text) from public;
-grant execute on function public.create_template(text) to authenticated;
+revoke all on function public.create_template(uuid, text) from public;
+grant execute on function public.create_template(uuid, text) to authenticated;
 
 revoke all on function public.save_template_exercises(uuid, jsonb) from public;
 grant execute on function public.save_template_exercises(uuid, jsonb) to authenticated;

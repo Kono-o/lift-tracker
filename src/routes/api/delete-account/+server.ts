@@ -8,9 +8,13 @@ import {
 import { env } from "$env/dynamic/private";
 
 const USER_DATA_TABLES = [
+	"exercise_personal_bests",
 	"exercises",
 	"workout_history",
-	"templates",
+	"stat_logs",
+	"tracked_stats",
+	"routine_bookmarks",
+	"routines",
 	"schedule",
 	"usernames",
 ] as const;

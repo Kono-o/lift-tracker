@@ -1296,6 +1296,9 @@ const getStatIcon = getItemIcon;
   let deleteTemplateProgress = $state(0);
   /** Which template id is currently being hold-to-deleted (builder / editor). */
   let deleteTemplateHoldId = $state<string | null>(null);
+  let deleteAllExHoldTimer: any = null;
+  let deleteAllExProgress = $state(0);
+  let deleteAllExHolding = $state(false);
   let eraseHoldTimer: any = null;
   let eraseProgress = $state(0);
   let eraseTapPulseActive = $state(false);
@@ -1496,6 +1499,35 @@ const getStatIcon = getItemIcon;
     void persistTemplateExercisesNow();
   }
 
+  function deleteAllLibraryExercises() {
+    if (exerciseLibrary.length === 0) return;
+    const ids = new Set(exerciseLibrary.map((ex) => ex.id));
+
+    deletedLibraryExerciseIds = new Set([...deletedLibraryExerciseIds, ...ids]);
+    selectedLibraryExerciseId = null;
+
+    draftExercises = draftExercises.filter((e: any) => !ids.has(e.id));
+    if (selectedExerciseId && ids.has(selectedExerciseId)) {
+      selectedExerciseId = draftExercises.length > 0 ? draftExercises[draftExercises.length - 1].id : null;
+    }
+
+    templates = templates.map((t) => ({
+      ...t,
+      exercises: t.exercises.filter((ex) => !ids.has(ex.id)),
+    }));
+    exerciseLibrary = [];
+
+    for (const id of ids) {
+      void db.deleteExercise(id).catch((err) => {
+        console.error('Failed to delete exercise from library', err);
+        const reverted = new Set(deletedLibraryExerciseIds);
+        reverted.delete(id);
+        deletedLibraryExerciseIds = reverted;
+        void loadData({ preserveSession: true }).catch(() => {});
+      });
+    }
+  }
+
   function deleteLibraryExercise(exercise: Exercise) {
     if (!editingTemplateId) return;
     const id = exercise.id;
@@ -1565,7 +1597,7 @@ const getStatIcon = getItemIcon;
     accountCreatedDateStr != null && selectedDateStr < accountCreatedDateStr,
   );
   /** No template on this weekday in the current routine. */
-  let isScheduledRestDay = $derived(!activeTemplate && templates.length > 0);
+  let isScheduledRestDay = $derived(!activeTemplate && (templates.length > 0 || !!activeRoutineId));
   /** Real workout log for the selected day (completed, skipped, or in progress — not rest). */
   let hasViewedWorkoutLog = $derived(!!viewedLog && !viewedLog.workout_snapshot?.is_rest);
   /** Past day log fetch finished (null = confirmed no log). */
@@ -4251,24 +4283,7 @@ const getStatIcon = getItemIcon;
 			statLogs = statLogsFromSnapshots(statLogSnapshots);
 			activeRoutineId = boot.activeRoutineId;
 			preloadedRoutineList = boot.routineList ?? [];
-			if (!activeRoutineId) {
-				try {
-					const list = preloadedRoutineList;
-					const first = list.find((r) => r.source === 'owned') ?? list[0];
-					if (first) {
-						await runDbActivityBatch(async () => {
-							await db.setActiveRoutine(first.id);
-							activeRoutineId = first.id;
-							const refreshed = await db.getAppData(currentUser?.id);
-							schedule = refreshed.schedule;
-							templates = refreshed.templates;
-							exerciseLibrary = refreshed.exerciseLibrary ?? [];
-						});
-					}
-				} catch (e) {
-					console.error('Failed to auto-assign first routine as active', e);
-				}
-			}
+	
 			if (isInitial) {
 				bootSections = buildBootSections(currentUser, schedule, templates, todayLog, recentLogs);
 				bootMessage = 'Almost ready…';
@@ -5409,6 +5424,32 @@ const getStatIcon = getItemIcon;
     deleteTemplateHoldTimer = null;
     deleteTemplateProgress = 0;
     deleteTemplateHoldId = null;
+  }
+
+  function startDeleteAllExercisesHold(e: Event) {
+    if (e.cancelable) e.preventDefault();
+    (e as Event & { stopPropagation?: () => void }).stopPropagation?.();
+    if (exerciseLibrary.length === 0) return;
+    clearInterval(deleteAllExHoldTimer);
+    deleteAllExHolding = true;
+    const startTime = Date.now();
+    deleteAllExHoldTimer = setInterval(() => {
+      deleteAllExProgress = Math.min(((Date.now() - startTime) / HOLD_DELETE_MS) * 100, 100);
+      if (deleteAllExProgress >= 100) {
+        clearInterval(deleteAllExHoldTimer);
+        deleteAllExHoldTimer = null;
+        deleteAllExProgress = 0;
+        deleteAllExHolding = false;
+        deleteAllLibraryExercises();
+      }
+    }, 16);
+  }
+  function stopDeleteAllExercisesHold(e?: Event) {
+    e?.stopPropagation?.();
+    clearInterval(deleteAllExHoldTimer);
+    deleteAllExHoldTimer = null;
+    deleteAllExProgress = 0;
+    deleteAllExHolding = false;
   }
 
   function startEraseHold(e: Event) {
@@ -8704,7 +8745,7 @@ const getStatIcon = getItemIcon;
           </div>
         </button>
       </div>
-    {:else if templates.length === 0}
+    {:else if templates.length === 0 && !activeRoutineId}
       <!-- Onboarding: entire routine is rest (starting out, or last template deleted). Not a tutorial; just a clean create-first page matching rest/unlogged style exactly. -->
       <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
         <!-- Hero icon -->
@@ -8720,6 +8761,7 @@ const getStatIcon = getItemIcon;
         {#if templateError}
           <p class="text-[10px] text-red-300 leading-snug">{templateError}</p>
         {/if}
+        {#if !activeRoutineId}
         <button 
           type="button"
           class="app-hero-panel app-primary-cta rounded-xl font-sans font-black text-[11px] tracking-[0.15em] bg-white text-black border-2 border-transparent transition-all duration-150 hover:brightness-110 disabled:opacity-50 flex items-center justify-center"
@@ -8746,6 +8788,7 @@ const getStatIcon = getItemIcon;
           }}>
           CREATE ROUTINE
         </button>
+        {/if}
       </div>
     {:else if ((isRestLog || isLoggedRest) || isScheduledRestDay) && !hasViewedWorkoutLog}
       <!-- REST DAY: scheduled rest or logged rest — never when a real workout log exists -->
@@ -10659,25 +10702,52 @@ const getStatIcon = getItemIcon;
             >
               <div class="library-picker-panel__inner {(showExerciseLibraryPicker && !libraryPickerClosing) ? '' : 'pointer-events-none'}">
                 <div class="mt-1.5 rounded border border-[#1e1e1e] bg-[#0d0d0d] p-1.5 space-y-1.5 max-h-52 flex flex-col min-h-0">
-                  <div class="relative shrink-0">
-                    <Search class="size-3 absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
-                    <input
-                      type="text"
-                      inputmode="search"
-                      autocomplete="off"
-                      spellcheck="false"
-                      placeholder=""
-                      enterkeyhint="search"
-                      class="library-search-input w-full h-7 pl-7 pr-2 rounded border border-[#1e1e1e] bg-[#141414] text-xs text-zinc-200 outline-none focus:border-[#2a2a2a] caret-zinc-200"
-                      bind:value={librarySearchQuery}
-                      onclick={(e) => e.stopPropagation()}
-                      tabindex={showExerciseLibraryPicker && !libraryPickerClosing ? 0 : -1}
-                    />
-                    {#if !librarySearchQuery}
-                      <span
-                        class="library-search-caret absolute left-7 top-1/2 -translate-y-1/2 w-px h-3.5 bg-zinc-300 pointer-events-none"
-                        aria-hidden="true"
-                      ></span>
+                  <div class="flex gap-1 shrink-0">
+                    <div class="relative shrink-0 flex-1">
+                      <Search class="size-3 absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+                      <input
+                        type="text"
+                        inputmode="search"
+                        autocomplete="off"
+                        spellcheck="false"
+                        placeholder=""
+                        enterkeyhint="search"
+                        class="library-search-input w-full h-7 pl-7 pr-2 rounded border border-[#1e1e1e] bg-[#141414] text-xs text-zinc-200 outline-none focus:border-[#2a2a2a] caret-zinc-200"
+                        bind:value={librarySearchQuery}
+                        onclick={(e) => e.stopPropagation()}
+                        tabindex={showExerciseLibraryPicker && !libraryPickerClosing ? 0 : -1}
+                      />
+                      {#if !librarySearchQuery}
+                        <span
+                          class="library-search-caret absolute left-7 top-1/2 -translate-y-1/2 w-px h-3.5 bg-zinc-300 pointer-events-none"
+                          aria-hidden="true"
+                        ></span>
+                      {/if}
+                    </div>
+                    {#if exerciseLibrary.length > 0}
+                      <button
+                        type="button"
+                        class="relative overflow-hidden h-7 px-1.5 shrink-0 flex items-center gap-1 rounded border transition-colors {deleteAllExHolding
+                          ? 'border-red-500 text-red-300'
+                          : 'border-red-900/50 bg-red-950/30 text-red-400 hover:text-red-300 hover:border-red-800 hover:bg-red-950/50'}"
+                        title="Hold to delete all exercises"
+                        onmousedown={startDeleteAllExercisesHold}
+                        onmouseup={stopDeleteAllExercisesHold}
+                        onmouseleave={stopDeleteAllExercisesHold}
+                        ontouchstart={startDeleteAllExercisesHold}
+                        ontouchend={stopDeleteAllExercisesHold}
+                        ontouchcancel={stopDeleteAllExercisesHold}
+                        onclick={(e) => e.stopPropagation()}
+                      >
+                        {#if deleteAllExProgress > 0}
+                          <div
+                            class="absolute inset-0 z-0 bg-red-900/50 transition-all duration-[20ms]"
+                            style="width: {deleteAllExProgress}%;"
+                          ></div>
+                        {/if}
+                        <Trash2 class="size-3 pointer-events-none relative z-10" />
+                        <span class="relative z-10 text-[10px] leading-none font-medium">DELETE ALL</span>
+                      </button>
                     {/if}
                   </div>
                   <div class="space-y-1 max-h-40 overflow-y-auto no-scrollbar min-h-0">
@@ -10692,7 +10762,7 @@ const getStatIcon = getItemIcon;
                         No exercises match “{librarySearchQuery.trim()}”.
                       </p>
                     {:else}
-                      {#each filteredLibraryForPicker as libraryEx (libraryEx.id)}
+                      {#each filteredLibraryForPicker as libraryEx, libIdx (libraryEx.id)}
                         {@const isReps = libraryEx.exercise_type === 'reps'}
                         {@const isSelectedLib = selectedLibraryExerciseId === libraryEx.id}
                         {@const summary = isReps
@@ -10707,6 +10777,7 @@ const getStatIcon = getItemIcon;
                           title={isSelectedLib ? '' : 'Select to move or delete'}
                         >
                           <div class="flex items-center gap-1.5 flex-1 min-w-0">
+                            <span class="text-[10px] text-zinc-600 tabular-nums w-3 text-right shrink-0">{libIdx + 1}</span>
                             {#if isReps}
                               <Dumbbell class="size-3 shrink-0 text-zinc-400" />
                             {:else}
@@ -10730,7 +10801,8 @@ const getStatIcon = getItemIcon;
                               onclick={(e) => { e.stopPropagation(); deleteLibraryExercise(libraryEx); }}
                               title="Delete from library (removes from all templates)"
                             >
-                              <Trash2 class="size-3 pointer-events-none" />
+                        <Trash2 class="size-3 pointer-events-none" />
+                        <span>DELETE ALL</span>
                             </button>
                           {/if}
                         </div>

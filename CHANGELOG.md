@@ -2,6 +2,34 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.12] - 2026-07-18
+
+**Schema overhaul + routine editor fixes** — same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.
+
+### Database restructuring
+- Templates are now **routine-owned** (each template belongs to exactly one routine)
+- `template_exercises` junction table eliminated — replaced by `exercise_ids uuid[]` array on each template row
+- Exercises remain user-global and reusable across templates
+- Full data migration: backfilled `routine_id` + `exercise_ids` from existing data; no user data lost
+
+### Routine editor fixes
+- Template list now correctly shows only templates belonging to the active routine
+- Switching templates no longer causes other templates to disappear from the list
+- Deleting the last template in a routine no longer shows templates from other routines
+- Schedule assignments correctly cleared on template deletion (no cross-routine contamination)
+
+### Routines UX
+- "CREATE ROUTINE" button does optimistic creation (instant UI, background DB call)
+- New routines auto-create a default template so users never see an empty routine
+- Routine count chip on user menu (settings panel) and boot screen (loading menu)
+
+### Internal
+- Copy, export/import, save, and delete flows rewritten for new schema
+- `getSessionBootstrap` simplified (no more junction table queries)
+- Data usage RPC updated for routine-owned templates
+- Dropped stale `create_template` overload that referenced removed `user_id` column
+- `assign_schedule_days` RPC fixed for new ownership model
+
 ## [1.0.11] - 2026-07-13
 
 **UI polish + reliability** — same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.

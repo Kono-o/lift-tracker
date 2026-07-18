@@ -29,6 +29,7 @@ export type UserDataUsage = {
 	workout_history: number;
 	tracked_stats?: number;
 	stat_logs?: number;
+	routines?: number;
 	estimated_bytes: number;
 	exact: boolean;
 };
@@ -156,6 +157,7 @@ export async function fetchUserDataUsage(): Promise<UserDataUsage | null> {
 			workout_history: Number(row.workout_history ?? 0),
 			tracked_stats: Number(row.tracked_stats ?? 0),
 			stat_logs: Number(row.stat_logs ?? 0),
+			routines: Number(row.routines ?? 0),
 			estimated_bytes: Number(row.estimated_bytes ?? 0),
 			exact: true,
 		};

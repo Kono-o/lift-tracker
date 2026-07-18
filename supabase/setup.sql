@@ -656,6 +656,8 @@ as $$
       coalesce((select count(*)::int from public.tracked_stats where user_id = auth.uid()), 0),
     'stat_logs',
       coalesce((select count(*)::int from public.stat_logs where user_id = auth.uid()), 0),
+    'routines',
+      coalesce((select count(*)::int from public.routines where user_id = auth.uid()), 0),
     'estimated_bytes',
       (
         coalesce(

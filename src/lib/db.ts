@@ -183,7 +183,7 @@ export function formatDbError(error: unknown): string {
 
 	if (
 		code === "23503" ||
-		lower.includes("templates_user_id_fkey") ||
+		lower.includes("templates_routine_id_fkey") ||
 		lower.includes("violates foreign key constraint")
 	) {
 		return "Your session is no longer valid (account may have been removed). Sign out and sign in again.";
@@ -469,25 +469,19 @@ export function isPersistedExerciseId(id: string | null | undefined): boolean {
 	return !!id && PERSISTED_EXERCISE_ID_RE.test(id) && !id.startsWith("temp-");
 }
 
-function exerciseFromLink(
-	link: { display_order: number; exercises: Exercise | Exercise[] | null },
-): Exercise | null {
-	const raw = link.exercises;
-	const exercise = Array.isArray(raw) ? raw[0] : raw;
-	if (!exercise) return null;
-	return { ...exercise, display_order: link.display_order };
-}
-
-function mapTemplateExercises(templateRow: {
-	template_exercises?: Array<{
-		display_order: number;
-		exercises: Exercise | Exercise[] | null;
-	}>;
-}): Exercise[] {
-	return (templateRow.template_exercises ?? [])
-		.map(exerciseFromLink)
-		.filter((exercise): exercise is Exercise => exercise !== null)
-		.sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
+async function fetchExercisesForIds(exerciseIds: string[]): Promise<Exercise[]> {
+	if (exerciseIds.length === 0) return [];
+	const { data, error } = await supabase
+		.from("exercises")
+		.select(
+			"id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, created_at",
+		)
+		.in("id", exerciseIds);
+	if (error) throw error;
+	const byId = new Map((data ?? []).map((e: any) => [e.id, normalizeExerciseFromDb(e as Exercise)]));
+	return exerciseIds
+		.map((id) => byId.get(id) ?? null)
+		.filter((e): e is Exercise => e !== null);
 }
 
 function exerciseRowForDb(
@@ -527,34 +521,16 @@ function exerciseRowForDb(
 	return base;
 }
 
-async function fetchExercisesForTemplate(templateId: string): Promise<Exercise[]> {
-	const { data, error } = await supabase
-		.from("template_exercises")
-		.select("display_order, exercises(*)")
-		.eq("template_id", templateId)
-		.order("display_order");
-	if (error) throw error;
-
-	return (data ?? [])
-		.map((link: any) => {
-			const raw = link.exercises;
-			const exercise = Array.isArray(raw) ? raw[0] : raw;
-			if (!exercise) return null;
-			return {
-				...normalizeExerciseFromDb(exercise as Exercise),
-				display_order: link.display_order,
-			} as Exercise;
-		})
-		.filter((exercise): exercise is Exercise => exercise !== null);
-}
+// fetchExercisesForTemplate removed — use fetchExercisesForIds instead
 
 export interface Template {
 	id: string;
-	user_id: string;
+	routine_id: string;
 	name: string;
 	color?: number; // 0-255 quantized HSV spectrum index
 	icon?: number; // 0-15 lucide set (shared with stats)
 	display_order?: number;
+	exercise_ids?: string[];
 	exercises: Exercise[];
 }
 
@@ -1209,8 +1185,8 @@ export const db = {
 			supabase.from("workout_history").delete().eq("user_id", uid),
 			supabase.from("stat_logs").delete().eq("user_id", uid),
 			supabase.from("tracked_stats").delete().eq("user_id", uid),
-			supabase.from("templates").delete().eq("user_id", uid),
 			supabase.from("schedule").delete().eq("user_id", uid),
+			supabase.from("routines").delete().eq("user_id", uid),
 		]);
 
 		for (const r of results) {
@@ -1285,13 +1261,13 @@ export const db = {
 		 ================================================== */
 
 	/**
-	 * Build templates + exercise library from raw rows (shared by getAppData / bootstrap).
+	 * Build templates + exercise library from raw rows.
+	 * Templates now carry exercise_ids[] (no junction table).
 	 */
 	_assembleAppCore(args: {
 		schedule: ScheduleRow[];
 		ownTemplates: any[];
 		ownExercises: Exercise[];
-		links: Array<{ template_id: string; exercise_id: string; display_order: number }>;
 		foreignTemplates?: any[];
 		foreignExercises?: Exercise[];
 	}): {
@@ -1303,7 +1279,6 @@ export const db = {
 			schedule,
 			ownTemplates,
 			ownExercises,
-			links,
 			foreignTemplates = [],
 			foreignExercises = [],
 		} = args;
@@ -1314,49 +1289,31 @@ export const db = {
 		].map(normalizeExerciseFromDb);
 		const exById = new Map(exerciseLibrary.map((e) => [e.id, e] as const));
 
-		const legacyByTpl = new Map<string, Exercise[]>();
-		for (const ex of exerciseLibrary as any[]) {
-			const tid = ex?.template_id;
-			if (typeof tid === "string" && tid) {
-				const list = legacyByTpl.get(tid) || [];
-				list.push({ ...ex, display_order: ex.display_order ?? 0 });
-				legacyByTpl.set(tid, list);
-			}
-		}
-
 		const allTemplateRows = [
 			...ownTemplates,
 			...foreignTemplates.filter((t) => !ownTemplateIds.has(t.id)),
 		];
 
 		const templates: Template[] = allTemplateRows.map((t: any) => {
-			let exs: Exercise[] = links
-				.filter((l) => l.template_id === t.id)
-				.sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0))
-				.map((l) => {
-					const base = exById.get(l.exercise_id);
+			const exIds: string[] = Array.isArray(t.exercise_ids) ? t.exercise_ids : [];
+			const exs: Exercise[] = exIds
+				.map((id: string, i: number) => {
+					const base = exById.get(id);
 					if (!base) return null;
-					return { ...base, display_order: l.display_order } as Exercise;
+					return { ...base, display_order: i } as Exercise;
 				})
 				.filter((e): e is Exercise => !!e);
 
-			if (exs.length === 0) {
-				const leg = legacyByTpl.get(t.id) || [];
-				exs = leg
-					.slice()
-					.sort((a: any, b: any) => (a.display_order ?? 0) - (b.display_order ?? 0))
-					.map((e) => ({ ...e }));
-			}
-
 			return {
 				id: t.id,
-				user_id: t.user_id,
+				routine_id: t.routine_id,
 				name: t.name,
 				color: typeof t.color === "number" ? t.color : 0,
 				icon: typeof (t as { icon?: number }).icon === "number"
 					? clampItemIcon((t as { icon: number }).icon)
 					: DEFAULT_TEMPLATE_ICON,
 				display_order: typeof t.display_order === "number" ? t.display_order : 0,
+				exercise_ids: exIds,
 				exercises: exs,
 			};
 		});
@@ -1417,10 +1374,9 @@ export const db = {
 
 		const templatesQ = supabase
 			.from("templates")
-			.select("id, user_id, name, color, icon, display_order")
+			.select("id, routine_id, name, color, icon, display_order, exercise_ids")
 			.order("display_order")
 			.order("created_at");
-		if (userId) templatesQ.eq("user_id", userId);
 
 		const exercisesQ = supabase
 			.from("exercises")
@@ -1454,7 +1410,6 @@ export const db = {
 			scheduleRes,
 			ownTemplatesRes,
 			libraryRes,
-			linksRes,
 			todayRes,
 			recentRes,
 			statsRes,
@@ -1467,10 +1422,6 @@ export const db = {
 			supabase.from("schedule").select("*").order("day_of_week"),
 			templatesQ,
 			exercisesQ,
-			supabase
-				.from("template_exercises")
-				.select("template_id, exercise_id, display_order")
-				.order("display_order"),
 			supabase
 				.from("workout_history")
 				.select("*")
@@ -1522,7 +1473,6 @@ export const db = {
 		if (scheduleRes.error) throw scheduleRes.error;
 		if (ownTemplatesRes.error) throw ownTemplatesRes.error;
 		if (libraryRes.error) throw libraryRes.error;
-		if (linksRes.error) throw linksRes.error;
 		if (todayRes.error) throw todayRes.error;
 
 		let schedule = (scheduleRes.data ?? []) as ScheduleRow[];
@@ -1561,42 +1511,40 @@ export const db = {
 
 		let foreignTemplatesData: any[] = [];
 		let foreignExerciseRows: Exercise[] = [];
-		const links = (linksRes.data ?? []) as Array<{
-			template_id: string;
-			exercise_id: string;
-			display_order: number;
-		}>;
 
 		if (foreignScheduleIds.length > 0) {
-			const foreignLinks = links.filter((l) =>
-				foreignScheduleIds.includes(l.template_id),
-			);
-			const foreignExIds = [...new Set(foreignLinks.map((l) => l.exercise_id))];
-			const [ftRes, fexRes] = await Promise.all([
+			const [ftRes] = await Promise.all([
 				supabase
 					.from("templates")
-					.select("id, user_id, name, color, icon, display_order")
+					.select("id, routine_id, name, color, icon, display_order, exercise_ids")
 					.in("id", foreignScheduleIds),
-				foreignExIds.length > 0
-					? supabase
-							.from("exercises")
-							.select(
-								"id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, created_at",
-							)
-							.in("id", foreignExIds)
-					: Promise.resolve({ data: [], error: null }),
 			]);
 			if (ftRes.error) throw ftRes.error;
-			if (fexRes.error) throw fexRes.error;
 			foreignTemplatesData = ftRes.data ?? [];
-			foreignExerciseRows = (fexRes.data ?? []) as Exercise[];
+			// Collect all foreign exercise IDs from templates' exercise_ids arrays
+			const foreignExIds = [
+				...new Set(
+					foreignTemplatesData
+						.flatMap((t: any) => (Array.isArray(t.exercise_ids) ? t.exercise_ids : []))
+						.filter((id): id is string => typeof id === "string"),
+				),
+			];
+			if (foreignExIds.length > 0) {
+				const { data: fexs, error: fexErr } = await supabase
+					.from("exercises")
+					.select(
+						"id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, created_at",
+					)
+					.in("id", foreignExIds);
+				if (fexErr) throw fexErr;
+				foreignExerciseRows = (fexs ?? []) as Exercise[];
+			}
 		}
 
 		const core = this._assembleAppCore({
 			schedule,
 			ownTemplates,
 			ownExercises: (libraryRes.data ?? []) as Exercise[],
-			links,
 			foreignTemplates: foreignTemplatesData,
 			foreignExercises: foreignExerciseRows,
 		});
@@ -1958,10 +1906,11 @@ export const db = {
 		 TEMPLATE CRUD
 		 ================================================== */
 
-	async createTemplate(name: string): Promise<Template | null> {
+	async createTemplate(routineId: string, name: string): Promise<Template | null> {
 		const safeName = sanitizeTemplateName(name.trim()) || "NEW TEMPLATE";
 
 		const { data, error } = await supabase.rpc("create_template", {
+			p_routine_id: routineId,
 			p_name: safeName,
 		});
 		if (error) throw error;
@@ -2049,13 +1998,13 @@ export const db = {
 	 * Sync template membership + exercise rows (shared library; no duplication).
 	 *
 	 * Multiple templates can reference the exact same exercise row (by exercise_id
-	 * via template_exercises join). This is intentional for progressive overload:
+	 * stored in the template's exercise_ids array). This is intentional for progressive overload:
 	 * current_weight / increment live on the exercise. Finishing a workout on any
 	 * template that uses the exercise will advance the shared baseline.
 	 *
 	 * Draft items with a real persisted UUID id → UPDATE the canonical exercise
-	 * (definition + overload params), then ensure a link exists.
-	 * Draft items with temp- ids → INSERT new exercise row, then link.
+	 * (definition + overload params), then ensure the ID is in exercise_ids.
+	 * Draft items with temp- ids → INSERT new exercise row, then add the ID.
 	 */
 	async saveTemplateExercises(
 		templateId: string,
@@ -2136,18 +2085,20 @@ export const db = {
 	},
 
 	async updateExerciseOrder(templateId: string, exercises: Exercise[]) {
-		if (exercises.length === 0) return;
+		if (exercises.length === 0) {
+			const { error } = await supabase
+				.from("templates")
+				.update({ exercise_ids: [] })
+				.eq("id", templateId);
+			if (error) throw error;
+			return;
+		}
 
-		const uid = await requireUserId();
-		const { error } = await supabase.from("template_exercises").upsert(
-			exercises.map((exercise, display_order) => ({
-				template_id: templateId,
-				exercise_id: exercise.id,
-				user_id: uid,
-				display_order,
-			})),
-			{ onConflict: "template_id,exercise_id" },
-		);
+		const exerciseIds = exercises.map((e) => e.id);
+		const { error } = await supabase
+			.from("templates")
+			.update({ exercise_ids: exerciseIds })
+			.eq("id", templateId);
 		if (error) throw error;
 	},
 
@@ -2342,21 +2293,19 @@ export const db = {
 		const uid = await requireUserId();
 		const { data, error } = await supabase
 			.from("routines")
-			.select("id, user_id, name, created_at, display_order, routine_schedules ( template_id )")
+			.select("id, user_id, name, created_at, display_order, templates ( id )")
 			.eq("user_id", uid)
 			.order("display_order")
 			.order("created_at");
 		if (error) throw error;
 		return ((data ?? []) as any[]).map((r: any) => ({
-			id: r.id,
-			user_id: r.user_id,
-			name: r.name,
-			created_at: r.created_at,
-			display_order: r.display_order ?? 0,
-			template_count: Array.isArray(r.routine_schedules)
-				? r.routine_schedules.filter((s: any) => s.template_id != null).length
-				: 0,
-		}));
+				id: r.id,
+				user_id: r.user_id,
+				name: r.name,
+				created_at: r.created_at,
+				display_order: r.display_order ?? 0,
+				template_count: Array.isArray(r.templates) ? r.templates.length : 0,
+			}));
 	},
 
 	/**
@@ -2396,7 +2345,7 @@ export const db = {
 			const ids = bookmarks.map((b) => b.routine_id);
 			const { data: remoteRoutines, error: rrErr } = await supabase
 				.from("routines")
-				.select("id, user_id, name, created_at, display_order, routine_schedules ( template_id )")
+				.select("id, user_id, name, created_at, display_order, templates ( id, exercise_ids )")
 				.in("id", ids);
 			if (rrErr) throw rrErr;
 			const rMap = new Map(((remoteRoutines ?? []) as any[]).map((r) => [r.id, r]));
@@ -2406,15 +2355,16 @@ export const db = {
 				const r = rMap.get(bm.routine_id);
 				if (!r) continue;
 				const owner = userMap.get(r.user_id);
+				const tpls = Array.isArray(r.templates) ? r.templates : [];
+				const tplCount = tpls.filter((t: any) => Array.isArray(t.exercise_ids) && t.exercise_ids.length > 0).length;
+				if (tplCount === 0) continue;
 				items.push({
 					id: r.id as string,
 					user_id: r.user_id as string,
 					name: r.name as string,
 					created_at: r.created_at as string,
 					display_order: bm.display_order ?? 0,
-					template_count: Array.isArray(r.routine_schedules)
-						? r.routine_schedules.filter((s: any) => s.template_id != null).length
-						: 0,
+					template_count: tplCount,
 					source: "bookmarked",
 					is_readonly: true,
 					owner_username: owner?.username ?? "unknown",
@@ -2493,15 +2443,21 @@ export const db = {
 			.single();
 		if (error) throw error;
 
-		// Seed empty 7-day schedule so activation / editor have rows
+		// Seed a default template so the routine is not empty
+		const { data: tpl } = await supabase.rpc("create_template", {
+			p_routine_id: data.id,
+			p_name: "NEW TEMPLATE",
+		});
+
+		// Seed 7-day schedule with Monday assigned to the new template
 		const days = Array.from({ length: 7 }, (_, dow) => ({
 			routine_id: data.id,
 			day_of_week: dow,
-			template_id: null as string | null,
+			template_id: dow === 0 && tpl ? (tpl as any).id : null,
 		}));
 		await supabase.from("routine_schedules").insert(days);
 
-		return { ...data, template_count: 0 } as Routine;
+		return { ...data, template_count: tpl ? 1 : 0 } as Routine;
 	},
 
 	/** Rename a routine (owned only — RLS enforces). */
@@ -2641,7 +2597,7 @@ export const db = {
 		const [routinesRes, usersRes] = await Promise.all([
 			supabase
 				.from("routines")
-				.select("id, user_id, name, created_at, display_order, routine_schedules ( day_of_week, template_id )")
+				.select("id, user_id, name, created_at, display_order, templates ( id, exercise_ids ), routine_schedules ( day_of_week, template_id )")
 				.order("created_at"),
 			supabase.from("usernames").select("username, user_id, avatar_seed"),
 		]);
@@ -2652,24 +2608,31 @@ export const db = {
 			((usersRes.data ?? []) as UserProfileRow[]).map((u) => [u.user_id, u]),
 		);
 
-		return ((routinesRes.data ?? []) as any[]).map((row) => {
-			const owner = userMap.get(row.user_id);
-			const sched = Array.isArray(row.routine_schedules) ? row.routine_schedules : [];
-			return {
-				id: row.id,
-				user_id: row.user_id,
-				name: row.name,
-				created_at: row.created_at,
-				display_order: row.display_order ?? 0,
-				owner_username: owner?.username ?? "unknown",
-				owner_avatar_seed: owner?.avatar_seed ?? null,
-				template_count: (sched as any[]).filter((s: any) => s.template_id != null).length,
-				schedule: (sched as any[]).map((s: any) => ({
-					day_of_week: s.day_of_week,
-					template_id: s.template_id,
-				})),
-			};
-		});
+		return ((routinesRes.data ?? []) as any[])
+			.filter((row) => {
+				const tpls = Array.isArray(row.templates) ? row.templates : [];
+				return tpls.some((t: any) => Array.isArray(t.exercise_ids) && t.exercise_ids.length > 0);
+			})
+			.map((row) => {
+				const owner = userMap.get(row.user_id);
+				const sched = Array.isArray(row.routine_schedules) ? row.routine_schedules : [];
+				const tpls = Array.isArray(row.templates) ? row.templates : [];
+				const tplCount = tpls.filter((t: any) => Array.isArray(t.exercise_ids) && t.exercise_ids.length > 0).length;
+				return {
+					id: row.id,
+					user_id: row.user_id,
+					name: row.name,
+					created_at: row.created_at,
+					display_order: row.display_order ?? 0,
+					owner_username: owner?.username ?? "unknown",
+					owner_avatar_seed: owner?.avatar_seed ?? null,
+					template_count: tplCount,
+					schedule: (sched as any[]).map((s: any) => ({
+						day_of_week: s.day_of_week,
+						template_id: s.template_id,
+					})),
+				};
+			});
 	},
 
 	/** Bookmark someone else's routine (read-only live link in your list). */
@@ -2782,35 +2745,32 @@ export const db = {
 
 		const tplIdMap = new Map<string, string>();
 		const exIdMap = new Map<string, string>();
+		let pendingTemplateInserts: Array<Record<string, unknown>> = [];
 
 		if (tIds.length > 0) {
-			// Batch-fetch templates + all links + all exercises (avoids N+1 hangs)
-			const [{ data: tpls, error: tErr }, { data: allLinks, error: lErr }] =
-				await Promise.all([
-					supabase.from("templates").select("id, name, color, icon").in("id", tIds),
-					supabase
-						.from("template_exercises")
-						.select("template_id, exercise_id, display_order")
-						.in("template_id", tIds)
-						.order("display_order"),
-				]);
+			// Fetch source templates with their exercise_ids arrays
+			const { data: tpls, error: tErr } = await supabase
+				.from("templates")
+				.select("id, name, color, icon, exercise_ids")
+				.in("id", tIds);
 			if (tErr) throw tErr;
-			if (lErr) throw lErr;
 
-			const links = (allLinks ?? []) as Array<{
-				template_id: string;
-				exercise_id: string;
-				display_order: number;
-			}>;
-			const exIds = [...new Set(links.map((l) => l.exercise_id))];
+			// Collect all exercise IDs referenced across templates
+			const allExIds = [
+				...new Set(
+					(tpls ?? []).flatMap((t: any) =>
+						Array.isArray(t.exercise_ids) ? t.exercise_ids : [],
+					),
+				),
+			];
 			let exRows: any[] = [];
-			if (exIds.length > 0) {
+			if (allExIds.length > 0) {
 				const { data: exs, error: exErr } = await supabase
 					.from("exercises")
 					.select(
 						"id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment",
 					)
-					.in("id", exIds);
+					.in("id", allExIds);
 				if (exErr) throw exErr;
 				exRows = exs ?? [];
 			}
@@ -2838,47 +2798,32 @@ export const db = {
 				if (newExErr) throw newExErr;
 			}
 
-			// Clone templates (client UUIDs)
+			// Clone templates (routine_id set after routine creation below)
 			const tplList = (tpls ?? []) as Array<{
 				id: string;
 				name: string;
 				color: number;
 				icon?: number;
+				exercise_ids?: string[];
 			}>;
 			if (tplList.length > 0) {
 				const insertTpls = tplList.map((t) => {
 					const newId = crypto.randomUUID();
 					tplIdMap.set(t.id, newId);
+					const mappedExIds = (Array.isArray(t.exercise_ids) ? t.exercise_ids : [])
+						.map((eid) => exIdMap.get(eid))
+						.filter((eid): eid is string => !!eid);
 					return {
 						id: newId,
-						user_id: uid,
+						routine_id: '', // set after routine is created
 						name: t.name,
 						color: t.color ?? 0,
 						icon: clampItemIcon(t.icon ?? DEFAULT_TEMPLATE_ICON),
 						display_order: 0,
+						exercise_ids: mappedExIds,
 					};
 				});
-				const { error: newTplErr } = await supabase.from("templates").insert(insertTpls);
-				if (newTplErr) throw newTplErr;
-			}
-
-			// Batch template_exercises links
-			const teRows = links
-				.map((link) => {
-					const newTid = tplIdMap.get(link.template_id);
-					const newEid = exIdMap.get(link.exercise_id);
-					if (!newTid || !newEid) return null;
-					return {
-						template_id: newTid,
-						exercise_id: newEid,
-						user_id: uid,
-						display_order: link.display_order,
-					};
-				})
-				.filter((r): r is NonNullable<typeof r> => r != null);
-			if (teRows.length > 0) {
-				const { error: teErr } = await supabase.from("template_exercises").insert(teRows);
-				if (teErr) throw teErr;
+				pendingTemplateInserts = insertTpls;
 			}
 		}
 
@@ -2901,6 +2846,13 @@ export const db = {
 			.select("id, user_id, name, created_at, display_order")
 			.single();
 		if (newRoutineErr) throw newRoutineErr;
+
+		// Insert cloned templates with the new routine_id
+		if (pendingTemplateInserts.length > 0) {
+			for (const tpl of pendingTemplateInserts) tpl.routine_id = newRoutine.id;
+			const { error: newTplErr } = await supabase.from("templates").insert(pendingTemplateInserts);
+			if (newTplErr) throw newTplErr;
+		}
 
 		const allDays: Array<{ routine_id: string; day_of_week: number; template_id: string | null }> = [];
 		for (let dow = 0; dow < 7; dow++) {
@@ -2985,11 +2937,12 @@ export const db = {
 		if (templateIds.length > 0) {
 			const { data: tpls, error: tErr } = await supabase
 				.from("templates")
-				.select("id, name, color, icon")
+				.select("id, name, color, icon, exercise_ids")
 				.in("id", templateIds);
 			if (tErr) throw tErr;
 			for (const t of tpls ?? []) {
-				const exs = await fetchExercisesForTemplate(t.id);
+				const exIds = Array.isArray(t.exercise_ids) ? t.exercise_ids : [];
+				const exs = await fetchExercisesForIds(exIds);
 				packs.push({
 					id: t.id,
 					name: t.name,
@@ -3201,50 +3154,37 @@ async function createOwnedRoutineFromParsed(
 		}
 	};
 
+	const insertEx: Array<Record<string, unknown>> = [];
 	const insertTpls: Array<{
 		id: string;
-		user_id: string;
+		routine_id: string;
 		name: string;
 		color: number;
 		icon: number;
 		display_order: number;
+		exercise_ids: string[];
 	}> = [];
-	const insertEx: Array<Record<string, unknown>> = [];
-	const teRows: Array<{
-		template_id: string;
-		exercise_id: string;
-		user_id: string;
-		display_order: number;
-	}> = [];
-
-	const { data: maxTpl } = await supabase
-		.from("templates")
-		.select("display_order")
-		.eq("user_id", uid)
-		.order("display_order", { ascending: false })
-		.limit(1)
-		.maybeSingle();
-	let nextTplOrder = (maxTpl?.display_order ?? -1) + 1;
 
 	for (const tpl of parsed.templates) {
 		const newTid = crypto.randomUUID();
 		const safeName = sanitizeTemplateName(tpl.name) || "TEMPLATE";
+		const exIds: string[] = [];
 		insertTpls.push({
 			id: newTid,
-			user_id: uid,
+			routine_id: '', // set after routine is created
 			name: safeName,
 			color: clampTemplateColor(tpl.color ?? 0),
 			icon: clampItemIcon(tpl.icon ?? DEFAULT_TEMPLATE_ICON),
-			display_order: nextTplOrder++,
+			display_order: insertTpls.length,
+			exercise_ids: exIds,
 		});
 		registerName(tpl.name, newTid);
 		registerName(safeName, newTid);
 
-		tpl.exercises.forEach((ex, i) => {
+		tpl.exercises.forEach((ex) => {
 			const draft = coerceImportedExercise(ex);
 			const safe = sanitizeExerciseRowForDb(draft);
 			const newEid = crypto.randomUUID();
-			// DB constraints: unused type columns must be NULL (not 0).
 			const row: Record<string, unknown> = {
 				id: newEid,
 				user_id: uid,
@@ -3264,26 +3204,13 @@ async function createOwnedRoutineFromParsed(
 				row.current_weight = null;
 			}
 			insertEx.push(row);
-			teRows.push({
-				template_id: newTid,
-				exercise_id: newEid,
-				user_id: uid,
-				display_order: i,
-			});
+			exIds.push(newEid);
 		});
 	}
 
 	if (insertEx.length > 0) {
 		const { error: exErr } = await supabase.from("exercises").insert(insertEx);
 		if (exErr) throw new Error(formatDbError(exErr) || "Failed to import exercises");
-	}
-	if (insertTpls.length > 0) {
-		const { error: tplErr } = await supabase.from("templates").insert(insertTpls);
-		if (tplErr) throw new Error(formatDbError(tplErr) || "Failed to import templates");
-	}
-	if (teRows.length > 0) {
-		const { error: teErr } = await supabase.from("template_exercises").insert(teRows);
-		if (teErr) throw new Error(formatDbError(teErr) || "Failed to link template exercises");
 	}
 
 	const { data: maxRow } = await supabase
@@ -3304,6 +3231,13 @@ async function createOwnedRoutineFromParsed(
 		.single();
 	if (newRoutineErr) {
 		throw new Error(formatDbError(newRoutineErr) || "Failed to create imported routine");
+	}
+
+	// Insert templates with the new routine_id
+	if (insertTpls.length > 0) {
+		for (const tpl of insertTpls) tpl.routine_id = newRoutine.id;
+		const { error: tplErr } = await supabase.from("templates").insert(insertTpls);
+		if (tplErr) throw new Error(formatDbError(tplErr) || "Failed to import templates");
 	}
 
 	const resolveTpl = (name: string | null): string | null => {
@@ -3847,6 +3781,7 @@ function parseRoutineExportCsv(csvText: string): ParsedRoutineExport {
 				templatesMap.set(tn, {
 					name: safe,
 					color: 0,
+					icon: 0,
 					exercises: [],
 					assignedDays: [],
 				});

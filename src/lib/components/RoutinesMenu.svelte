@@ -653,7 +653,7 @@
         user_id: community.user_id,
         name: community.name,
         created_at: community.created_at,
-        template_count: community.template_count ?? community.schedule?.filter((s) => s.template_id).length ?? 0,
+        template_count: community.template_count ?? 0,
         source: 'bookmarked',
         is_readonly: true,
         owner_username: community.owner_username,
@@ -1261,7 +1261,7 @@
               {#each group.routines as routine, index (routine.id)}
                 {@const isSelected = selectedAllId === routine.id}
                 {@const isBm = bookmarks.has(routine.id)}
-                {@const allTc = Number(routine.template_count ?? routine.schedule?.filter((s) => s.template_id).length) || 0}
+                {@const allTc = Number(routine.template_count) || 0}
                 <div
                   class="flex items-stretch gap-1 h-9 min-w-0 cursor-pointer"
                   onclick={() => { selectedAllId = selectedAllId === routine.id ? null : routine.id; }}

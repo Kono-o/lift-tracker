@@ -319,6 +319,13 @@ const getStatIcon = getItemIcon;
    * (does not show templates from the previously assigned routine).
    */
   let builderTemplates = $derived.by(() => {
+    if (activeRoutineId) {
+      return templates
+        .filter((t) => t.routine_id === activeRoutineId)
+        .slice()
+        .sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
+    }
+    // Fallback: no active routine — use the old ID-set approach
     const ids = new Set<string>();
     for (const s of schedule) {
       if (s.template_id) ids.add(s.template_id);
@@ -2568,7 +2575,7 @@ const getStatIcon = getItemIcon;
     if (!snapEx?.length) return activeTemplate;
     return {
       id: log.template_id || 'snapshot',
-      user_id: log.user_id || '',
+      routine_id: activeRoutineId ?? '',
       name:
         log.workout_snapshot?.template_name ||
         log.template_name_snapshot ||
@@ -5697,7 +5704,7 @@ const getStatIcon = getItemIcon;
       const nextOrder = templates.length;
       const optimistic: Template = {
         id: tempId,
-        user_id: uid,
+        routine_id: activeRoutineId ?? '',
         name,
         color: DEFAULT_TEMPLATE_COLOR,
         icon: DEFAULT_TEMPLATE_ICON,
@@ -5715,7 +5722,7 @@ const getStatIcon = getItemIcon;
 
       const createPromise = (async (): Promise<string | null> => {
         try {
-          const template = await db.createTemplate(name);
+          const template = await db.createTemplate(activeRoutineId ?? '', name);
           if (!template) throw new Error('Could not create template');
           const stillPending = templates.some((t) => t.id === tempId);
           if (!stillPending) {
@@ -5804,7 +5811,7 @@ const getStatIcon = getItemIcon;
     templateErrorFading = false;
     isCreatingTemplate = true;
     try {
-      const template = await db.createTemplate(name);
+      const template = await db.createTemplate(activeRoutineId ?? '', name);
       if (!template) {
         templateError = 'Could not create template.';
         templateErrorFading = false;
@@ -6799,10 +6806,10 @@ const getStatIcon = getItemIcon;
   }
 
   function templateIdAfterDeletedTemplate(deletedId: string): string | null {
-    const idx = templates.findIndex((t) => t.id === deletedId);
+    const idx = builderTemplates.findIndex((t) => t.id === deletedId);
     if (idx < 0) return null;
-    if (idx > 0) return templates[idx - 1].id;
-    if (idx < templates.length - 1) return templates[idx + 1].id;
+    if (idx > 0) return builderTemplates[idx - 1].id;
+    if (idx < builderTemplates.length - 1) return builderTemplates[idx + 1].id;
     return null;
   }
 
@@ -6834,19 +6841,22 @@ const getStatIcon = getItemIcon;
     for (let i = 0; i < 7; i++) {
       if (builderAssignments[i] === deletedId) affectedDays.push(i);
     }
-    applyBuilderTemplateRemoval(deletedId, replacementId);
 
     if (deletedId.startsWith('temp-')) {
+      applyBuilderTemplateRemoval(deletedId, replacementId);
       for (const wd of affectedDays) {
         routineEditorPendingCreates.delete(wd);
       }
       return;
     }
 
+    // Capture schedule patches BEFORE applyBuilderTemplateRemoval mutates schedule
+    // — clear the affected days so the deleted template is unassigned on the server.
     const schedulePatches = affectedDays.map((day) => ({
       dayOfWeek: day,
-      templateId: schedule.find((s) => s.day_of_week === day)?.template_id ?? null,
+      templateId: null,
     }));
+    applyBuilderTemplateRemoval(deletedId, replacementId);
 
     void (async () => {
       try {
@@ -6868,10 +6878,10 @@ const getStatIcon = getItemIcon;
     // Kept for any legacy call sites on view exit etc.
   }
 
-  function isForeignTemplate(templateId: string | null | undefined): boolean {
-    if (!templateId || !currentUser?.id) return false;
-    const tpl = templates.find((t) => t.id === templateId);
-    return !!tpl && tpl.user_id !== currentUser.id;
+  function isForeignTemplate(_templateId: string | null | undefined): boolean {
+    // In the new schema, templates are routine-owned. Routine-level readonly check
+    // (activeRoutineIsReadonly) already covers this — no per-template check needed.
+    return false;
   }
 
   function openTemplateEditor(templateId?: string) {
@@ -6965,8 +6975,7 @@ const getStatIcon = getItemIcon;
   }
 
   function draftToExercises(templateId: string, draft: any[]): Exercise[] {
-    const tpl = templates.find((t) => t.id === templateId);
-    const uid = tpl?.user_id ?? currentUser?.id ?? '';
+    const uid = currentUser?.id ?? '';
     return draft.map((d, i) => {
       const copy = { ...d };
       normalizeDraftExercise(copy);
@@ -7841,6 +7850,10 @@ const getStatIcon = getItemIcon;
                   <div class="text-[8px] uppercase tracking-[1px] text-zinc-500 text-center mb-1">Data usage</div>
                   <div class="grid grid-cols-3 gap-1 text-[9px] text-zinc-400">
                     <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
+                      <Repeat class="size-3 shrink-0" aria-hidden="true" />
+                      <span class="leading-none">{panel.usage.routines ?? 0} rtn</span>
+                    </span>
+                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
                       <List class="size-3 shrink-0" aria-hidden="true" />
                       <span class="leading-none">{panel.usage.templates} tpl</span>
                     </span>
@@ -7859,10 +7872,6 @@ const getStatIcon = getItemIcon;
                     <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
                       <HardDrive class="size-3 shrink-0" aria-hidden="true" />
                       <span class="leading-none">{panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}</span>
-                    </span>
-                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                      <Pencil class="size-3 shrink-0" aria-hidden="true" />
-                      <span class="leading-none">{panel.usage.stat_logs ?? 0} sts logs</span>
                     </span>
                   </div>
                 </div>
@@ -8300,6 +8309,7 @@ const getStatIcon = getItemIcon;
     {@const usage = panel?.usage ?? null}
     {@const chipsFilled = filled && !!usage}
     {@const chipDefs = [
+      { key: 'rut', icon: 'repeat', text: usage ? `${usage.routines ?? 0} rtn` : '— rtn' },
       { key: 'tpl', icon: 'list', text: usage ? `${usage.templates} tpl` : '— tpl' },
       { key: 'ex', icon: 'dumbbell', text: usage ? `${usage.exercises} ex` : '— ex' },
       { key: 'wrk', icon: 'history', text: usage ? `${usage.workout_history} wrk logs` : '— wrk logs' },
@@ -8311,7 +8321,7 @@ const getStatIcon = getItemIcon;
           ? `${usage.exact ? '' : '~'}${formatBytes(usage.estimated_bytes)}`
           : '— B',
       },
-      { key: 'stsl', icon: 'pencil', text: usage ? `${usage.stat_logs ?? 0} sts logs` : '— sts logs' },
+
     ]}
     <div
       class="settings-panel-dialog boot-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left"
@@ -8413,7 +8423,9 @@ const getStatIcon = getItemIcon;
             <div class="grid grid-cols-3 gap-1 text-[9px] text-zinc-400">
               {#each chipDefs as chip (chip.key)}
                 <span class="boot-panel-chip inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center min-h-[1.5rem]">
-                  {#if chip.icon === 'list'}
+                  {#if chip.icon === 'repeat'}
+                    <Repeat class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                  {:else if chip.icon === 'list'}
                     <List class="size-3 shrink-0 opacity-70" aria-hidden="true" />
                   {:else if chip.icon === 'dumbbell'}
                     <Dumbbell class="size-3 shrink-0 opacity-70" aria-hidden="true" />
@@ -8714,6 +8726,8 @@ const getStatIcon = getItemIcon;
           disabled={!currentUser}
           onclick={() => {
             if (workoutState === 'active') return;
+            const tempId = `temp-routine-${Date.now()}`;
+            activeRoutineId = tempId;
             currentView = 'swap_template';
             templateError = null;
             templateErrorFading = false;
@@ -8722,6 +8736,13 @@ const getStatIcon = getItemIcon;
             builderAssignments = {};
             builderEditingDay = selectedWeekday;
             refreshRoutinesPreload();
+            db.createRoutine('NEW ROUTINE').then((r) => {
+              activeRoutineId = r.id;
+            }).catch((e) => {
+              console.error('Create routine failed', e);
+              templateError = formatDbError(e);
+              templateErrorFading = false;
+            });
           }}>
           CREATE ROUTINE
         </button>

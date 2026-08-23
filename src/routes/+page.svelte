@@ -22,6 +22,8 @@
   import RoutinesMenu from '$lib/components/RoutinesMenu.svelte';
   import TemplateColorPicker from '$lib/components/TemplateColorPicker.svelte';
   import ItemIconPicker from '$lib/components/ItemIconPicker.svelte';
+  import ConfirmDeletePopup from '$lib/components/ConfirmDeletePopup.svelte';
+  import { touchReorder } from '$lib/touchReorder';
   import { clampTemplateColor, DEFAULT_TEMPLATE_COLOR, getTemplateColor } from '$lib/templateColor';
   import {
     clampItemIcon,
@@ -1292,10 +1294,12 @@ const getStatIcon = getItemIcon;
   let cancelProgress = $state(0);
   let cancelTapPulseActive = $state(false);
 
-  let deleteTemplateHoldTimer: any = null;
-  let deleteTemplateProgress = $state(0);
-  /** Which template id is currently being hold-to-deleted (builder / editor). */
-  let deleteTemplateHoldId = $state<string | null>(null);
+  // Template delete: single press opens a floating confirm popup (hold timer
+  // fought the row drag/reorder gestures on mobile).
+  let templateDeleteConfirmOpen = $state(false);
+  /** Id of the template pending delete confirmation. */
+  let templateDeleteConfirmId = $state<string | null>(null);
+  let templateDeleteConfirmAnchorEl = $state<HTMLElement | null>(null);
   let deleteAllExHoldTimer: any = null;
   let deleteAllExProgress = $state(0);
   let deleteAllExHolding = $state(false);
@@ -3688,6 +3692,15 @@ const getStatIcon = getItemIcon;
     if (statDragOverIndex !== idx) statDragOverIndex = idx;
   }
 
+  /** Shared commit for desktop drop + touch long-press reorder. */
+  function commitStatReorder(from: number, targetIndex: number) {
+    if (from < 0 || from >= draftStats.length || targetIndex < 0 || targetIndex >= draftStats.length) return;
+    const next = reorderByIndex(draftStats, from, targetIndex);
+    if (!next) return;
+    draftStats = next;
+    void persistTrackedStatsNow();
+  }
+
   function handleStatDrop(e: DragEvent) {
     e.preventDefault();
     statDragOverIndex = null;
@@ -3695,12 +3708,10 @@ const getStatIcon = getItemIcon;
       statDraggedIndex = null;
       return;
     }
-    const targetIndex = computeRowIndex(e, statListBody, draftStats.length - 1);
-    const next = reorderByIndex(draftStats, statDraggedIndex, targetIndex);
+    const from = statDraggedIndex;
     statDraggedIndex = null;
-    if (!next) return;
-    draftStats = next;
-    void persistTrackedStatsNow();
+    const targetIndex = computeRowIndex(e, statListBody, draftStats.length - 1);
+    commitStatReorder(from, targetIndex);
   }
 
   function handleStatDragEnd() {
@@ -4579,8 +4590,6 @@ const getStatIcon = getItemIcon;
     visualRawStep = 0;
     skipProgress = 0;
     cancelProgress = 0;
-    deleteTemplateProgress = 0;
-    deleteTemplateHoldId = null;
     eraseProgress = 0;
     justFinishedStatus = null;
     workoutTimer = setInterval(() => {
@@ -4638,8 +4647,6 @@ const getStatIcon = getItemIcon;
     activeTimerTargetSeconds = 0;
     skipProgress = 0;
     cancelProgress = 0;
-    deleteTemplateProgress = 0;
-    deleteTemplateHoldId = null;
     eraseProgress = 0;
     justFinishedStatus = null;
   }
@@ -4655,8 +4662,6 @@ const getStatIcon = getItemIcon;
     saveActiveTimerIfAny();
     skipProgress = 0;
     cancelProgress = 0;
-    deleteTemplateProgress = 0;
-    deleteTemplateHoldId = null;
     eraseProgress = 0;
 
     const elapsed = workoutElapsedSeconds();
@@ -5366,64 +5371,30 @@ const getStatIcon = getItemIcon;
     cancelTapPulseActive = false;
   }
 
-  function startDeleteTemplateHold(e: Event, templateId?: string) {
-    if (e.cancelable) e.preventDefault();
-    (e as Event & { stopPropagation?: () => void }).stopPropagation?.();
-    const id =
-      templateId ??
-      (currentView === 'edit_template' ? editingTemplateId : activeTemplate?.id) ??
-      null;
-    if (!id || activeRoutineIsReadonly) return;
-    clearInterval(deleteTemplateHoldTimer);
-    deleteTemplateHoldId = id;
-    const startTime = Date.now();
-    deleteTemplateHoldTimer = setInterval(() => {
-      deleteTemplateProgress = Math.min(((Date.now() - startTime) / HOLD_DELETE_MS) * 100, 100);
-      if (deleteTemplateProgress >= 100) {
-        clearInterval(deleteTemplateHoldTimer);
-        deleteTemplateHoldTimer = null;
-        deleteTemplateProgress = 0;
-        const deletedId = deleteTemplateHoldId;
-        deleteTemplateHoldId = null;
-        if (!deletedId) return;
-
-        if (currentView === 'swap_template') {
-          const tpl = templates.find((t) => t.id === deletedId);
-          if (tpl) void deleteTemplateInBuilder(tpl);
-          return;
-        }
-
-        // Template editor: delete and leave editor
-        const returnView = templateEditorReturnView;
-        templateEditorReturnView = 'track';
-        void flushTemplateNamePersist();
-        editingTemplateId = '';
-        draftExercises = [];
-        draftTemplateName = '';
-        showTemplateColorPicker = false;
-        currentView = returnView;
-        if (!deletedId.startsWith('temp-')) {
-          forgetTemplateListKey(deletedId);
-          templates = templates.filter((t) => t.id !== deletedId);
-          void clearTemplateFromAllDays(deletedId);
-          void db.deleteTemplate(deletedId).catch((err) => {
-            console.error('Delete template failed', err);
-            templateSaveError = formatDbError(err);
-            void loadData({ preserveSession: true });
-          });
-        } else {
-          forgetTemplateListKey(deletedId);
-          templates = templates.filter((t) => t.id !== deletedId);
-        }
-      }
-    }, 16);
+  function openTemplateDeleteConfirm(e: Event, templateId: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (activeRoutineIsReadonly) return;
+    templateDeleteConfirmAnchorEl = e.currentTarget as HTMLElement | null;
+    templateDeleteConfirmId = templateId;
+    templateDeleteConfirmOpen = true;
   }
-  function stopDeleteTemplateHold(e?: Event) {
-    e?.stopPropagation?.();
-    clearInterval(deleteTemplateHoldTimer);
-    deleteTemplateHoldTimer = null;
-    deleteTemplateProgress = 0;
-    deleteTemplateHoldId = null;
+
+  /** Confirmed from popup — same flow the old hold-to-delete committed. */
+  function confirmTemplateDelete(close: () => void) {
+    close();
+    const deletedId = templateDeleteConfirmId;
+    templateDeleteConfirmId = null;
+    if (!deletedId) return;
+
+    const tpl = templates.find((t) => t.id === deletedId);
+    if (tpl) {
+      void deleteTemplateInBuilder(tpl);
+      return;
+    }
+    // Fallback for rows not in the current list (e.g. pending create swapped out)
+    forgetTemplateListKey(deletedId);
+    templates = templates.filter((t) => t.id !== deletedId);
   }
 
   function startDeleteAllExercisesHold(e: Event) {
@@ -5722,6 +5693,40 @@ const getStatIcon = getItemIcon;
     });
   }
 
+  /** In-flight routine creation shared between onboarding CTA and lazy template creates. */
+  let pendingRoutineCreate: Promise<string | null> | null = null;
+
+  /**
+   * Resolve a real owned-routine id before hitting RPCs that take a uuid.
+   * A fresh account has no active routine (null), and the onboarding flow may
+   * still hold a `temp-routine-*` placeholder — either passed to create_template
+   * fails with "invalid input syntax for type uuid", so create the routine here.
+   */
+  function ensureActiveRoutineId(): Promise<string | null> {
+    const cur = activeRoutineId;
+    if (cur && !cur.startsWith('temp-')) return Promise.resolve(cur);
+    if (!pendingRoutineCreate) {
+      pendingRoutineCreate = db
+        .createRoutine('NEW ROUTINE')
+        .then((r) => {
+          if (!r?.id) return null;
+          activeRoutineId = r.id;
+          refreshRoutinesPreload();
+          return r.id as string | null;
+        })
+        .catch((e) => {
+          console.error('Create routine failed', e);
+          templateError = formatDbError(e);
+          templateErrorFading = false;
+          return null;
+        })
+        .finally(() => {
+          pendingRoutineCreate = null;
+        });
+    }
+    return pendingRoutineCreate;
+  }
+
   async function handleCreateTemplate(defaultName?: string, openAfterCreate = true) {
     let name = sanitizeTemplateName((defaultName ?? newTemplateName).trim());
     if (!name) {
@@ -5738,6 +5743,10 @@ const getStatIcon = getItemIcon;
         return;
       }
       const uid = currentUser.id;
+
+      // Must have a real routine id — never '' or temp-* or the RPC throws uuid cast errors
+      const routineId = await ensureActiveRoutineId();
+      if (!routineId) return;
       templateError = null;
       templateErrorFading = false;
 
@@ -5745,7 +5754,7 @@ const getStatIcon = getItemIcon;
       const nextOrder = templates.length;
       const optimistic: Template = {
         id: tempId,
-        routine_id: activeRoutineId ?? '',
+        routine_id: routineId,
         name,
         color: DEFAULT_TEMPLATE_COLOR,
         icon: DEFAULT_TEMPLATE_ICON,
@@ -5763,7 +5772,7 @@ const getStatIcon = getItemIcon;
 
       const createPromise = (async (): Promise<string | null> => {
         try {
-          const template = await db.createTemplate(activeRoutineId ?? '', name);
+          const template = await db.createTemplate(routineId, name);
           if (!template) throw new Error('Could not create template');
           const stillPending = templates.some((t) => t.id === tempId);
           if (!stillPending) {
@@ -5852,7 +5861,10 @@ const getStatIcon = getItemIcon;
     templateErrorFading = false;
     isCreatingTemplate = true;
     try {
-      const template = await db.createTemplate(activeRoutineId ?? '', name);
+      // Must have a real routine id — never '' or the RPC throws uuid cast errors
+      const routineId = await ensureActiveRoutineId();
+      if (!routineId) return;
+      const template = await db.createTemplate(routineId, name);
       if (!template) {
         templateError = 'Could not create template.';
         templateErrorFading = false;
@@ -7428,6 +7440,15 @@ const getStatIcon = getItemIcon;
     if (dragOverIndex !== idx) dragOverIndex = idx;
   }
 
+  /** Shared commit for desktop drop + touch long-press reorder. */
+  function commitExerciseReorder(from: number, targetIndex: number) {
+    if (from < 0 || from >= draftExercises.length || targetIndex < 0 || targetIndex >= draftExercises.length) return;
+    const next = reorderByIndex(draftExercises, from, targetIndex);
+    if (!next) return;
+    draftExercises = next;
+    void persistTemplateExercisesNow();
+  }
+
   function handleExerciseDrop(e: DragEvent) {
     e.preventDefault();
     dragOverIndex = null;
@@ -7435,12 +7456,10 @@ const getStatIcon = getItemIcon;
       draggedIndex = null;
       return;
     }
-    const targetIndex = computeRowIndex(e, exerciseListBody, draftExercises.length - 1);
-    const next = reorderByIndex(draftExercises, draggedIndex, targetIndex);
+    const from = draggedIndex;
     draggedIndex = null;
-    if (!next) return;
-    draftExercises = next;
-    void persistTemplateExercisesNow();
+    const targetIndex = computeRowIndex(e, exerciseListBody, draftExercises.length - 1);
+    commitExerciseReorder(from, targetIndex);
   }
 
   let exerciseRowDragged = false;
@@ -7471,8 +7490,6 @@ const getStatIcon = getItemIcon;
       e.stopPropagation();
       return;
     }
-    // Cancel any in-progress hold-to-delete so a drag never commits a delete
-    stopDeleteTemplateHold();
     templateDraggedIndex = index;
     templateDragOverIndex = index;
     if (e.dataTransfer) {
@@ -7492,17 +7509,11 @@ const getStatIcon = getItemIcon;
     if (templateDragOverIndex !== idx) templateDragOverIndex = idx;
   }
 
-  function handleTemplateDrop(e: DragEvent) {
-    e.preventDefault();
-    templateDragOverIndex = null;
-    if (templateDraggedIndex === null || !templateListBody) {
-      templateDraggedIndex = null;
-      return;
-    }
+  /** Shared commit for desktop drop + touch long-press reorder. */
+  function commitTemplateReorder(from: number, targetIndex: number) {
     const visible = builderTemplates;
-    const targetIndex = computeRowIndex(e, templateListBody, Math.max(0, visible.length - 1));
-    const reorderedVisible = reorderByIndex(visible, templateDraggedIndex, targetIndex);
-    templateDraggedIndex = null;
+    if (from < 0 || from >= visible.length || targetIndex < 0 || targetIndex >= visible.length) return;
+    const reorderedVisible = reorderByIndex(visible, from, targetIndex);
     if (!reorderedVisible) return;
 
     // Apply new order only to the visible (builder) set; leave other library
@@ -7525,11 +7536,23 @@ const getStatIcon = getItemIcon;
     });
   }
 
+  function handleTemplateDrop(e: DragEvent) {
+    e.preventDefault();
+    templateDragOverIndex = null;
+    if (templateDraggedIndex === null || !templateListBody) {
+      templateDraggedIndex = null;
+      return;
+    }
+    const from = templateDraggedIndex;
+    templateDraggedIndex = null;
+    const targetIndex = computeRowIndex(e, templateListBody, Math.max(0, builderTemplates.length - 1));
+    commitTemplateReorder(from, targetIndex);
+  }
+
   function handleTemplateDragEnd() {
     const wasDragging = templateDraggedIndex !== null;
     templateDraggedIndex = null;
     templateDragOverIndex = null;
-    stopDeleteTemplateHold();
     if (wasDragging) {
       templateRowDragged = true;
       setTimeout(() => {
@@ -7635,6 +7658,7 @@ const getStatIcon = getItemIcon;
                   onmouseleave={stopEraseHold}
                   ontouchstart={startEraseHold}
                   ontouchend={stopEraseHold}
+                  ontouchcancel={stopEraseHold}
                   onanimationend={onEraseTapPulseEnd}
                 >
                   <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {eraseProgress}%;"></div>
@@ -7667,6 +7691,7 @@ const getStatIcon = getItemIcon;
                 onmouseleave={stopSkipHold}
                 ontouchstart={startSkipHold}
                 ontouchend={stopSkipHold}
+                ontouchcancel={stopSkipHold}
                 onanimationend={onSkipTapPulseEnd}
               >
                 <div class="absolute inset-0 z-0 bg-amber-900/40 transition-all duration-[20ms]" style="width: {skipProgress}%;"></div>
@@ -7698,6 +7723,7 @@ const getStatIcon = getItemIcon;
                 onmouseleave={stopCancelHold}
                 ontouchstart={startCancelHold}
                 ontouchend={stopCancelHold}
+                ontouchcancel={stopCancelHold}
                 onanimationend={onCancelTapPulseEnd}
               >
                 <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {cancelProgress}%;"></div>
@@ -7726,6 +7752,7 @@ const getStatIcon = getItemIcon;
                 onmouseleave={stopEraseHold}
                 ontouchstart={startEraseHold}
                 ontouchend={stopEraseHold}
+                ontouchcancel={stopEraseHold}
                 onanimationend={onEraseTapPulseEnd}
               >
                 <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {eraseProgress}%;"></div>
@@ -7751,6 +7778,7 @@ const getStatIcon = getItemIcon;
                 onmouseleave={stopEraseHold}
                 ontouchstart={startEraseHold}
                 ontouchend={stopEraseHold}
+                ontouchcancel={stopEraseHold}
                 onanimationend={onEraseTapPulseEnd}
               >
                 <div class="absolute inset-0 z-0 bg-red-900/40 transition-all duration-[20ms]" style="width: {eraseProgress}%;"></div>
@@ -8100,6 +8128,7 @@ const getStatIcon = getItemIcon;
                     onmouseleave={stopSignOutHold}
                     ontouchstart={startSignOutHold}
                     ontouchend={stopSignOutHold}
+                    ontouchcancel={stopSignOutHold}
                     onanimationend={onSignOutTapPulseEnd}>
                     <div class="settings-panel-action-btn__fill settings-panel-action-btn__fill--signout" style="width: {signOutProgress}%;"></div>
                     <span class="settings-panel-action-btn__label">
@@ -8119,6 +8148,7 @@ const getStatIcon = getItemIcon;
                     onmouseleave={stopDeleteAccountHold}
                     ontouchstart={startDeleteAccountHold}
                     ontouchend={stopDeleteAccountHold}
+                    ontouchcancel={stopDeleteAccountHold}
                     onanimationend={onDeleteAccountTapPulseEnd}>
                     <div class="settings-panel-action-btn__fill settings-panel-action-btn__fill--delete" style="width: {deleteAccountProgress}%;"></div>
                     <span class="settings-panel-action-btn__label">
@@ -8203,7 +8233,7 @@ const getStatIcon = getItemIcon;
           {#if updateInfo.notes}
             <div class="mt-3">
               <div class="mb-1 text-[9px] font-medium tracking-[1px] text-zinc-500">WHAT'S NEW</div>
-              <div class="max-h-40 overflow-auto rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2.5 text-[10px] leading-snug text-zinc-300 markdown-content no-scrollbar">
+              <div class="max-h-40 overflow-auto overscroll-contain rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2.5 text-[10px] leading-snug text-zinc-300 markdown-content no-scrollbar">
                 {@html renderChangelog(updateInfo.notes)}
               </div>
             </div>
@@ -8620,7 +8650,7 @@ const getStatIcon = getItemIcon;
       <div class="overflow-hidden min-h-0 {weekCalendarDisplayCollapsed ? 'pointer-events-none' : ''}">
         <div class="flex items-stretch">
           <button 
-            class="w-5 shrink-0 flex items-center justify-center bg-[#141414] border-r border-[#1e1e1e] text-zinc-400 hover:text-white active:bg-[#0d0d0d] transition disabled:opacity-40"
+            class="w-8 shrink-0 flex items-center justify-center bg-[#141414] border-r border-[#1e1e1e] text-zinc-400 hover:text-white active:bg-[#0d0d0d] transition disabled:opacity-40"
             onclick={goPrevWeek}
             title="Previous week"
             disabled={workoutState === 'active'}
@@ -8656,7 +8686,7 @@ const getStatIcon = getItemIcon;
             {/each}
           </div>
           <button 
-            class="w-5 shrink-0 flex items-center justify-center bg-[#141414] border-l border-[#1e1e1e] text-zinc-400 hover:text-white active:bg-[#0d0d0d] transition disabled:opacity-40"
+            class="w-8 shrink-0 flex items-center justify-center bg-[#141414] border-l border-[#1e1e1e] text-zinc-400 hover:text-white active:bg-[#0d0d0d] transition disabled:opacity-40"
             onclick={goNextWeek}
             title="Next week"
             disabled={workoutState === 'active'}
@@ -8778,13 +8808,7 @@ const getStatIcon = getItemIcon;
             builderAssignments = {};
             builderEditingDay = selectedWeekday;
             refreshRoutinesPreload();
-            db.createRoutine('NEW ROUTINE').then((r) => {
-              activeRoutineId = r.id;
-            }).catch((e) => {
-              console.error('Create routine failed', e);
-              templateError = formatDbError(e);
-              templateErrorFading = false;
-            });
+            void ensureActiveRoutineId();
           }}>
           CREATE ROUTINE
         </button>
@@ -9002,7 +9026,7 @@ const getStatIcon = getItemIcon;
       <!-- Exercises in one shared box separated by horizontal dividers, with list numbers on left (like editor list) -->
       <!-- Outer scroll scroller; card border lives on a non-overflow shell so radius corners aren't clipped. -->
       <div
-        class="track-workout-exercises flex-1 min-h-0 overflow-y-auto no-scrollbar"
+        class="track-workout-exercises flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar"
         use:scrollEdgeFade
       >
       <div
@@ -9166,7 +9190,7 @@ const getStatIcon = getItemIcon;
                         {@const isFutureLocked = isFutureSetLockedByOrder(exercise.id, s, false)}
                         {@const canLogThisSet = isSetUnlockedForLogging(exercise.id, s, false)}
                         <div
-                          class="set-bubble relative h-7 rounded-md flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
+                          class="set-bubble relative h-9 rounded-md flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
                             {setBubbleSkipped
                               ? 'set-bubble--empty status-surface--skipped'
                               : bubbleStatus === 'empty'
@@ -9270,7 +9294,7 @@ const getStatIcon = getItemIcon;
                       </div>
                     {:else}
                       <div
-                        class="set-row set-row--time grid gap-1 h-7"
+                        class="set-row set-row--time grid gap-1 h-9"
                         style="grid-template-columns: repeat({exercise.target_sets}, minmax(0, 1fr));"
                       >
                         {#each Array(exercise.target_sets) as _, s}
@@ -9288,7 +9312,7 @@ const getStatIcon = getItemIcon;
                           {@const isFutureLocked = isFutureSetLockedByOrder(exercise.id, s, true)}
                           {@const canLogThisSet = isSetUnlockedForLogging(exercise.id, s, true)}
                           <div
-                            class="set-bubble relative h-7 rounded-md flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
+                            class="set-bubble relative h-9 rounded-md flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
                               {setBubbleSkipped
                                 ? 'set-bubble--empty status-surface--skipped'
                                 : bubbleStatus === 'empty'
@@ -9384,7 +9408,7 @@ const getStatIcon = getItemIcon;
 
   {:else if currentView === 'swap_template'}
     <!-- Routine editor: assign templates to full SMTWTFS week -->
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto no-scrollbar">
+    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
       <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
         <button
           type="button"
@@ -9517,6 +9541,24 @@ const getStatIcon = getItemIcon;
               draggable={!activeRoutineIsReadonly}
               ondragstart={(e) => { if (!activeRoutineIsReadonly) handleTemplateDragStart(e, index); }}
               ondragend={handleTemplateDragEnd}
+              use:touchReorder={{
+                index,
+                container: () => templateListBody,
+                rowCount: () => builderTemplates.length,
+                disabled: () => activeRoutineIsReadonly,
+                onStart: (i) => {
+                  templateDraggedIndex = i;
+                  templateDragOverIndex = i;
+                },
+                onOver: (i) => {
+                  if (templateDragOverIndex !== i) templateDragOverIndex = i;
+                },
+                onDrop: commitTemplateReorder,
+                onCancel: () => {
+                  templateDraggedIndex = null;
+                  templateDragOverIndex = null;
+                },
+              }}
             >
               <button
                 type="button"
@@ -9577,9 +9619,19 @@ const getStatIcon = getItemIcon;
                     />
                     <span class="shrink-0" style={isSelected ? `color: white` : `color: #aaa`}>]</span>
                   {:else}
+                    <!-- svelte-ignore a11y_click_events_have_key_events -->
                     <span
                       class="font-medium truncate leading-none flex-1 min-w-0 select-none"
                       style={isSelected ? `color: white` : `color: #aaa`}
+                      title="Tap to rename"
+                      onclick={(e) => {
+                        // Selected row: single tap on the name renames it
+                        // (double-click still works on desktop).
+                        if (isSelected) {
+                          e.stopPropagation();
+                          beginRoutineTemplateNameEdit(template.id);
+                        }
+                      }}
                       ondblclick={(e) => {
                         e.stopPropagation();
                         beginRoutineTemplateNameEdit(template.id);
@@ -9612,25 +9664,14 @@ const getStatIcon = getItemIcon;
                       type="button"
                       data-no-drag
                       draggable="false"
-                      class="relative overflow-hidden w-6 h-6 shrink-0 flex items-center justify-center rounded border transition-colors {deleteTemplateHoldId === template.id && deleteTemplateProgress > 0
-                        ? 'border-red-500 text-red-300'
-                        : 'border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800'}"
-                      title="Hold 0.8s to delete template"
-                      onmousedown={(e) => { e.stopPropagation(); startDeleteTemplateHold(e, template.id); }}
-                      onmouseup={stopDeleteTemplateHold}
-                      onmouseleave={stopDeleteTemplateHold}
-                      ontouchstart={(e) => { e.stopPropagation(); startDeleteTemplateHold(e, template.id); }}
-                      ontouchend={stopDeleteTemplateHold}
-                      ontouchcancel={stopDeleteTemplateHold}
-                      onclick={(e) => e.stopPropagation()}
+                      class="w-6 h-6 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors disabled:opacity-50"
+                      title="Delete template"
+                      aria-label="Delete template {template.name}"
+                      onmousedown={(e) => e.stopPropagation()}
+                      ontouchstart={(e) => e.stopPropagation()}
+                      onclick={(e) => openTemplateDeleteConfirm(e, template.id)}
                     >
-                      {#if deleteTemplateHoldId === template.id && deleteTemplateProgress > 0}
-                        <div
-                          class="absolute inset-0 z-0 bg-red-900/50 transition-all duration-[20ms]"
-                          style="width: {deleteTemplateProgress}%;"
-                        ></div>
-                      {/if}
-                      <Trash2 class="size-3 pointer-events-none relative z-10" />
+                      <Trash2 class="size-3 pointer-events-none" />
                     </button>
                   {:else if isSelected && activeRoutineIsReadonly}
                     <button
@@ -9700,7 +9741,7 @@ const getStatIcon = getItemIcon;
         </button>
       </div>
 
-      <div class="stats-screen__body flex-1 min-h-0 overflow-y-auto no-scrollbar p-2.5 space-y-2">
+      <div class="stats-screen__body flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar p-2.5 space-y-2">
       {#if trackedStats.length === 0}
         <div class="stats-empty flex flex-col items-center justify-center gap-3 py-12 px-4 text-center border border-dashed border-[#1e1e1e] rounded-lg bg-[#0d0d0d]">
           <div class="text-xs text-zinc-500 leading-snug">No stats yet.<br />Track weight, sleep, or anything you log often.</div>
@@ -10088,7 +10129,7 @@ const getStatIcon = getItemIcon;
     </div>
 
   {:else if currentView === 'edit_stats'}
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto no-scrollbar">
+    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
       <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
         <button
           type="button"
@@ -10218,6 +10259,23 @@ const getStatIcon = getItemIcon;
                 draggable="true"
                 ondragstart={(e) => handleStatDragStart(e, index)}
                 ondragend={handleStatDragEnd}
+                use:touchReorder={{
+                  index,
+                  container: () => statListBody,
+                  rowCount: () => draftStats.length,
+                  onStart: (i) => {
+                    statDraggedIndex = i;
+                    statDragOverIndex = i;
+                  },
+                  onOver: (i) => {
+                    if (statDragOverIndex !== i) statDragOverIndex = i;
+                  },
+                  onDrop: commitStatReorder,
+                  onCancel: () => {
+                    statDraggedIndex = null;
+                    statDragOverIndex = null;
+                  },
+                }}
               >
                 <button
                   type="button"
@@ -10265,8 +10323,16 @@ const getStatIcon = getItemIcon;
                         placeholder="NAME"
                       />
                     {:else}
+                      <!-- svelte-ignore a11y_click_events_have_key_events -->
                       <span
                         class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                        title="Tap to rename"
+                        onclick={(e) => {
+                          if (isSelected) {
+                            e.stopPropagation();
+                            beginStatNameEdit(stat.id);
+                          }
+                        }}
                         ondblclick={(e) => {
                           e.stopPropagation();
                           beginStatNameEdit(stat.id);
@@ -10477,7 +10543,7 @@ const getStatIcon = getItemIcon;
   {:else if currentView === 'edit_template'}
     {@const templateEditorColor = getTemplateColor(draftTemplateColor)}
     {@const TemplateEditorIcon = getItemIcon(draftTemplateIcon)}
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto no-scrollbar">
+    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
       <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
         <button
           type="button"
@@ -10594,6 +10660,23 @@ const getStatIcon = getItemIcon;
                   draggable="true"
                   ondragstart={(e) => handleDragStart(e, index)}
                   ondragend={handleDragEnd}
+                  use:touchReorder={{
+                    index,
+                    container: () => exerciseListBody,
+                    rowCount: () => draftExercises.length,
+                    onStart: (i) => {
+                      draggedIndex = i;
+                      dragOverIndex = i;
+                    },
+                    onOver: (i) => {
+                      if (dragOverIndex !== i) dragOverIndex = i;
+                    },
+                    onDrop: commitExerciseReorder,
+                    onCancel: () => {
+                      draggedIndex = null;
+                      dragOverIndex = null;
+                    },
+                  }}
                 >
                   <button
                     type="button"
@@ -10638,8 +10721,16 @@ const getStatIcon = getItemIcon;
                           placeholder="NAME"
                         />
                       {:else}
+                        <!-- svelte-ignore a11y_click_events_have_key_events -->
                         <span
                           class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                          title="Tap to rename"
+                          onclick={(e) => {
+                            if (isSelected) {
+                              e.stopPropagation();
+                              beginExerciseNameEdit(exercise.id);
+                            }
+                          }}
                           ondblclick={(e) => {
                             e.stopPropagation();
                             beginExerciseNameEdit(exercise.id);
@@ -10750,7 +10841,7 @@ const getStatIcon = getItemIcon;
                       </button>
                     {/if}
                   </div>
-                  <div class="space-y-1 max-h-40 overflow-y-auto no-scrollbar min-h-0">
+                  <div class="space-y-1 max-h-40 overflow-y-auto overscroll-contain no-scrollbar min-h-0">
                     {#if availableLibraryForPicker.length === 0}
                       <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
                         {exerciseLibrary.length === 0
@@ -11072,7 +11163,7 @@ const getStatIcon = getItemIcon;
       {/if}
     </div>
   {:else if currentView === 'routines_menu'}
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto no-scrollbar">
+    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
       <RoutinesMenu
         onBack={closeRoutinesMenu}
         onEditRoutine={handleEditRoutineFromMenu}
@@ -11093,7 +11184,8 @@ const getStatIcon = getItemIcon;
   {/key}
   </div>
   {:else if !bootOverlayVisible}
-    <div class="flex flex-1 flex-col items-center justify-center pt-0 pb-10 px-2 gap-6 text-center min-h-0 -translate-y-6">
+    <div class="flex flex-1 flex-col min-h-0 overflow-y-auto overscroll-contain">
+    <div class="m-auto flex flex-col items-center justify-center pt-0 pb-10 px-2 gap-6 text-center w-full -translate-y-6">
       <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
         <Dumbbell class="size-10 text-zinc-400" />
       </div>
@@ -11302,6 +11394,7 @@ const getStatIcon = getItemIcon;
         </div>
       </div>
     </div>
+    </div>
   {/if}
   </div>
   </div>
@@ -11323,18 +11416,20 @@ const getStatIcon = getItemIcon;
       target="_blank"
       rel="noopener noreferrer"
       class="hover:text-zinc-300 active:text-white transition-colors"
-      title="Click to visit the Lift Tracker GitHub repo. Ctrl+click (or Cmd+click) the left side for the update demo, right side for the post-update demo."
+      title="Click to visit the Lift Tracker GitHub repo."
     >
       <span
         class="cursor-pointer hover:text-zinc-300 active:text-white transition-colors"
-        onclick={(e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); e.stopPropagation(); manuallyOpenUpdateMenu(); } }}
+        title="Update demo — tap (touch) or Ctrl+click (desktop)"
+        onclick={(e) => { if (e.ctrlKey || e.metaKey || window.matchMedia('(pointer: coarse)').matches) { e.preventDefault(); e.stopPropagation(); manuallyOpenUpdateMenu(); } }}
       >
         LIFT-TRACKER v{APP_VERSION}
       </span>
       <span class="text-zinc-500 select-none">—</span>
       <span
         class="cursor-pointer hover:text-zinc-300 active:text-white transition-colors"
-        onclick={(e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); e.stopPropagation(); manuallyOpenPostUpdateMenu(); } }}
+        title="Post-update demo — tap (touch) or Ctrl+click (desktop)"
+        onclick={(e) => { if (e.ctrlKey || e.metaKey || window.matchMedia('(pointer: coarse)').matches) { e.preventDefault(); e.stopPropagation(); manuallyOpenPostUpdateMenu(); } }}
       >
         All rights reserved by Arya.
       </span>
@@ -11342,3 +11437,14 @@ const getStatIcon = getItemIcon;
   </div>
 
 </div>
+
+<ConfirmDeletePopup
+  bind:open={templateDeleteConfirmOpen}
+  label={(() => {
+    const tpl = templates.find((t) => t.id === templateDeleteConfirmId);
+    return tpl ? `[ ${tpl.name} ]` : '';
+  })()}
+  message="Template and its schedule slots will be removed."
+  anchorEl={templateDeleteConfirmAnchorEl}
+  onConfirm={confirmTemplateDelete}
+/>

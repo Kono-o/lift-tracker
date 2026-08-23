@@ -97,7 +97,7 @@
   <div
     bind:this={panelEl}
     use:portal
-    class="item-icon-picker fixed z-[200] w-[336px] rounded-xl border border-[#2a2a2a] bg-[#141414] shadow-xl shadow-black/50 p-3 flex flex-col gap-2.5"
+    class="item-icon-picker fixed z-[200] w-[336px] max-w-[calc(100vw-16px)] rounded-xl border border-[#2a2a2a] bg-[#141414] shadow-xl shadow-black/50 p-3 flex flex-col gap-2.5"
     style="top: {pos.top}px; left: {pos.left}px;"
     role="dialog"
     aria-label="Pick icon"

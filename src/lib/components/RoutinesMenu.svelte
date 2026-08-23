@@ -9,7 +9,9 @@
   } from '$lib/db';
   import { runDbActivityBatch } from '$lib/dbActivity';
   import GeneratedAvatar from '$lib/components/GeneratedAvatar.svelte';
+  import ConfirmDeletePopup from '$lib/components/ConfirmDeletePopup.svelte';
   import { listItemSlideIn, listItemSlideOut } from '$lib/menuTransitions';
+  import { touchReorder } from '$lib/touchReorder';
   import {
     ArrowLeft,
     Plus,
@@ -119,11 +121,22 @@
    */
   let listGen = 0;
 
-  /** Match template delete hold duration */
-  const HOLD_DELETE_MS = 800;
-  let deleteRoutineHoldTimer: ReturnType<typeof setInterval> | null = null;
-  let deleteRoutineHoldProgress = $state(0);
-  let deleteRoutineHoldId = $state<string | null>(null);
+  /** Single-press delete: popup confirm anchored to the pressed button. */
+  let deleteConfirmOpen = $state(false);
+  let deleteConfirmId = $state<string | null>(null);
+  let deleteConfirmAnchorEl = $state<HTMLElement | null>(null);
+  const deleteConfirmItem = $derived(
+    deleteConfirmId ? myList.find((r) => r.id === deleteConfirmId) ?? null : null,
+  );
+
+  function openDeleteConfirm(e: Event, id: string) {
+    e.stopPropagation();
+    if (busyAction !== null) return;
+    if (id.startsWith('temp-')) return;
+    deleteConfirmAnchorEl = e.currentTarget as HTMLElement | null;
+    deleteConfirmId = id;
+    deleteConfirmOpen = true;
+  }
 
   function bumpListGen(): number {
     listGen += 1;
@@ -243,18 +256,9 @@
     if (dragOverOwnedIndex !== idx) dragOverOwnedIndex = idx;
   }
 
-  async function handleDrop(e: DragEvent) {
-    e.preventDefault();
-    dragOverOwnedIndex = null;
-    if (draggedOwnedIndex === null || !routineListBody) {
-      draggedOwnedIndex = null;
-      return;
-    }
+  /** Shared commit for desktop drop + touch long-press reorder. */
+  async function commitOwnedRoutineReorder(from: number, targetIndex: number) {
     const ownedAll = [...ownedRoutines];
-    const targetIndex = computeOwnedDropIndex(e, routineListBody, ownedAll.length);
-    const from = draggedOwnedIndex;
-    draggedOwnedIndex = null;
-
     if (from < 0 || from >= ownedAll.length || targetIndex < 0 || targetIndex >= ownedAll.length) {
       return;
     }
@@ -283,6 +287,18 @@
       errorMsg = 'Failed to reorder routines';
       await reloadList();
     }
+  }
+
+  async function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    dragOverOwnedIndex = null;
+    if (draggedOwnedIndex === null || !routineListBody) {
+      draggedOwnedIndex = null;
+      return;
+    }
+    const from = draggedOwnedIndex;
+    draggedOwnedIndex = null;
+    await commitOwnedRoutineReorder(from, computeOwnedDropIndex(e, routineListBody, ownedRoutines.length));
   }
 
   function handleDragEnd() {
@@ -395,7 +411,6 @@
   onDestroy(() => {
     destroyed = true;
     if (refreshTimer) clearInterval(refreshTimer);
-    stopDeleteRoutineHold();
   });
 
   async function addRoutine() {
@@ -473,38 +488,6 @@
     }
   }
 
-  function stopDeleteRoutineHold(e?: Event) {
-    e?.stopPropagation?.();
-    if (deleteRoutineHoldTimer) clearInterval(deleteRoutineHoldTimer);
-    deleteRoutineHoldTimer = null;
-    deleteRoutineHoldProgress = 0;
-    deleteRoutineHoldId = null;
-  }
-
-  function startDeleteRoutineHold(e: Event, id: string) {
-    if (e.cancelable) e.preventDefault();
-    (e as Event & { stopPropagation?: () => void }).stopPropagation?.();
-    if (busyAction !== null) return;
-    if (id.startsWith('temp-')) return;
-    stopDeleteRoutineHold();
-    deleteRoutineHoldId = id;
-    const startTime = Date.now();
-    deleteRoutineHoldTimer = setInterval(() => {
-      deleteRoutineHoldProgress = Math.min(
-        ((Date.now() - startTime) / HOLD_DELETE_MS) * 100,
-        100,
-      );
-      if (deleteRoutineHoldProgress >= 100) {
-        if (deleteRoutineHoldTimer) clearInterval(deleteRoutineHoldTimer);
-        deleteRoutineHoldTimer = null;
-        deleteRoutineHoldProgress = 0;
-        const rid = deleteRoutineHoldId;
-        deleteRoutineHoldId = null;
-        if (rid) void deleteOwnedRoutine(rid);
-      }
-    }, 16);
-  }
-
   async function deleteOwnedRoutine(id: string) {
     if (busyAction !== null) return;
     const item = myList.find((r) => r.id === id);
@@ -515,7 +498,6 @@
       return;
     }
     errorMsg = null;
-    stopDeleteRoutineHold();
     busyAction = 'delete:' + id;
     bumpListGen();
     const snapshot = [...myList];
@@ -1020,6 +1002,27 @@
             draggable={isOwned && !isPending}
             ondragstart={(e) => handleDragStart(e, index, routine)}
             ondragend={handleDragEnd}
+            use:touchReorder={{
+              index: ownedIdx,
+              container: () => routineListBody,
+              rowCount: () => ownedRoutines.length,
+              disabled: () => busyAction !== null || !isOwned || isPending || ownedIdx < 0,
+              filterRow: (el) => el.getAttribute('data-routine-source') === 'owned',
+              onStart: (i) => {
+                draggedOwnedIndex = i;
+                dragOverOwnedIndex = i;
+              },
+              onOver: (i) => {
+                if (dragOverOwnedIndex !== i) dragOverOwnedIndex = i;
+              },
+              onDrop: (from, to) => {
+                void commitOwnedRoutineReorder(from, to);
+              },
+              onCancel: () => {
+                draggedOwnedIndex = null;
+                dragOverOwnedIndex = null;
+              },
+            }}
           >
             <button
               type="button"
@@ -1095,9 +1098,17 @@
                     title={routine.name}
                   >{routine.name}</span>
                 {:else}
+                  <!-- svelte-ignore a11y_click_events_have_key_events -->
                   <span
                     class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none uppercase {isActive ? 'text-white' : 'text-zinc-400'} {isOwned ? 'cursor-text' : ''}"
-                    title={isOwned ? 'Double-click to rename' : displayRoutineName(routine)}
+                    title={isOwned ? 'Tap to rename' : displayRoutineName(routine)}
+                    onclick={(e) => {
+                      // Active owned row: single tap on the name renames it.
+                      if (isOwned && isActive) {
+                        e.stopPropagation();
+                        renameRoutine(routine.id);
+                      }
+                    }}
                     ondblclick={(e) => {
                       e.stopPropagation();
                       if (isOwned) renameRoutine(routine.id);
@@ -1140,26 +1151,15 @@
                         type="button"
                         data-no-drag
                         draggable="false"
-                        class="relative overflow-hidden w-7 h-7 shrink-0 flex items-center justify-center rounded border transition-colors {deleteRoutineHoldId === routine.id && deleteRoutineHoldProgress > 0
-                          ? 'border-red-500 text-red-300'
-                          : 'border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800'}"
-                        title="Hold 0.8s to delete routine"
+                        class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors disabled:opacity-50"
+                        title="Delete routine"
+                        aria-label="Delete routine {displayRoutineName(routine)}"
                         disabled={busyAction !== null}
-                        onmousedown={(e) => { e.stopPropagation(); startDeleteRoutineHold(e, routine.id); }}
-                        onmouseup={stopDeleteRoutineHold}
-                        onmouseleave={stopDeleteRoutineHold}
-                        ontouchstart={(e) => { e.stopPropagation(); startDeleteRoutineHold(e, routine.id); }}
-                        ontouchend={stopDeleteRoutineHold}
-                        ontouchcancel={stopDeleteRoutineHold}
-                        onclick={(e) => e.stopPropagation()}
+                        onmousedown={(e) => e.stopPropagation()}
+                        ontouchstart={(e) => e.stopPropagation()}
+                        onclick={(e) => openDeleteConfirm(e, routine.id)}
                       >
-                        {#if deleteRoutineHoldId === routine.id && deleteRoutineHoldProgress > 0}
-                          <div
-                            class="absolute inset-0 z-0 bg-red-900/50 transition-all duration-[16ms]"
-                            style="width: {deleteRoutineHoldProgress}%;"
-                          ></div>
-                        {/if}
-                        <Trash2 class="size-3.5 pointer-events-none relative z-10" />
+                        <Trash2 class="size-3.5 pointer-events-none" />
                       </button>
                     {/if}
                   {:else if isBookmarked}
@@ -1319,3 +1319,17 @@
     {/if}
   </div>
 </div>
+
+<ConfirmDeletePopup
+  bind:open={deleteConfirmOpen}
+  label={deleteConfirmItem ? displayRoutineName(deleteConfirmItem) : ''}
+  message="Routine and its templates will be removed."
+  anchorEl={deleteConfirmAnchorEl}
+  busy={busyAction !== null}
+  onConfirm={(close) => {
+    close();
+    const id = deleteConfirmId;
+    deleteConfirmId = null;
+    if (id) void deleteOwnedRoutine(id);
+  }}
+/>

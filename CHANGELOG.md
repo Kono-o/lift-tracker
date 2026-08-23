@@ -2,6 +2,23 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.14] - 2026-08-24
+
+**Mobile UX overhaul + new-account fix** — same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.
+
+### Fixes
+- Fixed "invalid input syntax for type uuid" crash when creating a template on a brand-new account (routine is now auto-created on demand)
+- Hold-to-confirm buttons no longer stuck when touch is cancelled mid-hold (`touchcancel` handling)
+
+### Touch UX
+- Long-press and drag to reorder routines, templates, stats, and exercise lists
+- Single tap on a selected row's name now renames it (double-click still works with a mouse)
+- Deletes for routines/templates use a single-tap confirm popup instead of long-press
+- Bigger touch targets: set bubbles, week chevrons, DB status dot hit area, popup buttons
+- No more iOS input focus zoom; tap highlight removed
+- Overlays respect notch/safe-area insets; settings dialog scrolls internally; auth screen scrolls on short screens
+- Update/post-update demos reachable via plain tap on touch devices
+
 ## [1.0.13] - 2026-07-18
 
 **Cleanup + fixes** — same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.

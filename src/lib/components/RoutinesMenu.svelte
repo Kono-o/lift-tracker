@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import {
     db,
     formatDbError,
@@ -12,6 +12,7 @@
   import ConfirmDeletePopup from '$lib/components/ConfirmDeletePopup.svelte';
   import { listItemSlideIn, listItemSlideOut } from '$lib/menuTransitions';
   import { touchReorder } from '$lib/touchReorder';
+  import { hapticMedium, hapticLight } from '$lib/haptics';
   import {
     ArrowLeft,
     Plus,
@@ -55,23 +56,28 @@
   } = $props();
 
   /** Local source of truth while menu is open — never clobber from stale parent props. */
-  let myList = $state<UserRoutineListItem[]>([...initialList]);
+  // The props seed local state once when the menu is created; later parent prop
+  // updates must not overwrite in-progress edits, so the reads are intentionally
+  // untracked.
+  let myList = $state<UserRoutineListItem[]>(untrack(() => [...initialList]));
   let allRoutines = $state<RoutineWithOwner[]>(
-    currentUserId
-      ? initialAllRoutines.filter((r) => r.user_id !== currentUserId)
-      : [...initialAllRoutines],
+    untrack(() =>
+      currentUserId
+        ? initialAllRoutines.filter((r) => r.user_id !== currentUserId)
+        : [...initialAllRoutines],
+    ),
   );
-  let bookmarks = $state<Set<string>>(new Set(initialBookmarkIds));
+  let bookmarks = $state<Set<string>>(untrack(() => new Set(initialBookmarkIds)));
   let busyAction = $state<string | null>(null);
   let errorMsg = $state<string | null>(null);
   let renamingId = $state<string | null>(null);
   let renameValue = $state('');
   let selectedAllId = $state<string | null>(null);
-  let loading = $state(initialList.length === 0);
+  let loading = $state(untrack(() => initialList.length === 0));
 
   /** Stable each keys so temp→real id swaps don't remount/flash rows. */
   let routineListKeyById = $state<Record<string, string>>(
-    Object.fromEntries(initialList.map((r) => [r.id, r.id])),
+    untrack(() => Object.fromEntries(initialList.map((r) => [r.id, r.id]))),
   );
   let suppressListEnterAnim = $state(false);
   function routineListKey(id: string): string {
@@ -287,6 +293,7 @@
       errorMsg = 'Failed to reorder routines';
       await reloadList();
     }
+    void hapticMedium();
   }
 
   async function handleDrop(e: DragEvent) {
@@ -375,7 +382,6 @@
     const gen = listGen;
     try {
       const list = await db.getUserRoutineList();
-      if (destroyed || gen !== listGen || busyAction !== null) return;
       if (destroyed || gen !== listGen || busyAction !== null) return;
       withSuppressedListEnter(() => {
         let keys: Record<string, string> = {};
@@ -529,6 +535,7 @@
         emitListChange();
       }
     } catch (e) {
+      const activeChanged = activeRoutineId !== prevActive;
       myList = snapshot;
       activeRoutineId = prevActive;
       // restore keys for snapshot rows
@@ -538,8 +545,15 @@
       emitListChange();
       errorMsg = 'Failed to delete routine';
       console.error(e);
+      if (activeChanged) {
+        const restored = await restoreActiveRoutine(prevActive);
+        if (!restored) {
+          errorMsg = 'Failed to delete routine — active routine could not be restored.';
+        }
+      }
     } finally {
       busyAction = null;
+      void hapticMedium();
     }
   }
 
@@ -574,6 +588,7 @@
       }
       await runDbActivityBatch(() => db.removeBookmarkFromList(routineId));
     } catch (e) {
+      const activeChanged = activeRoutineId !== prevActive;
       myList = snapshot;
       bookmarks.add(routineId);
       bookmarks = new Set(bookmarks);
@@ -581,13 +596,33 @@
       emitListChange();
       errorMsg = 'Failed to remove bookmark';
       console.error(e);
+      if (activeChanged) {
+        const restored = await restoreActiveRoutine(prevActive);
+        if (!restored) {
+          errorMsg = 'Failed to remove bookmark — active routine could not be restored.';
+        }
+      }
     } finally {
       busyAction = null;
     }
   }
 
-  async function activateRoutine(id: string) {
-    if (busyAction !== null) return;
+  /**
+   * Best-effort compensation when a destructive routine action failed after the
+   * active routine had already been switched. Keeps server and local state aligned.
+   */
+  async function restoreActiveRoutine(prevActive: string | null): Promise<boolean> {
+    try {
+      await runDbActivityBatch(() => db.setActiveRoutine(prevActive));
+      if (prevActive) onActivate(prevActive);
+      return true;
+    } catch (e) {
+      console.error('Failed to restore previous active routine', e);
+      return false;
+    }
+  }
+
+  async function activateRoutine(id: string) {    if (busyAction !== null) return;
     if (id.startsWith('temp-')) return;
     busyAction = id;
     errorMsg = null;
@@ -737,6 +772,7 @@
     }
     emitListChange();
 
+    let bookmarkRemovalFailed = false;
     try {
       // Don't nest under extra busy guards; copy is the slow path
       const result = (await db.copyRoutine(routineId)) as Routine & {
@@ -749,6 +785,10 @@
           await db.removeBookmarkFromList(routineId);
         } catch (e) {
           console.error('Failed to remove bookmark after copy', e);
+          // The copy succeeded, but the bookmark still exists server-side. Keep it
+          // visible locally instead of pretending it was removed.
+          bookmarkRemovalFailed = true;
+          errorMsg = 'Routine copied, but the bookmark could not be removed.';
         }
       }
 
@@ -768,6 +808,14 @@
       }
       bookmarks.delete(routineId);
       bookmarks = new Set(bookmarks);
+      if (bookmarkRemovalFailed) {
+        bookmarks.add(routineId);
+        bookmarks = new Set(bookmarks);
+        if (existingBm && !myList.some((r) => r.source === 'bookmarked' && r.id === routineId)) {
+          myList = [...myList, existingBm];
+          rememberRoutineKey(routineId, routineId);
+        }
+      }
       emitListChange();
 
       // Clear busy *before* activate — activateRoutine no-ops while busyAction is set
@@ -939,7 +987,7 @@
         title={activeDownloadLabel
           ? `Export ${activeDownloadLabel} (.lift.json)`
           : 'Export selected routine (.lift.json)'}
-        onclick={() => onDownload(activeRoutineId)}
+        onclick={() => { if (activeRoutineId) onDownload?.(activeRoutineId); }}
         disabled={busyAction !== null}
       >
         <span class="text-[10px] font-bold tracking-wide truncate leading-none min-w-0 uppercase">

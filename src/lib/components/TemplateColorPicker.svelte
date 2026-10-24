@@ -210,7 +210,7 @@
   <div
     bind:this={panelEl}
     use:portal
-    class="template-color-picker fixed z-[200] w-[240px] rounded-xl border border-[#2a2a2a] bg-[#141414] shadow-xl shadow-black/50 p-3 flex flex-col gap-2.5"
+    class="template-color-picker fixed z-[200] w-[240px] max-w-[calc(100vw-16px)] rounded-xl border border-[#2a2a2a] bg-[#141414] shadow-xl shadow-black/50 p-3 flex flex-col gap-2.5"
     style="top: {pos.top}px; left: {pos.left}px;"
     role="dialog"
     aria-label="Template color"
@@ -329,7 +329,7 @@
         {@const activeBand = Math.round((hsv.h / 360) * HUE_PRESETS) % HUE_PRESETS}
         <button
           type="button"
-          class="template-hue-squircle justify-self-center w-5 h-5 border-0 hover:brightness-110 transition-[filter,opacity] {activeBand === hi ? 'opacity-100 ring-1 ring-white/80' : 'opacity-90'}"
+          class="template-hue-squircle justify-self-center w-7 h-7 border-0 hover:brightness-110 transition-[filter,opacity] {activeBand === hi ? 'opacity-100 ring-1 ring-white/80' : 'opacity-90'}"
           style="background-color: {getTemplateColor(idx)}"
           title="Hue {Math.round(hue)}°"
           onclick={() => {

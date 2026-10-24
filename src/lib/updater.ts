@@ -1,5 +1,4 @@
 import { Capacitor } from '@capacitor/core';
-import { Directory, Filesystem } from '@capacitor/filesystem';
 import { registerPlugin } from '@capacitor/core';
 import { APP_VERSION } from './version';
 import { isNativeApp } from './native';
@@ -25,7 +24,6 @@ export interface UpdateInfo {
 	version: string;
 	notes: string;
 	downloadUrl: string;      // browser_download_url (good for web <a> and UI)
-	apiAssetUrl?: string;     // https://api.github.com/.../assets/XXX  (reliable for native fetch)
 	size: number;
 	tag: string;
 }
@@ -181,7 +179,6 @@ export function releaseToUpdateInfo(release: GitHubRelease): UpdateInfo | null {
 		version,
 		notes: release.body ?? '',
 		downloadUrl: asset.browser_download_url,
-		apiAssetUrl: asset.url,   // api endpoint for reliable download
 		size: asset.size,
 		tag: release.tag_name,
 	};
@@ -212,182 +209,6 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
 		return info;
 	}
 	return null;
-}
-
-/**
- * Download the APK for the given UpdateInfo and return the relative cache path we wrote it to.
- * Updates the provided onProgress (0..100).
- * Throws on failure.
- */
-export async function downloadApkToCache(
-	info: UpdateInfo,
-	onProgress: (pct: number) => void
-): Promise<string> {
-	if (!isNativeApp()) {
-		// On web / non-native we cannot directly fetch GitHub release assets
-		// due to CORS restrictions on direct download URLs.
-		// Always open the human-friendly releases page instead.
-		const releasesPage = info.downloadUrl.includes('/download/')
-			? 'https://github.com/Kono-o/lift-tracker/releases'
-			: info.downloadUrl;
-
-		if (typeof window !== 'undefined') {
-			window.open(releasesPage, '_blank');
-		}
-		throw new Error('Direct APK download only works inside the Android app. Opened the GitHub releases page instead.');
-	}
-
-	// Always use the browser_download_url for the actual binary fetch.
-	// The apiAssetUrl (with octet-stream) can sometimes return small error bodies
-	// or hit stricter limits; the direct download URL + good UA is more reliable
-	// for getting the full APK binary in practice.
-	const fetchUrl = info.downloadUrl;
-	let res: Response | null = null;
-	let lastError: any = null;
-
-	// Retry up to 3 times with backoff for transient network or GitHub hiccups
-	for (let attempt = 1; attempt <= 3; attempt++) {
-		try {
-			// GitHub is strict on User-Agent for asset downloads. Use a realistic one
-			// plus Accept to encourage binary response.
-			// Use a browser-like User-Agent for direct asset downloads.
-			// GitHub serves the actual binary file to browser UAs; API-like UAs can get HTML or limited responses.
-			res = await fetch(fetchUrl, {
-				cache: 'no-store',
-				headers: {
-					'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36',
-					'Accept': 'application/octet-stream, */*',
-				},
-				redirect: 'follow',
-			});
-
-			if (!res.ok || !res.body) {
-				lastError = new Error(`Download failed (${res.status})`);
-				if (attempt < 3) {
-					await new Promise(r => setTimeout(r, 1000 * attempt));
-					continue;
-				}
-				throw lastError;
-			}
-
-			// Detect if we got an error page or non-binary instead of the APK (common "Failed to fetch" root cause)
-			const contentType = res.headers.get('content-type') || '';
-			if (contentType.includes('text/') || contentType.includes('html') || contentType.includes('json')) {
-				const text = await res.text();
-				lastError = new Error(`GitHub returned non-binary content (${contentType}): ${text.substring(0, 400)}`);
-				if (attempt < 3) {
-					await new Promise(r => setTimeout(r, 1000 * attempt));
-					continue;
-				}
-				throw lastError;
-			}
-
-			// If content length is very small, likely error
-			const cl = res.headers.get('content-length');
-			if (cl && parseInt(cl) < 10000) {
-				const text = await res.text();
-				lastError = new Error(`GitHub returned suspiciously small response (${cl} bytes): ${text.substring(0, 400)}`);
-				if (attempt < 3) {
-					await new Promise(r => setTimeout(r, 1000 * attempt));
-					continue;
-				}
-				throw lastError;
-			}
-
-			// Good response — break and use res below
-			break;
-		} catch (e) {
-			lastError = e;
-			if (attempt < 3) {
-				await new Promise(r => setTimeout(r, 1000 * attempt));
-				continue;
-			}
-			throw lastError;
-		}
-	}
-
-	if (!res) {
-		throw lastError || new Error('Download failed after retries');
-	}
-
-	const contentLength = Number(res.headers.get('Content-Length') || info.size || 0);
-	let received = 0;
-	const chunks: BlobPart[] = [];
-	const reader = res.body.getReader();
-
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		if (value) {
-			chunks.push(value);
-			received += value.length;
-			if (contentLength > 0) {
-				onProgress(Math.min(99, Math.round((received / contentLength) * 100)));
-			}
-		}
-	}
-	onProgress(100);
-
-	// Convert chunks to single Uint8Array (more reliable than Blob + FileReader for binary in WebView)
-	let totalLength = 0;
-	for (const chunk of chunks) totalLength += chunk.length;
-	const allBytes = new Uint8Array(totalLength);
-	let offset = 0;
-	for (const chunk of chunks) {
-		allBytes.set(chunk, offset);
-		offset += chunk.length;
-	}
-
-	// Pure JS base64 (avoids FileReader issues on large binaries in Capacitor WebView)
-	const base64 = btoa(
-		allBytes.reduce((data, byte) => data + String.fromCharCode(byte), '')
-	);
-
-	const relativePath = 'updates/lift-tracker-update.apk';
-	await Filesystem.writeFile({
-		path: relativePath,
-		data: base64,
-		directory: Directory.Cache,
-		recursive: true,
-	});
-
-	// Verify size to catch incomplete/corrupted downloads (common cause of "parsing file" errors on Android installer)
-	if (info.size > 0) {
-		const stat = await Filesystem.stat({
-			path: relativePath,
-			directory: Directory.Cache,
-		});
-		if (stat.size !== info.size) {
-			// Clean up bad file
-			try {
-				await Filesystem.deleteFile({ path: relativePath, directory: Directory.Cache });
-			} catch {}
-			throw new Error(`Download corrupted (size mismatch: got ${stat.size} bytes, expected ${info.size}). The APK file is invalid and cannot be installed. Please try again with a stable connection.`);
-		}
-	}
-
-	// Optional extra validation: check ZIP magic bytes (APK is a ZIP file). First 2 bytes should be "PK"
-	try {
-		const header = await Filesystem.readFile({
-			path: relativePath,
-			directory: Directory.Cache,
-			encoding: 'base64',
-		});
-		// Decode first few bytes
-		const firstBytes = atob(header.data).slice(0, 4);
-		if (!firstBytes.startsWith('PK')) {
-			try {
-				await Filesystem.deleteFile({ path: relativePath, directory: Directory.Cache });
-			} catch {}
-			throw new Error('Downloaded file is not a valid APK (wrong format). This usually means a network error or GitHub serving an error page. Please try again.');
-		}
-	} catch (e) {
-		// If read fails, the size check already passed, so let it proceed (or surface)
-		console.warn('[updater] Could not validate APK magic bytes, proceeding anyway:', e);
-	}
-
-	// Best effort cleanup of old chunks isn't needed; we overwrite.
-	return relativePath;
 }
 
 /** Ask the native side to launch the system package installer for the downloaded APK. */

@@ -119,7 +119,7 @@ else
     echo ""
     echo "▶ Wiping users and app data..."
 
-    psql "$SUPABASE_DB_URL" -c "
+    psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -c "
 CREATE OR REPLACE FUNCTION public.delete_all_accounts()
 RETURNS void
 LANGUAGE plpgsql
@@ -128,24 +128,24 @@ SET search_path = public, auth
 AS \$\$
 BEGIN
   DELETE FROM public.exercise_personal_bests;
-  DELETE FROM public.template_exercises;
   DELETE FROM public.exercises;
   DELETE FROM public.workout_history;
   DELETE FROM public.stat_logs;
   DELETE FROM public.tracked_stats;
-  DELETE FROM public.templates;
+  DELETE FROM public.routine_bookmarks;
+  DELETE FROM public.routines; -- cascades templates + routine_schedules
   DELETE FROM public.schedule;
   DELETE FROM public.usernames;
   DELETE FROM auth.users;
 END;
 \$\$;
 
-REVOKE ALL ON FUNCTION public.delete_all_accounts() FROM public;
+REVOKE ALL ON FUNCTION public.delete_all_accounts() FROM public, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.delete_all_accounts() TO service_role;
 GRANT EXECUTE ON FUNCTION public.delete_all_accounts() TO postgres;
-" > /dev/null 2>&1
+"
 
-    psql "$SUPABASE_DB_URL" -c "SELECT public.delete_all_accounts();"
+    psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -c "SELECT public.delete_all_accounts();"
     if test $status -ne 0
         set success false
         echo "❌ User wipe failed."

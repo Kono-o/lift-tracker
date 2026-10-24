@@ -458,8 +458,29 @@ export interface Exercise {
 
 	increment: number;
 	current_weight: number | null;
+
+	/** wger catalog provenance (nullable for custom exercises). */
+	catalog_exercise_id?: number | null;
+	catalog_muscle_ids?: number[];
+	notes?: string | null;
+
 	/** Present when an exercise is loaded in template context. */
 	display_order?: number;
+	/** Per-day values applied to this template instance (already merged into fields). */
+	override?: ExerciseOverride;
+	/** True when this template entry chains into the next exercise (superset). */
+	superset_with_next?: boolean;
+}
+
+export interface ExerciseOverride {
+	target_sets?: number;
+	target_reps?: number;
+	target_minutes?: number;
+	target_seconds?: number;
+	rest_minutes?: number;
+	rest_seconds?: number;
+	increment?: number;
+	current_weight?: number | null;
 }
 
 const PERSISTED_EXERCISE_ID_RE =
@@ -474,7 +495,7 @@ async function fetchExercisesForIds(exerciseIds: string[]): Promise<Exercise[]> 
 	const { data, error } = await supabase
 		.from("exercises")
 		.select(
-			"id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, created_at",
+			"id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, catalog_exercise_id, catalog_muscle_ids, notes, created_at",
 		)
 		.in("id", exerciseIds);
 	if (error) throw error;
@@ -532,6 +553,14 @@ export interface Template {
 	display_order?: number;
 	exercise_ids?: string[];
 	exercises: Exercise[];
+	/** Per-day target/weight overrides keyed by exercise id. */
+	exercise_overrides?: Record<string, ExerciseOverride>;
+	/** Exercise ids that chain into the next consecutive exercise. */
+	superset_with_next?: string[];
+	/** Owner of the routine (present for templates loaded from other users). */
+	owner_id?: string | null;
+	/** Read-only templates belong to another user's bookmarked routine. */
+	is_readonly?: boolean;
 }
 
 export function isTemplateAssignable(
@@ -638,12 +667,15 @@ async function requireUserId(): Promise<string> {
 }
 
 /** Local calendar date (YYYY-MM-DD), aligned with the app's date picker. */
-function todayDateString(): string {
-	const d = new Date();
+function localDateString(d: Date): string {
 	const y = d.getFullYear();
 	const m = String(d.getMonth() + 1).padStart(2, "0");
 	const day = String(d.getDate()).padStart(2, "0");
 	return `${y}-${m}-${day}`;
+}
+
+function todayDateString(): string {
+	return localDateString(new Date());
 }
 
 /** Completed (non-skipped) rows: DB rejects duration_seconds = 0. */
@@ -782,6 +814,8 @@ async function getExerciseAllTimeBest(exerciseId: string): Promise<number> {
 // ROUTINE TYPES
 // ============================================================
 
+export type RoutineScheduleMode = "weekly" | "cycle";
+
 export interface Routine {
 	id: string;
 	user_id: string;
@@ -789,7 +823,54 @@ export interface Routine {
 	created_at: string;
 	display_order?: number;
 	template_count?: number;
+	schedule_mode?: RoutineScheduleMode;
+	/** Number of days in a cycle plan (1–28). */
+	cycle_length?: number;
+	/** Local date (YYYY-MM-DD) that maps to cycle slot 0. */
+	cycle_anchor_date?: string;
+	/** Template id per cycle slot; null = rest. */
+	cycle_slots?: Array<string | null>;
 }
+
+/** Active routine plan metadata — drives date-aware cycle resolution. */
+export interface ActiveRoutinePlan extends Routine {
+	is_readonly: boolean;
+	owner_username?: string;
+	owner_avatar_seed?: string | null;
+}
+
+/** Preference blob stored on usernames.preferences. */
+export interface AppPreferences {
+	theme?: "dark" | "light" | "oled";
+	accent?: number;
+	week_starts_on?: 0 | 1;
+	haptics?: boolean;
+	sounds?: boolean;
+	rest_notifications?: boolean;
+	workout_reminders?: boolean;
+	reminder_time?: string;
+	reminder_days?: number[];
+	auto_rest_timer?: boolean;
+	reduce_motion?: boolean;
+	confirm_deletes?: boolean;
+	compact_cards?: boolean;
+}
+
+export const DEFAULT_PREFERENCES: Required<AppPreferences> = {
+	theme: "dark",
+	accent: 242,
+	week_starts_on: 0,
+	haptics: true,
+	sounds: true,
+	rest_notifications: true,
+	workout_reminders: false,
+	reminder_time: "18:00",
+	reminder_days: [1, 2, 3, 4, 5, 6, 0],
+	auto_rest_timer: true,
+	reduce_motion: false,
+	confirm_deletes: true,
+	compact_cards: false,
+};
 
 export interface RoutineSchedule {
 	routine_id: string;
@@ -825,6 +906,165 @@ export interface UserRoutineListItem extends Routine {
 	owner_username?: string;
 	owner_avatar_seed?: string | null;
 	bookmark_id?: string;
+}
+
+// ============================================================
+// EXERCISE CATALOG (wger, read-only public data)
+// ============================================================
+
+export interface CatalogCategory {
+	id: number;
+	name: string;
+}
+
+export interface CatalogEquipment {
+	id: number;
+	name: string;
+}
+
+export interface CatalogMuscle {
+	id: number;
+	name: string;
+	name_en: string | null;
+	is_front: boolean;
+}
+
+export interface CatalogExerciseSummary {
+	id: number;
+	name: string;
+	category_id: number | null;
+	category_name: string | null;
+	equipment: CatalogEquipment[];
+	primary_muscles: CatalogMuscle[];
+	secondary_muscles: CatalogMuscle[];
+	license: string | null;
+	license_author: string | null;
+}
+
+export interface CatalogExerciseDetail extends CatalogExerciseSummary {
+	uuid: string | null;
+	description: string;
+	license_url: string | null;
+}
+
+export interface CatalogFilters {
+	query?: string;
+	categoryId?: number | null;
+	equipmentId?: number | null;
+	muscleId?: number | null;
+	limit?: number;
+	offset?: number;
+}
+
+// ============================================================
+// EFFECTIVE TEMPLATE-DAY VALUES
+// ============================================================
+
+/** Merge a template's per-day override into an exercise row (non-destructive). */
+export function applyExerciseOverride(
+	exercise: Exercise,
+	override: ExerciseOverride | null | undefined,
+): Exercise {
+	if (!override) return exercise;
+	const merged: Exercise = { ...exercise, override };
+	const numberKeys = [
+		"target_sets",
+		"target_reps",
+		"target_minutes",
+		"target_seconds",
+		"rest_minutes",
+		"rest_seconds",
+		"increment",
+	] as const;
+	for (const key of numberKeys) {
+		const value = override[key];
+		if (typeof value === "number" && Number.isFinite(value)) {
+			(merged as unknown as Record<string, number>)[key] = value;
+		}
+	}
+	if (override.current_weight !== undefined) {
+		merged.current_weight = override.current_weight;
+	}
+	return merged;
+}
+
+/**
+ * Resolve which template a routine assigns to a calendar date.
+ * Weekly routines return null here — callers use the materialized weekday schedule.
+ */
+export function resolveRoutineTemplateForDate(
+	routine: Pick<
+		Routine,
+		"schedule_mode" | "cycle_length" | "cycle_anchor_date" | "cycle_slots"
+	> | null,
+	dateStr: string,
+): string | null {
+	if (!routine || routine.schedule_mode !== "cycle") return null;
+	const slots = Array.isArray(routine.cycle_slots) ? routine.cycle_slots : [];
+	const length = Math.max(1, Math.min(28, routine.cycle_length ?? (slots.length || 1)));
+	if (slots.length === 0) return null;
+	const anchorStr = routine.cycle_anchor_date;
+	if (!anchorStr) return null;
+	const [ay, am, ad] = anchorStr.split("-").map(Number);
+	const [dy, dm, dd] = dateStr.split("-").map(Number);
+	if (!ay || !am || !ad || !dy || !dm || !dd) return null;
+	const anchor = Date.UTC(ay, am - 1, ad);
+	const date = Date.UTC(dy, dm - 1, dd);
+	const diffDays = Math.round((date - anchor) / 86_400_000);
+	const idx = ((diffDays % length) + length) % length;
+	return slots[idx] ?? null;
+}
+
+/** Cycle slot preview labels for editors. */
+export function cycleSlotDates(
+	anchorDate: string,
+	length: number,
+): string[] {
+	const [ay, am, ad] = anchorDate.split("-").map(Number);
+	if (!ay || !am || !ad) return [];
+	const base = Date.UTC(ay, am - 1, ad);
+	const out: string[] = [];
+	for (let i = 0; i < length; i++) {
+		const d = new Date(base + i * 86_400_000);
+		out.push(
+			`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`,
+		);
+	}
+	return out;
+}
+
+function catalogSummaryFromRow(row: any): CatalogExerciseSummary {
+	const equipment: CatalogEquipment[] = [];
+	const primary: CatalogMuscle[] = [];
+	const secondary: CatalogMuscle[] = [];
+	for (const link of row.wger_exercise_equipment ?? []) {
+		const eq = link?.wger_equipment;
+		if (eq?.id) equipment.push({ id: eq.id, name: eq.name });
+	}
+	for (const link of row.wger_exercise_muscles ?? []) {
+		const m = link?.wger_muscles;
+		if (!m?.id) continue;
+		const muscle: CatalogMuscle = {
+			id: m.id,
+			name: m.name,
+			name_en: m.name_en ?? null,
+			is_front: m.is_front !== false,
+		};
+		(link.is_primary === false ? secondary : primary).push(muscle);
+	}
+	const dedupe = <T extends { id: number }>(items: T[]) =>
+		[...new Map(items.map((item) => [item.id, item])).values()];
+	return {
+		id: row.id,
+		name: row.name,
+		category_id: row.category_id ?? null,
+		category_name: row.wger_categories?.name ?? null,
+		equipment: dedupe(equipment),
+		primary_muscles: dedupe(primary),
+		secondary_muscles: dedupe(secondary),
+		license: row.license ?? null,
+		license_author: row.license_author ?? null,
+	};
 }
 
 // ============================================================
@@ -1169,32 +1409,6 @@ export const db = {
 		}
 	},
 
-	/** Removes all app rows for the signed-in user (RLS / user_id). */
-	async deleteAllUserData() {
-		const {
-			data: { user },
-			error: userErr,
-		} = await supabase.auth.getUser();
-		if (userErr) throw userErr;
-		if (!user) throw new Error("Not signed in");
-
-		const uid = user.id;
-		const results = await Promise.all([
-			supabase.from("exercise_personal_bests").delete().eq("user_id", uid),
-			supabase.from("exercises").delete().eq("user_id", uid),
-			supabase.from("workout_history").delete().eq("user_id", uid),
-			supabase.from("stat_logs").delete().eq("user_id", uid),
-			supabase.from("tracked_stats").delete().eq("user_id", uid),
-			supabase.from("routine_bookmarks").delete().eq("user_id", uid),
-			supabase.from("routines").delete().eq("user_id", uid),
-			supabase.from("schedule").delete().eq("user_id", uid),
-		]);
-
-		for (const r of results) {
-			if (r.error) throw r.error;
-		}
-	},
-
 	/**
 	 * Deletes all user data + auth user.
 	 * Prefers `delete_own_account` RPC; falls back to POST /api/delete-account when
@@ -1211,8 +1425,9 @@ export const db = {
 		const { error: rpcError } = await supabase.rpc("delete_own_account");
 
 		if (!rpcError) {
-			const { error: signOutErr } = await supabase.auth.signOut();
-			if (signOutErr) throw signOutErr;
+			// The auth row is already gone; a missing session here is success,
+			// not a failed deletion.
+			await supabase.auth.signOut().catch(() => {});
 			return;
 		}
 
@@ -1247,8 +1462,7 @@ export const db = {
 			);
 		}
 
-		const { error: signOutErr } = await supabase.auth.signOut();
-		if (signOutErr) throw signOutErr;
+		await supabase.auth.signOut().catch(() => {});
 	},
 
 	async getSession() {
@@ -1271,6 +1485,8 @@ export const db = {
 		ownExercises: Exercise[];
 		foreignTemplates?: any[];
 		foreignExercises?: Exercise[];
+		ownerId?: string | null;
+		foreignOwnerId?: string | null;
 	}): {
 		schedule: ScheduleRow[];
 		templates: Template[];
@@ -1282,6 +1498,8 @@ export const db = {
 			ownExercises,
 			foreignTemplates = [],
 			foreignExercises = [],
+			ownerId = null,
+			foreignOwnerId = null,
 		} = args;
 		const ownTemplateIds = new Set(ownTemplates.map((t) => t.id as string));
 		const exerciseLibrary = [
@@ -1297,11 +1515,25 @@ export const db = {
 
 		const templates: Template[] = allTemplateRows.map((t: any) => {
 			const exIds: string[] = Array.isArray(t.exercise_ids) ? t.exercise_ids : [];
+			const overrides =
+				t.exercise_overrides && typeof t.exercise_overrides === "object"
+					? (t.exercise_overrides as Record<string, ExerciseOverride>)
+					: {};
+			const supersetIds = new Set<string>(
+				Array.isArray(t.superset_with_next) ? t.superset_with_next : [],
+			);
 			const exs: Exercise[] = exIds
 				.map((id: string, i: number) => {
 					const base = exById.get(id);
 					if (!base) return null;
-					return { ...base, display_order: i } as Exercise;
+					const merged = applyExerciseOverride(
+						{ ...base, display_order: i },
+						overrides[id],
+					);
+					return {
+						...merged,
+						superset_with_next: supersetIds.has(id),
+					} as Exercise;
 				})
 				.filter((e): e is Exercise => !!e);
 
@@ -1316,6 +1548,10 @@ export const db = {
 				display_order: typeof t.display_order === "number" ? t.display_order : 0,
 				exercise_ids: exIds,
 				exercises: exs,
+				exercise_overrides: overrides,
+				superset_with_next: [...supersetIds],
+				owner_id: ownTemplateIds.has(t.id) ? ownerId : foreignOwnerId,
+				is_readonly: !ownTemplateIds.has(t.id),
 			};
 		});
 
@@ -1358,6 +1594,8 @@ export const db = {
 		trackedStats: TrackedStat[];
 		statLogSnapshots: StatLogSnapshotRow[];
 		activeRoutineId: string | null;
+		activeRoutinePlan: ActiveRoutinePlan | null;
+		preferences: Required<AppPreferences>;
 		routineList: UserRoutineListItem[];
 	}> {
 		const historyDays = opts.historyDays ?? 21;
@@ -1367,22 +1605,27 @@ export const db = {
 
 		const sinceHistory = new Date();
 		sinceHistory.setDate(sinceHistory.getDate() - historyDays);
-		const sinceHistoryStr = sinceHistory.toISOString().slice(0, 10);
+		const sinceHistoryStr = localDateString(sinceHistory);
 		const sinceStats = new Date();
 		sinceStats.setDate(sinceStats.getDate() - statDays);
-		const sinceStatsStr = sinceStats.toISOString().slice(0, 10);
+		const sinceStatsStr = localDateString(sinceStats);
 		const todayStr = todayDateString();
 
+		// RLS exposes every community template; bootstrap must load only this user's own
+		// routine templates. Bookmarked-active templates are fetched separately below.
 		const templatesQ = supabase
 			.from("templates")
-			.select("id, routine_id, name, color, icon, display_order, exercise_ids")
+			.select(
+				"id, routine_id, name, color, icon, display_order, exercise_ids, exercise_overrides, superset_with_next, routines!inner(user_id)",
+			)
+			.eq("routines.user_id", userId ?? "00000000-0000-0000-0000-000000000000")
 			.order("display_order")
 			.order("created_at");
 
 		const exercisesQ = supabase
 			.from("exercises")
 			.select(
-				"id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, created_at",
+				"id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, catalog_exercise_id, catalog_muscle_ids, notes, created_at",
 			)
 			.order("created_at");
 		if (userId) exercisesQ.eq("user_id", userId);
@@ -1391,7 +1634,7 @@ export const db = {
 			? supabase
 					.from("routines")
 					.select(
-						"id, user_id, name, created_at, display_order, routine_schedules ( template_id )",
+						"id, user_id, name, created_at, display_order, schedule_mode, cycle_length, cycle_anchor_date, cycle_slots, routine_schedules ( template_id ), templates ( id )",
 					)
 					.eq("user_id", userId)
 					.order("display_order")
@@ -1456,7 +1699,7 @@ export const db = {
 			userId
 				? supabase
 						.from("usernames")
-						.select("user_id, username, avatar_seed, active_routine_id")
+						.select("user_id, username, avatar_seed, active_routine_id, preferences")
 						.eq("user_id", userId)
 						.maybeSingle()
 				: Promise.resolve({ data: null, error: null }),
@@ -1500,13 +1743,45 @@ export const db = {
 			}
 		}
 
+		// Active routine metadata drives date-aware cycle planning.
+		let activeRoutinePlan: ActiveRoutinePlan | null = null;
+		if (userId && activeRoutineId) {
+			const { data: rp, error: rpErr } = await supabase
+				.from("routines")
+				.select(
+					"id, user_id, name, created_at, schedule_mode, cycle_length, cycle_anchor_date, cycle_slots",
+				)
+				.eq("id", activeRoutineId)
+				.maybeSingle();
+			if (rpErr) {
+				console.warn("active routine plan fetch failed", rpErr);
+			} else if (rp) {
+				const owner = ((usersRes.data ?? []) as UserProfileRow[]).find(
+					(u) => u.user_id === rp.user_id,
+				);
+				activeRoutinePlan = {
+					...(rp as Routine),
+					is_readonly: rp.user_id !== userId,
+					owner_username: owner?.username,
+					owner_avatar_seed: owner?.avatar_seed ?? null,
+				};
+			}
+		}
+
 		const ownTemplates = ownTemplatesRes.data ?? [];
 		const ownTemplateIds = new Set(ownTemplates.map((t: any) => t.id as string));
+		const cycleTemplateIds: string[] = [];
+		if (activeRoutinePlan?.schedule_mode === "cycle") {
+			for (const tid of activeRoutinePlan.cycle_slots ?? []) {
+				if (typeof tid === "string" && tid) cycleTemplateIds.push(tid);
+			}
+		}
 		const foreignScheduleIds = [
 			...new Set(
-				schedule
-					.map((s) => s.template_id)
-					.filter((id): id is string => !!id && !ownTemplateIds.has(id)),
+				[
+					...schedule.map((s) => s.template_id),
+					...cycleTemplateIds,
+				].filter((id): id is string => !!id && !ownTemplateIds.has(id)),
 			),
 		];
 
@@ -1517,7 +1792,9 @@ export const db = {
 			const [ftRes] = await Promise.all([
 				supabase
 					.from("templates")
-					.select("id, routine_id, name, color, icon, display_order, exercise_ids")
+					.select(
+						"id, routine_id, name, color, icon, display_order, exercise_ids, exercise_overrides, superset_with_next",
+					)
 					.in("id", foreignScheduleIds),
 			]);
 			if (ftRes.error) throw ftRes.error;
@@ -1534,7 +1811,7 @@ export const db = {
 				const { data: fexs, error: fexErr } = await supabase
 					.from("exercises")
 					.select(
-						"id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, created_at",
+						"id, user_id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment, current_weight, catalog_exercise_id, catalog_muscle_ids, notes, created_at",
 					)
 					.in("id", foreignExIds);
 				if (fexErr) throw fexErr;
@@ -1548,6 +1825,8 @@ export const db = {
 			ownExercises: (libraryRes.data ?? []) as Exercise[],
 			foreignTemplates: foreignTemplatesData,
 			foreignExercises: foreignExerciseRows,
+			ownerId: userId ?? null,
+			foreignOwnerId: activeRoutinePlan?.user_id ?? null,
 		});
 
 		// Routines list (owned + bookmarked) from already-fetched rows + one optional batch
@@ -1564,9 +1843,11 @@ export const db = {
 				name: r.name,
 				created_at: r.created_at,
 				display_order: r.display_order ?? 0,
-				template_count: Array.isArray(r.routine_schedules)
-					? r.routine_schedules.filter((s: any) => s.template_id != null).length
-					: 0,
+				template_count: Array.isArray(r.templates) ? r.templates.length : 0,
+				schedule_mode: r.schedule_mode ?? "weekly",
+				cycle_length: r.cycle_length ?? 7,
+				cycle_anchor_date: r.cycle_anchor_date,
+				cycle_slots: Array.isArray(r.cycle_slots) ? r.cycle_slots : [],
 				source: "owned" as const,
 				is_readonly: false,
 				owner_username: userMap.get(r.user_id)?.username,
@@ -1580,7 +1861,7 @@ export const db = {
 				const { data: remoteRoutines, error: rrErr } = await supabase
 					.from("routines")
 					.select(
-						"id, user_id, name, created_at, display_order, routine_schedules ( template_id )",
+						"id, user_id, name, created_at, display_order, schedule_mode, cycle_length, cycle_anchor_date, cycle_slots, routine_schedules ( template_id ), templates ( id )",
 					)
 					.in("id", ids);
 				if (rrErr) throw rrErr;
@@ -1597,10 +1878,11 @@ export const db = {
 						name: r.name,
 						created_at: r.created_at,
 						display_order: bm.display_order ?? 0,
-						template_count: Array.isArray(r.routine_schedules)
-							? r.routine_schedules.filter((s: any) => s.template_id != null)
-									.length
-							: 0,
+						template_count: Array.isArray(r.templates) ? r.templates.length : 0,
+						schedule_mode: r.schedule_mode ?? "weekly",
+						cycle_length: r.cycle_length ?? 7,
+						cycle_anchor_date: r.cycle_anchor_date,
+						cycle_slots: Array.isArray(r.cycle_slots) ? r.cycle_slots : [],
 						source: "bookmarked",
 						is_readonly: true,
 						owner_username: owner?.username ?? "unknown",
@@ -1646,6 +1928,11 @@ export const db = {
 				? ((recentRes.data as WorkoutHistory[]) ?? [])
 				: [];
 
+		const preferences: Required<AppPreferences> = {
+			...DEFAULT_PREFERENCES,
+			...((profileRes.data?.preferences as AppPreferences | null) ?? {}),
+		};
+
 		return {
 			...core,
 			todayLog: (todayRes.data as WorkoutHistory) ?? null,
@@ -1653,6 +1940,8 @@ export const db = {
 			trackedStats,
 			statLogSnapshots,
 			activeRoutineId,
+			activeRoutinePlan,
+			preferences,
 			routineList,
 		};
 	},
@@ -1693,7 +1982,7 @@ export const db = {
 	): Promise<Record<string, Record<string, number>>> {
 		const since = new Date();
 		since.setDate(since.getDate() - days);
-		const sinceStr = since.toISOString().slice(0, 10);
+		const sinceStr = localDateString(since);
 
 		const { data, error } = await supabase
 			.from("stat_logs")
@@ -1721,7 +2010,7 @@ export const db = {
 	async getStatLogSnapshots(days = 90): Promise<StatLogSnapshotRow[]> {
 		const since = new Date();
 		since.setDate(since.getDate() - days);
-		const sinceStr = since.toISOString().slice(0, 10);
+		const sinceStr = localDateString(since);
 
 		const { data, error } = await supabase
 			.from("stat_logs")
@@ -1822,6 +2111,15 @@ export const db = {
 		});
 
 		if (error) {
+			const code = String((error as { code?: string }).code ?? "");
+			const message = String(error.message ?? "").toLowerCase();
+			const isLegacySchema =
+				["PGRST202", "PGRST204", "42883", "42703"].includes(code) ||
+				/target_prefers_lower|target_value|has_target|column .*does not exist|function .*save_tracked_stats/.test(
+					message,
+				);
+			if (!isLegacySchema) throw error;
+
 			const legacyPayload = payload.map((row) => {
 				const legacy: Record<string, unknown> = {
 					name: row.name,
@@ -2021,6 +2319,9 @@ export const db = {
 			rest_seconds?: number;
 			increment?: number;
 			current_weight?: number | null;
+			catalog_exercise_id?: number | null;
+			catalog_muscle_ids?: number[];
+			notes?: string | null;
 		}>,
 	): Promise<Exercise[]> {
 		const validationError = validateDraftExercises(
@@ -2046,6 +2347,24 @@ export const db = {
 			} else {
 				row.target_minutes = safe.target_minutes ?? 0;
 				row.target_seconds = safe.target_seconds ?? 0;
+			}
+			if (
+				typeof d.catalog_exercise_id === "number" &&
+				Number.isInteger(d.catalog_exercise_id)
+			) {
+				row.catalog_exercise_id = d.catalog_exercise_id;
+			}
+			if (Array.isArray(d.catalog_muscle_ids)) {
+				row.catalog_muscle_ids = [
+					...new Set(
+						d.catalog_muscle_ids.filter(
+							(id) => typeof id === "number" && Number.isInteger(id),
+						),
+					),
+				];
+			}
+			if (typeof d.notes === "string") {
+				row.notes = d.notes.trim().slice(0, 2000) || null;
 			}
 			return row;
 		});
@@ -2147,6 +2466,7 @@ export const db = {
 				rest_seconds: ex.rest_seconds ?? 0,
 				increment: ex.increment,
 				current_weight: ex.current_weight,
+				use_override: !!ex.override,
 			})),
 		});
 		if (error) throw error;
@@ -2260,7 +2580,7 @@ export const db = {
 		const { data, error } = await supabase
 			.from("workout_history")
 			.select("*")
-			.gte("workout_date", since.toISOString().slice(0, 10))
+			.gte("workout_date", localDateString(since))
 			.order("workout_date", { ascending: false });
 
 		if (error) throw error;
@@ -2284,6 +2604,106 @@ export const db = {
 		return getExerciseAllTimeBest(exerciseId);
 	},
 
+	/** Newest-first page of workout history, for the full archive view. */
+	async getHistoryPage(beforeDate?: string | null, limit = 40): Promise<WorkoutHistory[]> {
+		const safeLimit = Math.max(1, Math.min(100, Math.round(limit)));
+		let query = supabase
+			.from("workout_history")
+			.select("*")
+			.order("workout_date", { ascending: false })
+			.limit(safeLimit);
+		if (beforeDate) query = query.lt("workout_date", beforeDate);
+		const { data, error } = await query;
+		if (error) throw error;
+		return (data as WorkoutHistory[]) ?? [];
+	},
+
+	/* ==================================================
+		 EXERCISE CATALOG (wger; public read-only)
+		 ================================================== */
+
+	async getCatalogFilters(): Promise<{
+		categories: CatalogCategory[];
+		equipment: CatalogEquipment[];
+		muscles: CatalogMuscle[];
+	}> {
+		const [categoriesRes, equipmentRes, musclesRes] = await Promise.all([
+			supabase.from("wger_categories").select("id, name").order("name"),
+			supabase.from("wger_equipment").select("id, name").order("name"),
+			supabase.from("wger_muscles").select("id, name, name_en, is_front").order("name"),
+		]);
+		if (categoriesRes.error) throw categoriesRes.error;
+		if (equipmentRes.error) throw equipmentRes.error;
+		if (musclesRes.error) throw musclesRes.error;
+		return {
+			categories: (categoriesRes.data ?? []) as CatalogCategory[],
+			equipment: (equipmentRes.data ?? []) as CatalogEquipment[],
+			muscles: (musclesRes.data ?? []) as CatalogMuscle[],
+		};
+	},
+
+	async searchCatalog(
+		filters: CatalogFilters = {},
+	): Promise<{ exercises: CatalogExerciseSummary[]; total: number }> {
+		const limit = Math.max(1, Math.min(60, filters.limit ?? 30));
+		const offset = Math.max(0, filters.offset ?? 0);
+		const equipmentJoin = filters.equipmentId
+			? "wger_exercise_equipment!inner"
+			: "wger_exercise_equipment";
+		const muscleJoin = filters.muscleId
+			? "wger_exercise_muscles!inner"
+			: "wger_exercise_muscles";
+		const select = [
+			"id, name, category_id, license, license_author",
+			"wger_categories ( name )",
+			`${equipmentJoin} ( equipment_id, wger_equipment ( id, name ) )`,
+			`${muscleJoin} ( muscle_id, is_primary, wger_muscles ( id, name, name_en, is_front ) )`,
+		].join(", ");
+
+		let query = supabase
+			.from("wger_exercises")
+			.select(select, { count: "exact" })
+			.order("name")
+			.range(offset, offset + limit - 1);
+
+		const search = (filters.query ?? "").trim().replace(/[%_\\]/g, " ").slice(0, 80);
+		if (search) query = query.ilike("name", `%${search}%`);
+		if (filters.categoryId) query = query.eq("category_id", filters.categoryId);
+		if (filters.equipmentId) {
+			query = query.eq("wger_exercise_equipment.equipment_id", filters.equipmentId);
+		}
+		if (filters.muscleId) {
+			query = query.eq("wger_exercise_muscles.muscle_id", filters.muscleId);
+		}
+
+		const { data, error, count } = await query;
+		if (error) throw error;
+
+		const exercises = ((data ?? []) as any[]).map((row) =>
+			catalogSummaryFromRow(row),
+		);
+		return { exercises, total: count ?? exercises.length };
+	},
+
+	async getCatalogExercise(id: number): Promise<CatalogExerciseDetail | null> {
+		const { data, error } = await supabase
+			.from("wger_exercises")
+			.select(
+				"id, uuid, name, description, category_id, license, license_author, license_url, wger_categories ( name ), wger_exercise_equipment ( equipment_id, wger_equipment ( id, name ) ), wger_exercise_muscles ( muscle_id, is_primary, wger_muscles ( id, name, name_en, is_front ) )",
+			)
+			.eq("id", id)
+			.maybeSingle();
+		if (error) throw error;
+		if (!data) return null;
+		const summary = catalogSummaryFromRow(data as any);
+		return {
+			...summary,
+			uuid: ((data as any).uuid as string | null) ?? null,
+			description: ((data as any).description as string | null) ?? "",
+			license_url: ((data as any).license_url as string | null) ?? null,
+		};
+	},
+
 	/* ==================================================
 		 ROUTINES (multiple per user, one active)
 		 Owned routines are editable; bookmarked ones are read-only live links.
@@ -2294,7 +2714,9 @@ export const db = {
 		const uid = await requireUserId();
 		const { data, error } = await supabase
 			.from("routines")
-			.select("id, user_id, name, created_at, display_order, templates ( id )")
+			.select(
+				"id, user_id, name, created_at, display_order, schedule_mode, cycle_length, cycle_anchor_date, cycle_slots, templates ( id )",
+			)
 			.eq("user_id", uid)
 			.order("display_order")
 			.order("created_at");
@@ -2306,6 +2728,10 @@ export const db = {
 				created_at: r.created_at,
 				display_order: r.display_order ?? 0,
 				template_count: Array.isArray(r.templates) ? r.templates.length : 0,
+				schedule_mode: r.schedule_mode ?? "weekly",
+				cycle_length: r.cycle_length ?? 7,
+				cycle_anchor_date: r.cycle_anchor_date,
+				cycle_slots: Array.isArray(r.cycle_slots) ? r.cycle_slots : [],
 			}));
 	},
 
@@ -2346,7 +2772,7 @@ export const db = {
 			const ids = bookmarks.map((b) => b.routine_id);
 			const { data: remoteRoutines, error: rrErr } = await supabase
 				.from("routines")
-				.select("id, user_id, name, created_at, display_order, templates ( id, exercise_ids )")
+				.select("id, user_id, name, created_at, display_order, schedule_mode, cycle_length, cycle_anchor_date, cycle_slots, templates ( id, exercise_ids )")
 				.in("id", ids);
 			if (rrErr) throw rrErr;
 			const rMap = new Map(((remoteRoutines ?? []) as any[]).map((r) => [r.id, r]));
@@ -2357,8 +2783,7 @@ export const db = {
 				if (!r) continue;
 				const owner = userMap.get(r.user_id);
 				const tpls = Array.isArray(r.templates) ? r.templates : [];
-				const tplCount = tpls.filter((t: any) => Array.isArray(t.exercise_ids) && t.exercise_ids.length > 0).length;
-				if (tplCount === 0) continue;
+				const tplCount = tpls.length;
 				items.push({
 					id: r.id as string,
 					user_id: r.user_id as string,
@@ -2366,6 +2791,10 @@ export const db = {
 					created_at: r.created_at as string,
 					display_order: bm.display_order ?? 0,
 					template_count: tplCount,
+					schedule_mode: r.schedule_mode ?? "weekly",
+					cycle_length: r.cycle_length ?? 7,
+					cycle_anchor_date: r.cycle_anchor_date,
+					cycle_slots: Array.isArray(r.cycle_slots) ? r.cycle_slots : [],
 					source: "bookmarked",
 					is_readonly: true,
 					owner_username: owner?.username ?? "unknown",
@@ -2378,51 +2807,6 @@ export const db = {
 
 		// Owned first (display_order), then bookmarks (display_order)
 		return [...ownedItems, ...bookmarkedItems];
-	},
-
-	/** If the user has schedule entries but no routines yet, auto-create one. */
-	async ensureDefaultRoutine(): Promise<Routine | null> {
-		const uid = await requireUserId();
-		const { data: existing, error: exErr } = await supabase
-			.from("routines")
-			.select("id")
-			.eq("user_id", uid)
-			.limit(1);
-		if (exErr) throw exErr;
-		if (existing && existing.length > 0) return null;
-
-		const { data: schedule, error: schErr } = await supabase
-			.from("schedule")
-			.select("day_of_week, template_id")
-			.eq("user_id", uid)
-			.not("template_id", "is", null)
-			.order("day_of_week");
-		if (schErr) throw schErr;
-		if (!schedule || schedule.length === 0) return null;
-
-		const { data: routine, error: insErr } = await supabase
-			.from("routines")
-			.insert({ user_id: uid, name: "MY ROUTINE", display_order: 0 })
-			.select("id, user_id, name, created_at, display_order")
-			.single();
-		if (insErr) throw insErr;
-
-		const allDays = [];
-		for (let dow = 0; dow < 7; dow++) {
-			const hit = schedule.find(
-				(s: { day_of_week: number; template_id: string }) => s.day_of_week === dow,
-			);
-			allDays.push({
-				routine_id: routine.id,
-				day_of_week: dow,
-				template_id: hit?.template_id ?? null,
-			});
-		}
-		const { error: rsErr } = await supabase.from("routine_schedules").insert(allDays);
-		if (rsErr) throw rsErr;
-
-		await this.setActiveRoutine(routine.id);
-		return { ...routine, template_count: schedule.length } as Routine;
 	},
 
 	/** Create a new routine with the given name (appended at end of list). */
@@ -2444,13 +2828,17 @@ export const db = {
 			.single();
 		if (error) throw error;
 
-		// Seed empty 7-day schedule
+		// Seed empty 7-day schedule; roll the routine back if the seed cannot be written.
 		const days = Array.from({ length: 7 }, (_, dow) => ({
 			routine_id: data.id,
 			day_of_week: dow,
 			template_id: null,
 		}));
-		await supabase.from("routine_schedules").insert(days);
+		const { error: seedErr } = await supabase.from("routine_schedules").insert(days);
+		if (seedErr) {
+			await supabase.from("routines").delete().eq("id", data.id).eq("user_id", uid);
+			throw seedErr;
+		}
 
 		return { ...data, template_count: 0 } as Routine;
 	},
@@ -2530,21 +2918,134 @@ export const db = {
 				template_id: byDay.has(dow) ? byDay.get(dow)! : null,
 			});
 		}
-		const { error: delErr } = await supabase
-			.from("routine_schedules")
-			.delete()
-			.eq("routine_id", routineId);
-		if (delErr) throw delErr;
-		const { error: insErr } = await supabase
-			.from("routine_schedules")
-			.insert(allDays);
-		if (insErr) throw insErr;
+		const { error } = await supabase.rpc("save_routine_schedule", {
+			p_routine_id: routineId,
+			p_schedule: allDays.map(({ day_of_week, template_id }) => ({
+				day_of_week,
+				template_id,
+			})),
+		});
+		if (error) throw error;
+	},
 
-		// Keep personal schedule in sync if this is the active routine
-		const activeId = await this.getActiveRoutineId();
-		if (activeId === routineId) {
-			await this.setActiveRoutine(routineId);
+	/**
+	 * Switch an owned routine to a repeating cycle (not tied to weekdays).
+	 * `slots[i]` is the template for day i; null = rest.
+	 */
+	async saveRoutineCycle(
+		routineId: string,
+		length: number,
+		anchorDate: string,
+		slots: Array<string | null>,
+	): Promise<void> {
+		const safeLength = Math.max(1, Math.min(28, Math.round(length) || 7));
+		const normalized = Array.from({ length: safeLength }, (_, i) => {
+			const value = slots[i];
+			return typeof value === "string" && value ? value : null;
+		});
+		const { error } = await supabase.rpc("save_routine_cycle", {
+			p_routine_id: routineId,
+			p_length: safeLength,
+			p_anchor_date: anchorDate,
+			p_slots: normalized,
+		});
+		if (error) throw error;
+	},
+
+	/** Return an owned routine to the normal weekly weekday schedule. */
+	async resetRoutineToWeekly(routineId: string): Promise<void> {
+		const { error } = await supabase.rpc("reset_routine_to_weekly", {
+			p_routine_id: routineId,
+		});
+		if (error) throw error;
+	},
+
+	/** Persist per-day overrides + superset links for an owned template. */
+	async saveTemplateOverrides(
+		templateId: string,
+		overrides: Record<string, ExerciseOverride>,
+		supersetWithNext: string[] = [],
+	): Promise<void> {
+		const clean: Record<string, ExerciseOverride> = {};
+		for (const [exerciseId, raw] of Object.entries(overrides ?? {})) {
+			if (!isPersistedExerciseId(exerciseId) || !raw) continue;
+			const entry: ExerciseOverride = {};
+			const numeric = [
+				"target_sets",
+				"target_reps",
+				"target_minutes",
+				"target_seconds",
+				"rest_minutes",
+				"rest_seconds",
+				"increment",
+			] as const;
+			for (const key of numeric) {
+				const value = raw[key];
+				if (typeof value === "number" && Number.isFinite(value)) {
+					entry[key] = Math.max(0, value);
+				}
+			}
+			if (raw.current_weight === null) {
+				entry.current_weight = null;
+			} else if (
+				typeof raw.current_weight === "number" &&
+				Number.isFinite(raw.current_weight)
+			) {
+				entry.current_weight = Math.max(0, raw.current_weight);
+			}
+			if (Object.keys(entry).length > 0) clean[exerciseId] = entry;
 		}
+		const supersets = [...new Set(supersetWithNext.filter(isPersistedExerciseId))];
+		const { error } = await supabase
+			.from("templates")
+			.update({
+				exercise_overrides: clean,
+				superset_with_next: supersets,
+			})
+			.eq("id", templateId);
+		if (error) throw error;
+	},
+
+	/** Advance the stored current_weight of day-specific overrides after a workout. */
+	async advanceTemplateOverrideWeights(
+		templateId: string,
+		updates: Array<{ exercise_id: string; current_weight: number | null }>,
+	): Promise<void> {
+		if (updates.length === 0) return;
+		const { data, error } = await supabase
+			.from("templates")
+			.select("exercise_overrides")
+			.eq("id", templateId)
+			.maybeSingle();
+		if (error) throw error;
+		const current =
+			data?.exercise_overrides && typeof data.exercise_overrides === "object"
+				? ({ ...(data.exercise_overrides as Record<string, ExerciseOverride>) })
+				: {};
+		let changed = false;
+		for (const update of updates) {
+			const existing = current[update.exercise_id];
+			if (!existing) continue;
+			current[update.exercise_id] = {
+				...existing,
+				current_weight: update.current_weight,
+			};
+			changed = true;
+		}
+		if (!changed) return;
+		const { error: saveErr } = await supabase
+			.from("templates")
+			.update({ exercise_overrides: current })
+			.eq("id", templateId);
+		if (saveErr) throw saveErr;
+	},
+
+	/** Save the user's app preferences (theme, haptics, reminders, ...). */
+	async savePreferences(preferences: AppPreferences): Promise<void> {
+		const { error } = await supabase.rpc("save_user_preferences", {
+			p_preferences: preferences ?? {},
+		});
+		if (error) throw error;
 	},
 
 	/** Persist reordered display_orders for owned routines only (safe UPDATEs, no upsert). */
@@ -2592,7 +3093,7 @@ export const db = {
 		const [routinesRes, usersRes] = await Promise.all([
 			supabase
 				.from("routines")
-				.select("id, user_id, name, created_at, display_order, templates ( id, exercise_ids ), routine_schedules ( day_of_week, template_id )")
+				.select("id, user_id, name, created_at, display_order, schedule_mode, cycle_length, cycle_anchor_date, cycle_slots, templates ( id, exercise_ids ), routine_schedules ( day_of_week, template_id )")
 				.order("created_at"),
 			supabase.from("usernames").select("username, user_id, avatar_seed"),
 		]);
@@ -2612,13 +3113,17 @@ export const db = {
 				const owner = userMap.get(row.user_id);
 				const sched = Array.isArray(row.routine_schedules) ? row.routine_schedules : [];
 				const tpls = Array.isArray(row.templates) ? row.templates : [];
-				const tplCount = tpls.filter((t: any) => Array.isArray(t.exercise_ids) && t.exercise_ids.length > 0).length;
+				const tplCount = tpls.length;
 				return {
 					id: row.id,
 					user_id: row.user_id,
 					name: row.name,
 					created_at: row.created_at,
 					display_order: row.display_order ?? 0,
+					schedule_mode: row.schedule_mode ?? "weekly",
+					cycle_length: row.cycle_length ?? 7,
+					cycle_anchor_date: row.cycle_anchor_date,
+					cycle_slots: Array.isArray(row.cycle_slots) ? row.cycle_slots : [],
 					owner_username: owner?.username ?? "unknown",
 					owner_avatar_seed: owner?.avatar_seed ?? null,
 					template_count: tplCount,
@@ -2701,176 +3206,17 @@ export const db = {
 	 * Deep copy a routine into the current user's account.
 	 * Used for community copy and for duplicating an owned routine.
 	 *
-	 * Copies: routine → new routine, templates → new templates, exercises → new exercises.
-	 * Own duplicates keep the same name; foreign copies are "NAME - USERNAME".
+	 * Runs as one server-side transaction so a failure cannot leave orphan routines,
+	 * templates or exercises behind. Copies every template in the routine (not only
+	 * those currently assigned to a day), cloning exercises once each.
 	 */
 	async copyRoutine(sourceRoutineId: string): Promise<Routine & { source_name: string; source_username: string }> {
-		const uid = await requireUserId();
-
-		const [{ data: srcRoutine, error: routineErr }, { data: srcSched, error: schedErr }] =
-			await Promise.all([
-				supabase
-					.from("routines")
-					.select("id, user_id, name")
-					.eq("id", sourceRoutineId)
-					.single(),
-				supabase
-					.from("routine_schedules")
-					.select("day_of_week, template_id")
-					.eq("routine_id", sourceRoutineId),
-			]);
-		if (routineErr) throw routineErr;
-		if (schedErr) throw schedErr;
-		const src = srcRoutine as { id: string; user_id: string; name: string };
-
-		const { data: ownerRow } = await supabase
-			.from("usernames")
-			.select("username")
-			.eq("user_id", src.user_id)
-			.maybeSingle();
-		const srcUsername = (ownerRow?.username as string) ?? "unknown";
-
-		const tIds = [
-			...new Set(
-				((srcSched ?? []) as Array<{ template_id: string | null }>)
-					.filter((s) => s.template_id)
-					.map((s) => s.template_id as string),
-			),
-		];
-
-		const tplIdMap = new Map<string, string>();
-		const exIdMap = new Map<string, string>();
-		let pendingTemplateInserts: Array<Record<string, unknown>> = [];
-
-		if (tIds.length > 0) {
-			// Fetch source templates with their exercise_ids arrays
-			const { data: tpls, error: tErr } = await supabase
-				.from("templates")
-				.select("id, name, color, icon, exercise_ids")
-				.in("id", tIds);
-			if (tErr) throw tErr;
-
-			// Collect all exercise IDs referenced across templates
-			const allExIds = [
-				...new Set(
-					(tpls ?? []).flatMap((t: any) =>
-						Array.isArray(t.exercise_ids) ? t.exercise_ids : [],
-					),
-				),
-			];
-			let exRows: any[] = [];
-			if (allExIds.length > 0) {
-				const { data: exs, error: exErr } = await supabase
-					.from("exercises")
-					.select(
-						"id, name, exercise_type, target_sets, target_reps, target_minutes, target_seconds, rest_minutes, rest_seconds, increment",
-					)
-					.in("id", allExIds);
-				if (exErr) throw exErr;
-				exRows = exs ?? [];
-			}
-			// Clone exercises once each (client UUIDs so mapping is reliable)
-			if (exRows.length > 0) {
-				const insertEx = exRows.map((ex) => {
-					const newId = crypto.randomUUID();
-					exIdMap.set(ex.id, newId);
-					return {
-						id: newId,
-						user_id: uid,
-						name: ex.name,
-						exercise_type: ex.exercise_type,
-						target_sets: ex.target_sets,
-						target_reps: ex.target_reps,
-						target_minutes: ex.target_minutes,
-						target_seconds: ex.target_seconds,
-						rest_minutes: ex.rest_minutes,
-						rest_seconds: ex.rest_seconds,
-						increment: ex.increment,
-						current_weight: null,
-					};
-				});
-				const { error: newExErr } = await supabase.from("exercises").insert(insertEx);
-				if (newExErr) throw newExErr;
-			}
-
-			// Clone templates (routine_id set after routine creation below)
-			const tplList = (tpls ?? []) as Array<{
-				id: string;
-				name: string;
-				color: number;
-				icon?: number;
-				exercise_ids?: string[];
-			}>;
-			if (tplList.length > 0) {
-				const insertTpls = tplList.map((t) => {
-					const newId = crypto.randomUUID();
-					tplIdMap.set(t.id, newId);
-					const mappedExIds = (Array.isArray(t.exercise_ids) ? t.exercise_ids : [])
-						.map((eid) => exIdMap.get(eid))
-						.filter((eid): eid is string => !!eid);
-					return {
-						id: newId,
-						routine_id: '', // set after routine is created
-						name: t.name,
-						color: t.color ?? 0,
-						icon: clampItemIcon(t.icon ?? DEFAULT_TEMPLATE_ICON),
-						display_order: 0,
-						exercise_ids: mappedExIds,
-					};
-				});
-				pendingTemplateInserts = insertTpls;
-			}
-		}
-
-		const { data: maxRow } = await supabase
-			.from("routines")
-			.select("display_order")
-			.eq("user_id", uid)
-			.order("display_order", { ascending: false })
-			.limit(1)
-			.maybeSingle();
-		const nextOrder = (maxRow?.display_order ?? -1) + 1;
-
-		// Own-list duplicate → same name; copy from someone else → "NAME - USER"
-		const isSelfDuplicate = src.user_id === uid;
-		const rawName = isSelfDuplicate ? src.name : `${src.name} - ${srcUsername}`;
-		const cleanName = sanitizeTemplateName(rawName) || "ROUTINE";
-		const { data: newRoutine, error: newRoutineErr } = await supabase
-			.from("routines")
-			.insert({ user_id: uid, name: cleanName, display_order: nextOrder })
-			.select("id, user_id, name, created_at, display_order")
-			.single();
-		if (newRoutineErr) throw newRoutineErr;
-
-		// Insert cloned templates with the new routine_id
-		if (pendingTemplateInserts.length > 0) {
-			for (const tpl of pendingTemplateInserts) tpl.routine_id = newRoutine.id;
-			const { error: newTplErr } = await supabase.from("templates").insert(pendingTemplateInserts);
-			if (newTplErr) throw newTplErr;
-		}
-
-		const allDays: Array<{ routine_id: string; day_of_week: number; template_id: string | null }> = [];
-		for (let dow = 0; dow < 7; dow++) {
-			const srcDay = ((srcSched ?? []) as Array<{ day_of_week: number; template_id: string | null }>).find(
-				(s) => s.day_of_week === dow,
-			);
-			const oldTid = srcDay?.template_id ?? null;
-			allDays.push({
-				routine_id: newRoutine.id,
-				day_of_week: dow,
-				template_id: oldTid && tplIdMap.has(oldTid) ? tplIdMap.get(oldTid)! : null,
-			});
-		}
-		const { error: insSchedErr } = await supabase.from("routine_schedules").insert(allDays);
-		if (insSchedErr) throw insSchedErr;
-
-		const templateCount = allDays.filter((d) => d.template_id != null).length;
-		return {
-			...newRoutine,
-			template_count: templateCount,
-			source_name: src.name,
-			source_username: srcUsername,
-		} as Routine & { source_name: string; source_username: string };
+		const { data, error } = await supabase.rpc("copy_routine", {
+			p_source_routine_id: sourceRoutineId,
+		});
+		if (error) throw error;
+		if (!data) throw new Error("Copy failed");
+		return data as Routine & { source_name: string; source_username: string };
 	},
 
 	/* ==================================================
@@ -2886,7 +3232,9 @@ export const db = {
 		const uid = await requireUserId();
 		const { data: routine, error: rErr } = await supabase
 			.from("routines")
-			.select("id, user_id, name, created_at")
+			.select(
+				"id, user_id, name, created_at, schedule_mode, cycle_length, cycle_anchor_date, cycle_slots",
+			)
 			.eq("id", routineId)
 			.single();
 		if (rErr) throw rErr;
@@ -2903,11 +3251,8 @@ export const db = {
 		for (let d = 0; d < 7; d++) byDay.set(d, null);
 		for (const s of plan) byDay.set(s.day_of_week, s.template_id);
 
-		const templateIds = [
-			...new Set([...byDay.values()].filter((id): id is string => !!id)),
-		];
-
 		type ExRow = {
+			id: string;
 			name: string;
 			exercise_type: "reps" | "time";
 			target_sets: number;
@@ -2919,9 +3264,15 @@ export const db = {
 			increment: number;
 			current_weight: number | null;
 			display_order: number;
+			catalog_exercise_id?: number | null;
+			catalog_muscle_ids?: number[];
+			notes?: string | null;
+			override?: ExerciseOverride;
+			superset_with_next?: boolean;
 		};
 		type TplPack = {
 			id: string;
+			key: string;
 			name: string;
 			color: number;
 			icon: number;
@@ -2929,50 +3280,102 @@ export const db = {
 		};
 
 		const packs: TplPack[] = [];
-		if (templateIds.length > 0) {
-			const { data: tpls, error: tErr } = await supabase
+		const assignedIds = [
+			...new Set([...byDay.values()].filter((id): id is string => !!id)),
+		];
+		const cycleSlotsRaw = Array.isArray(routine.cycle_slots) ? routine.cycle_slots : [];
+		const cycleAssignedIds = cycleSlotsRaw.filter(
+			(id): id is string => typeof id === "string" && !!id,
+		);
+		const templateSelect =
+			"id, name, color, icon, exercise_ids, display_order, exercise_overrides, superset_with_next";
+		const { data: routineTemplates, error: tErr } = await supabase
+			.from("templates")
+			.select(templateSelect)
+			.eq("routine_id", routineId)
+			.order("display_order");
+		if (tErr) throw tErr;
+
+		let templateRows = (routineTemplates ?? []) as Array<Record<string, any>>;
+		const knownTemplateIds = new Set(templateRows.map((t) => t.id as string));
+		const missingAssigned = [...new Set([...assignedIds, ...cycleAssignedIds])].filter(
+			(id) => !knownTemplateIds.has(id),
+		);
+		if (missingAssigned.length > 0) {
+			const { data: extraTemplates, error: extraErr } = await supabase
 				.from("templates")
-				.select("id, name, color, icon, exercise_ids")
-				.in("id", templateIds);
-			if (tErr) throw tErr;
-			for (const t of tpls ?? []) {
-				const exIds = Array.isArray(t.exercise_ids) ? t.exercise_ids : [];
-				const exs = await fetchExercisesForIds(exIds);
-				packs.push({
-					id: t.id,
-					name: t.name,
-					color: typeof t.color === "number" ? t.color : 0,
-					icon: typeof (t as { icon?: number }).icon === "number"
-						? clampItemIcon((t as { icon: number }).icon)
-						: DEFAULT_TEMPLATE_ICON,
-					exercises: exs.map((e, i) => ({
-						name: e.name,
-						exercise_type: e.exercise_type === "time" ? "time" : "reps",
-						target_sets: e.target_sets ?? 0,
-						target_reps: e.target_reps ?? null,
-						target_minutes: e.target_minutes ?? null,
-						target_seconds: e.target_seconds ?? null,
-						rest_minutes: e.rest_minutes ?? 0,
-						rest_seconds: e.rest_seconds ?? 0,
-						increment: e.increment ?? 0,
-						current_weight: e.current_weight ?? null,
-						display_order: e.display_order ?? i,
-					})),
-				});
-			}
+				.select(templateSelect)
+				.in("id", missingAssigned);
+			if (extraErr) throw extraErr;
+			templateRows = [...templateRows, ...((extraTemplates ?? []) as Array<Record<string, any>>)];
+		}
+
+		for (const t of templateRows) {
+			const exIds = Array.isArray(t.exercise_ids) ? t.exercise_ids : [];
+			const exs = await fetchExercisesForIds(exIds);
+			const overrides =
+				t.exercise_overrides && typeof t.exercise_overrides === "object"
+					? (t.exercise_overrides as Record<string, ExerciseOverride>)
+					: {};
+			const supersetIds = new Set(
+				Array.isArray(t.superset_with_next)
+					? (t.superset_with_next as string[])
+					: [],
+			);
+			packs.push({
+				id: t.id,
+				key: `t${packs.length}`,
+				name: t.name,
+				color: typeof t.color === "number" ? t.color : 0,
+				icon: typeof t.icon === "number" ? clampItemIcon(t.icon) : DEFAULT_TEMPLATE_ICON,
+				exercises: exs.map((e, i) => ({
+					id: e.id,
+					name: e.name,
+					exercise_type: e.exercise_type === "time" ? "time" : "reps",
+					target_sets: e.target_sets ?? 0,
+					target_reps: e.target_reps ?? null,
+					target_minutes: e.target_minutes ?? null,
+					target_seconds: e.target_seconds ?? null,
+					rest_minutes: e.rest_minutes ?? 0,
+					rest_seconds: e.rest_seconds ?? 0,
+					increment: e.increment ?? 0,
+					current_weight: e.current_weight ?? null,
+					display_order: e.display_order ?? i,
+					catalog_exercise_id: e.catalog_exercise_id ?? null,
+					catalog_muscle_ids: e.catalog_muscle_ids ?? [],
+					notes: e.notes ?? null,
+					override: overrides[e.id],
+					superset_with_next: supersetIds.has(e.id),
+				})),
+			});
 		}
 
 		const tplNameById = new Map(packs.map((p) => [p.id, p.name]));
+		const tplKeyById = new Map(packs.map((p) => [p.id, p.key]));
 		const week: Record<string, string | null> = {};
+		const weekKeys: Record<string, string | null> = {};
 		let trainingDays = 0;
 		for (let d = 0; d < 7; d++) {
 			const tid = byDay.get(d) ?? null;
 			const tname = tid ? tplNameById.get(tid) ?? null : null;
 			week[ROUTINE_WEEK_KEYS[d]] = tname;
+			weekKeys[ROUTINE_WEEK_KEYS[d]] = tid ? tplKeyById.get(tid) ?? null : null;
 			if (tname) trainingDays++;
 		}
 
 		const exerciseCount = packs.reduce((n, p) => n + p.exercises.length, 0);
+		const scheduleMode = routine.schedule_mode === "cycle" ? "cycle" : "weekly";
+		const cycleLength =
+			scheduleMode === "cycle"
+				? Math.max(1, Math.min(28, Number(routine.cycle_length) || cycleSlotsRaw.length || 7))
+				: 7;
+		const cycleSlots =
+			scheduleMode === "cycle"
+				? Array.from({ length: cycleLength }, (_, i) => {
+						const tid = cycleSlotsRaw[i];
+						return typeof tid === "string" && tid ? tplKeyById.get(tid) ?? null : null;
+					})
+				: null;
 		const doc: LiftRoutineFileV2 = {
 			format: LIFT_ROUTINE_FORMAT,
 			schemaVersion: LIFT_ROUTINE_SCHEMA_VERSION,
@@ -2997,20 +3400,35 @@ export const db = {
 					restDays: 7 - trainingDays,
 				},
 			},
+			schedule: {
+				mode: scheduleMode,
+				cycleLength,
+				anchorDate: routine.cycle_anchor_date ?? null,
+				slots: cycleSlots,
+			},
 			week,
+			weekKeys,
 			templates: packs.map((pack) => {
 				const colorIndex = clampTemplateColor(pack.color ?? 0);
 				const ordered = pack.exercises
 					.slice()
 					.sort((a, b) => a.display_order - b.display_order);
 				return {
+					key: pack.key,
 					name: pack.name,
 					color: {
 						index: colorIndex,
 						hex: getTemplateColor(colorIndex).toUpperCase(),
 					},
 					icon: clampItemIcon(pack.icon ?? DEFAULT_TEMPLATE_ICON),
-					exercises: ordered.map((ex) => exerciseToJsonExport(ex)),
+					exercises: ordered.map((ex) => {
+						const json = exerciseToJsonExport(ex);
+						if (ex.override && Object.keys(ex.override).length > 0) {
+							json.override = exerciseOverrideToJsonExport(ex.override);
+						}
+						if (ex.superset_with_next) json.supersetWithNext = true;
+						return json;
+					}),
 				};
 			}),
 		};
@@ -3023,7 +3441,7 @@ export const db = {
 				.replace(/[^a-z0-9]+/g, "-")
 				.replace(/^-+|-+$/g, "")
 				.slice(0, 48) || "routine";
-		const date = new Date().toISOString().slice(0, 10);
+		const date = localDateString(new Date());
 		return { json, filename: `lift-tracker-${slug}-${date}.lift.json` };
 	},
 
@@ -3054,7 +3472,7 @@ export const db = {
 };
 
 const LIFT_ROUTINE_FORMAT = "lift-tracker-routine" as const;
-const LIFT_ROUTINE_SCHEMA_VERSION = 2;
+const LIFT_ROUTINE_SCHEMA_VERSION = 3;
 const ROUTINE_WEEK_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 
 type LiftRoutineFileV2 = {
@@ -3078,8 +3496,16 @@ type LiftRoutineFileV2 = {
 			restDays: number;
 		};
 	};
+	schedule?: {
+		mode: "weekly" | "cycle";
+		cycleLength?: number;
+		anchorDate?: string | null;
+		slots?: Array<string | null> | null;
+	};
 	week: Record<string, string | null>;
+	weekKeys?: Record<string, string | null>;
 	templates: Array<{
+		key?: string;
 		name: string;
 		color: { index: number; hex: string };
 		icon: number;
@@ -3098,10 +3524,19 @@ function exerciseToJsonExport(ex: {
 	rest_seconds: number;
 	increment: number;
 	current_weight: number | null;
+	catalog_exercise_id?: number | null;
+	catalog_muscle_ids?: number[];
+	notes?: string | null;
 }): Record<string, unknown> {
 	const restSec =
 		Math.max(0, Math.floor(ex.rest_minutes ?? 0)) * 60 +
 		Math.max(0, Math.floor(ex.rest_seconds ?? 0));
+	const provenance: Record<string, unknown> = {};
+	if (typeof ex.catalog_exercise_id === "number") provenance.catalogId = ex.catalog_exercise_id;
+	if (Array.isArray(ex.catalog_muscle_ids) && ex.catalog_muscle_ids.length > 0) {
+		provenance.muscleIds = ex.catalog_muscle_ids;
+	}
+	if (typeof ex.notes === "string" && ex.notes.trim()) provenance.notes = ex.notes;
 	if (ex.exercise_type === "time") {
 		const durationSec =
 			Math.max(0, Math.floor(ex.target_minutes ?? 0)) * 60 +
@@ -3113,6 +3548,7 @@ function exerciseToJsonExport(ex: {
 			durationSec,
 			progressSec: ex.increment ?? 0,
 			restSec,
+			...provenance,
 		};
 	}
 	return {
@@ -3123,7 +3559,28 @@ function exerciseToJsonExport(ex: {
 		loadKg: ex.current_weight,
 		progressKg: ex.increment ?? 0,
 		restSec,
+		...provenance,
 	};
+}
+
+/** Serialize a per-day override using the same field names as template exercises. */
+function exerciseOverrideToJsonExport(override: ExerciseOverride): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	if (typeof override.target_sets === "number") out.sets = override.target_sets;
+	if (typeof override.target_reps === "number") out.reps = override.target_reps;
+	if (typeof override.target_minutes === "number" || typeof override.target_seconds === "number") {
+		out.durationSec =
+			Math.max(0, Math.floor(override.target_minutes ?? 0)) * 60 +
+			Math.max(0, Math.floor(override.target_seconds ?? 0));
+	}
+	if (override.current_weight !== undefined) out.loadKg = override.current_weight;
+	if (typeof override.increment === "number") out.progressKg = override.increment;
+	if (typeof override.rest_minutes === "number" || typeof override.rest_seconds === "number") {
+		out.restSec =
+			Math.max(0, Math.floor(override.rest_minutes ?? 0)) * 60 +
+			Math.max(0, Math.floor(override.rest_seconds ?? 0));
+	}
+	return out;
 }
 
 function looksLikeRoutineJson(text: string): boolean {
@@ -3137,6 +3594,7 @@ async function createOwnedRoutineFromParsed(
 	parsed: ParsedRoutineExport,
 ): Promise<Routine> {
 	const nameToId = new Map<string, string>();
+	const keyToId = new Map<string, string>();
 	const registerName = (raw: string, id: string) => {
 		const n = raw.trim();
 		if (!n) return;
@@ -3158,12 +3616,16 @@ async function createOwnedRoutineFromParsed(
 		icon: number;
 		display_order: number;
 		exercise_ids: string[];
+		exercise_overrides: Record<string, ExerciseOverride>;
+		superset_with_next: string[];
 	}> = [];
 
 	for (const tpl of parsed.templates) {
 		const newTid = crypto.randomUUID();
 		const safeName = sanitizeTemplateName(tpl.name) || "TEMPLATE";
 		const exIds: string[] = [];
+		const overrides: Record<string, ExerciseOverride> = {};
+		const supersetIds: string[] = [];
 		insertTpls.push({
 			id: newTid,
 			routine_id: '', // set after routine is created
@@ -3172,9 +3634,12 @@ async function createOwnedRoutineFromParsed(
 			icon: clampItemIcon(tpl.icon ?? DEFAULT_TEMPLATE_ICON),
 			display_order: insertTpls.length,
 			exercise_ids: exIds,
+			exercise_overrides: overrides,
+			superset_with_next: supersetIds,
 		});
 		registerName(tpl.name, newTid);
 		registerName(safeName, newTid);
+		if (tpl.key) keyToId.set(tpl.key, newTid);
 
 		tpl.exercises.forEach((ex) => {
 			const draft = coerceImportedExercise(ex);
@@ -3189,6 +3654,9 @@ async function createOwnedRoutineFromParsed(
 				increment: safe.increment ?? 0,
 				rest_minutes: safe.rest_minutes ?? 0,
 				rest_seconds: safe.rest_seconds ?? 0,
+				catalog_exercise_id: ex.catalog_exercise_id ?? null,
+				catalog_muscle_ids: ex.catalog_muscle_ids ?? [],
+				notes: ex.notes ?? null,
 			};
 			if (safe.exercise_type === "reps") {
 				row.target_reps = safe.target_reps ?? DEFAULT_TARGET_REPS;
@@ -3198,78 +3666,135 @@ async function createOwnedRoutineFromParsed(
 				row.target_seconds = safe.target_seconds ?? DEFAULT_TARGET_SECONDS;
 				row.current_weight = null;
 			}
+			if (ex.override) overrides[newEid] = { ...ex.override };
+			if (ex.superset_with_next) supersetIds.push(newEid);
 			insertEx.push(row);
 			exIds.push(newEid);
 		});
 	}
+
+	const importedExerciseIds = insertEx.map((row) => row.id as string);
 
 	if (insertEx.length > 0) {
 		const { error: exErr } = await supabase.from("exercises").insert(insertEx);
 		if (exErr) throw new Error(formatDbError(exErr) || "Failed to import exercises");
 	}
 
-	const { data: maxRow } = await supabase
-		.from("routines")
-		.select("display_order")
-		.eq("user_id", uid)
-		.order("display_order", { ascending: false })
-		.limit(1)
-		.maybeSingle();
-	const nextOrder = (maxRow?.display_order ?? -1) + 1;
-	const safeRoutineName =
-		sanitizeTemplateName(parsed.name || "IMPORTED ROUTINE") || "IMPORTED ROUTINE";
+	let createdRoutineId: string | null = null;
+	try {
+		const { data: maxRow } = await supabase
+			.from("routines")
+			.select("display_order")
+			.eq("user_id", uid)
+			.order("display_order", { ascending: false })
+			.limit(1)
+			.maybeSingle();
+		const nextOrder = (maxRow?.display_order ?? -1) + 1;
+		const safeRoutineName =
+			sanitizeTemplateName(parsed.name || "IMPORTED ROUTINE") || "IMPORTED ROUTINE";
 
-	const { data: newRoutine, error: newRoutineErr } = await supabase
-		.from("routines")
-		.insert({ user_id: uid, name: safeRoutineName, display_order: nextOrder })
-		.select("id, user_id, name, created_at, display_order")
-		.single();
-	if (newRoutineErr) {
-		throw new Error(formatDbError(newRoutineErr) || "Failed to create imported routine");
+		const { data: newRoutine, error: newRoutineErr } = await supabase
+			.from("routines")
+			.insert({
+				user_id: uid,
+				name: safeRoutineName,
+				display_order: nextOrder,
+				schedule_mode: parsed.scheduleMode,
+				...(parsed.scheduleMode === "cycle"
+					? {
+							cycle_length: parsed.cycleLength,
+							cycle_anchor_date: parsed.cycleAnchorDate ?? new Date().toISOString().slice(0, 10),
+						}
+					: {}),
+			})
+			.select("id, user_id, name, created_at, display_order")
+			.single();
+		if (newRoutineErr) {
+			throw new Error(formatDbError(newRoutineErr) || "Failed to create imported routine");
+		}
+		createdRoutineId = newRoutine.id;
+
+		// Insert templates with the new routine_id
+		if (insertTpls.length > 0) {
+			for (const tpl of insertTpls) tpl.routine_id = newRoutine.id;
+			const { error: tplErr } = await supabase.from("templates").insert(insertTpls);
+			if (tplErr) throw new Error(formatDbError(tplErr) || "Failed to import templates");
+		}
+
+		const resolveTpl = (name: string | null, key?: string | null): string | null => {
+			if (key && keyToId.has(key)) return keyToId.get(key) ?? null;
+			if (!name || !name.trim()) return null;
+			const n = name.trim();
+			return (
+				nameToId.get(n) ??
+				nameToId.get(n.toUpperCase()) ??
+				nameToId.get(sanitizeTemplateName(n)) ??
+				null
+			);
+		};
+
+		if (parsed.scheduleMode === "cycle") {
+			const cycleSlots = parsed.cycleSlots.map((slot) => {
+				if (!slot) return null;
+				return resolveTpl(slot, slot);
+			});
+			const { error: cycleErr } = await supabase.rpc("save_routine_cycle", {
+				p_routine_id: newRoutine.id,
+				p_length: parsed.cycleLength,
+				p_anchor_date: parsed.cycleAnchorDate,
+				p_slots: cycleSlots,
+			});
+			if (cycleErr) {
+				throw new Error(formatDbError(cycleErr) || "Failed to import routine cycle");
+			}
+		} else {
+			const allDays: Array<{
+				routine_id: string;
+				day_of_week: number;
+				template_id: string | null;
+			}> = [];
+			for (let dow = 0; dow < 7; dow++) {
+				const src = parsed.schedule.find((s) => s.day_of_week === dow);
+				allDays.push({
+					routine_id: newRoutine.id,
+					day_of_week: dow,
+					template_id: resolveTpl(
+						src?.template_name ?? null,
+						src?.template_key ?? null,
+					),
+				});
+			}
+			const { error: schedErr } = await supabase.from("routine_schedules").insert(allDays);
+			if (schedErr) {
+				throw new Error(formatDbError(schedErr) || "Failed to import week schedule");
+			}
+		}
+
+		const templateCount = insertTpls.length;
+		return {
+			...newRoutine,
+			template_count: templateCount,
+			user_id: uid,
+		} as Routine;
+	} catch (e) {
+		// Best-effort rollback: the import spans several statements, so remove anything
+		// this call created before surfacing the error to the user.
+		if (createdRoutineId) {
+			await supabase
+				.from("routines")
+				.delete()
+				.eq("id", createdRoutineId)
+				.eq("user_id", uid);
+		}
+		if (importedExerciseIds.length > 0) {
+			await supabase
+				.from("exercises")
+				.delete()
+				.eq("user_id", uid)
+				.in("id", importedExerciseIds);
+		}
+		throw e;
 	}
-
-	// Insert templates with the new routine_id
-	if (insertTpls.length > 0) {
-		for (const tpl of insertTpls) tpl.routine_id = newRoutine.id;
-		const { error: tplErr } = await supabase.from("templates").insert(insertTpls);
-		if (tplErr) throw new Error(formatDbError(tplErr) || "Failed to import templates");
-	}
-
-	const resolveTpl = (name: string | null): string | null => {
-		if (!name || !name.trim()) return null;
-		const n = name.trim();
-		return (
-			nameToId.get(n) ??
-			nameToId.get(n.toUpperCase()) ??
-			nameToId.get(sanitizeTemplateName(n)) ??
-			null
-		);
-	};
-
-	const allDays: Array<{
-		routine_id: string;
-		day_of_week: number;
-		template_id: string | null;
-	}> = [];
-	for (let dow = 0; dow < 7; dow++) {
-		const src = parsed.schedule.find((s) => s.day_of_week === dow);
-		allDays.push({
-			routine_id: newRoutine.id,
-			day_of_week: dow,
-			template_id: resolveTpl(src?.template_name ?? null),
-		});
-	}
-	const { error: schedErr } = await supabase.from("routine_schedules").insert(allDays);
-	if (schedErr) {
-		throw new Error(formatDbError(schedErr) || "Failed to import week schedule");
-	}
-
-	const templateCount = allDays.filter((d) => d.template_id != null).length;
-	return {
-		...newRoutine,
-		template_count: templateCount,
-		user_id: uid,
-	} as Routine;
 }
 
 /** Soft-fill invalid exercise rows from CSV so import doesn't hard-fail. */
@@ -3325,8 +3850,17 @@ function coerceImportedExercise(ex: {
 
 type ParsedRoutineExport = {
 	name: string;
-	schedule: Array<{ day_of_week: number; template_name: string | null }>;
+	scheduleMode: "weekly" | "cycle";
+	cycleLength: number;
+	cycleAnchorDate: string | null;
+	cycleSlots: Array<string | null>;
+	schedule: Array<{
+		day_of_week: number;
+		template_name: string | null;
+		template_key?: string | null;
+	}>;
 	templates: Array<{
+		key?: string | null;
 		name: string;
 		color: number;
 		icon: number;
@@ -3341,6 +3875,11 @@ type ParsedRoutineExport = {
 			rest_seconds: number;
 			increment: number;
 			current_weight: number | null;
+			catalog_exercise_id?: number | null;
+			catalog_muscle_ids?: number[];
+			notes?: string | null;
+			override?: ExerciseOverride;
+			superset_with_next?: boolean;
 		}>;
 	}>;
 };
@@ -3375,9 +3914,40 @@ function parseRoutineExportJson(jsonText: string): ParsedRoutineExport {
 	if (!name) name = "IMPORTED ROUTINE";
 	name = sanitizeTemplateName(name) || "IMPORTED ROUTINE";
 
+	const scheduleMeta =
+		doc.schedule && typeof doc.schedule === "object" && !Array.isArray(doc.schedule)
+			? (doc.schedule as Record<string, unknown>)
+			: {};
+	const scheduleMode = String(scheduleMeta.mode ?? "weekly").toLowerCase() === "cycle"
+		? "cycle"
+		: "weekly";
+	const cycleSlotsRaw = Array.isArray(scheduleMeta.slots) ? scheduleMeta.slots : [];
+	const cycleLength = Math.max(
+		1,
+		Math.min(
+			28,
+			Math.floor(Number(scheduleMeta.cycleLength ?? scheduleMeta.cycle_length) || 0) ||
+				cycleSlotsRaw.length ||
+				7,
+		),
+	);
+	const cycleSlots = Array.from({ length: cycleLength }, (_, i) => {
+		const value = cycleSlotsRaw[i];
+		return typeof value === "string" && value.trim() ? value.trim() : null;
+	});
+	const anchorRaw = scheduleMeta.anchorDate ?? scheduleMeta.anchor_date;
+	const cycleAnchorDate =
+		typeof anchorRaw === "string" && /^\d{4}-\d{2}-\d{2}$/.test(anchorRaw)
+			? anchorRaw
+			: null;
+
 	const weekRaw =
 		doc.week && typeof doc.week === "object" && !Array.isArray(doc.week)
 			? (doc.week as Record<string, unknown>)
+			: {};
+	const weekKeysRaw =
+		doc.weekKeys && typeof doc.weekKeys === "object" && !Array.isArray(doc.weekKeys)
+			? (doc.weekKeys as Record<string, unknown>)
 			: {};
 	const schedule: ParsedRoutineExport["schedule"] = [];
 	for (let d = 0; d < 7; d++) {
@@ -3392,7 +3962,16 @@ function parseRoutineExportJson(jsonText: string): ParsedRoutineExport {
 				break;
 			}
 		}
-		schedule.push({ day_of_week: d, template_name: tname });
+		let tkey: string | null = null;
+		for (const k of altKeys) {
+			if (k in weekKeysRaw) {
+				const v = weekKeysRaw[k];
+				if (v == null || v === "") tkey = null;
+				else tkey = String(v).trim() || null;
+				break;
+			}
+		}
+		schedule.push({ day_of_week: d, template_name: tname, template_key: tkey });
 	}
 
 	const templatesIn = Array.isArray(doc.templates) ? doc.templates : [];
@@ -3404,6 +3983,7 @@ function parseRoutineExportJson(jsonText: string): ParsedRoutineExport {
 		const tnameRaw = String(tr.name ?? "").trim();
 		if (!tnameRaw) continue;
 		const tname = sanitizeTemplateName(tnameRaw) || tnameRaw;
+		const tkey = typeof tr.key === "string" && tr.key.trim() ? tr.key.trim() : null;
 
 		let color = 0;
 		const colorRaw = tr.color;
@@ -3437,7 +4017,7 @@ function parseRoutineExportJson(jsonText: string): ParsedRoutineExport {
 		const icon = clampItemIcon(
 			typeof tr.icon === "number" ? tr.icon : Number(tr.icon) || DEFAULT_TEMPLATE_ICON,
 		);
-		templates.push({ name: tname, color, icon, exercises });
+		templates.push({ key: tkey, name: tname, color, icon, exercises });
 	}
 
 	// Templates only named in the week plan
@@ -3456,11 +4036,33 @@ function parseRoutineExportJson(jsonText: string): ParsedRoutineExport {
 		}
 	}
 
-	if (templates.length === 0 && !schedule.some((s) => s.template_name)) {
+	// Cycle slots may reference templates by key or by name
+	for (const slot of cycleSlots) {
+		if (!slot) continue;
+		if (templates.some((t) => t.key === slot)) continue;
+		const key = sanitizeTemplateName(slot) || slot;
+		if (!templates.some((t) => t.name.toUpperCase() === key.toUpperCase())) {
+			templates.push({ name: key, color: 0, icon: DEFAULT_TEMPLATE_ICON, exercises: [] });
+		}
+	}
+
+	if (
+		templates.length === 0 &&
+		!schedule.some((s) => s.template_name) &&
+		!cycleSlots.some(Boolean)
+	) {
 		throw new Error("Could not parse routine JSON — missing templates.");
 	}
 
-	return { name, schedule, templates };
+	return {
+		name,
+		scheduleMode,
+		cycleLength,
+		cycleAnchorDate,
+		cycleSlots,
+		schedule,
+		templates,
+	};
 }
 
 function jsonExerciseToParsed(
@@ -3471,6 +4073,24 @@ function jsonExerciseToParsed(
 	const typeRaw = String(er.type ?? er.exercise_type ?? "reps").toLowerCase();
 	const isTime = typeRaw === "time" || typeRaw === "timed";
 	const sets = Math.max(0, Math.floor(Number(er.sets ?? er.target_sets) || 0));
+
+	const catalogRaw = Number(er.catalogId ?? er.catalog_exercise_id);
+	const catalogId =
+		Number.isFinite(catalogRaw) && catalogRaw > 0 ? Math.round(catalogRaw) : null;
+	const muscleRaw = er.muscleIds ?? er.catalog_muscle_ids;
+	const muscleIds = Array.isArray(muscleRaw)
+		? [
+				...new Set(
+					muscleRaw
+						.map((value) => Number(value))
+						.filter((value) => Number.isFinite(value) && value > 0)
+						.map((value) => Math.round(value)),
+				),
+			]
+		: [];
+	const notes = typeof er.notes === "string" && er.notes.trim() ? er.notes : null;
+	const override = jsonOverrideToParsed(er.override, isTime);
+	const supersetWithNext = er.supersetWithNext === true || er.superset_with_next === true;
 
 	const restSecTotal = Number(er.restSec ?? er.rest_sec);
 	let restMin = Math.max(0, Math.floor(Number(er.rest_minutes ?? er.restMin) || 0));
@@ -3504,6 +4124,11 @@ function jsonExerciseToParsed(
 			rest_seconds: restSec,
 			increment: progress,
 			current_weight: null,
+			catalog_exercise_id: catalogId,
+			catalog_muscle_ids: muscleIds,
+			notes,
+			override,
+			superset_with_next: supersetWithNext,
 		};
 	}
 
@@ -3523,7 +4148,63 @@ function jsonExerciseToParsed(
 		rest_seconds: restSec,
 		increment: progress,
 		current_weight: load != null && !Number.isNaN(load) ? load : null,
+		catalog_exercise_id: catalogId,
+		catalog_muscle_ids: muscleIds,
+		notes,
+		override,
+		superset_with_next: supersetWithNext,
 	};
+}
+
+/** Parse an exported per-day override (same field names as template exercises). */
+function jsonOverrideToParsed(raw: unknown, isTime: boolean): ExerciseOverride | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	const r = raw as Record<string, unknown>;
+	const out: ExerciseOverride = {};
+	const sets = Number(r.sets ?? r.target_sets);
+	if (Number.isFinite(sets) && sets >= 0) out.target_sets = Math.floor(sets);
+
+	if (isTime) {
+		const durationSec = Number(r.durationSec ?? r.duration_sec);
+		let mins = Number(r.target_minutes);
+		let secs = Number(r.target_seconds);
+		if (Number.isFinite(durationSec) && durationSec >= 0 && r.durationSec != null) {
+			mins = Math.floor(durationSec / 60);
+			secs = Math.floor(durationSec % 60);
+		}
+		if (Number.isFinite(mins) && mins >= 0) out.target_minutes = Math.floor(mins);
+		if (Number.isFinite(secs) && secs >= 0) out.target_seconds = Math.floor(secs);
+	} else {
+		const reps = Number(r.reps ?? r.target_reps);
+		if (Number.isFinite(reps) && reps >= 0) out.target_reps = Math.floor(reps);
+	}
+
+	if ("loadKg" in r || "load_kg" in r || "current_weight" in r) {
+		const loadRaw = r.loadKg ?? r.load_kg ?? r.current_weight;
+		if (loadRaw === null || loadRaw === "") out.current_weight = null;
+		else {
+			const load = Number(loadRaw);
+			if (Number.isFinite(load)) out.current_weight = load;
+		}
+	}
+
+	const progress = Number(r.progressSec ?? r.progressKg ?? r.progress_sec ?? r.progress_kg);
+	if (Number.isFinite(progress)) out.increment = Math.max(0, progress);
+
+	const restSec = Number(r.restSec ?? r.rest_sec);
+	if (Number.isFinite(restSec) && restSec >= 0 && (r.restSec != null || r.rest_sec != null)) {
+		out.rest_minutes = Math.floor(restSec / 60);
+		out.rest_seconds = Math.floor(restSec % 60);
+	} else {
+		const restMin = Number(r.rest_minutes ?? r.restMin);
+		const restSeconds = Number(r.rest_seconds ?? r.restSeconds);
+		if (Number.isFinite(restMin) && restMin >= 0) out.rest_minutes = Math.floor(restMin);
+		if (Number.isFinite(restSeconds) && restSeconds >= 0) {
+			out.rest_seconds = Math.floor(restSeconds);
+		}
+	}
+
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function parseCsvLine(line: string): string[] {
@@ -3790,6 +4471,10 @@ function parseRoutineExportCsv(csvText: string): ParsedRoutineExport {
 
 	return {
 		name,
+		scheduleMode: "weekly",
+		cycleLength: 7,
+		cycleAnchorDate: null,
+		cycleSlots: [],
 		schedule,
 		templates: [...templatesMap.values()].map(({ name: n, color, icon, exercises }) => ({
 			name: n,

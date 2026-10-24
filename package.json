@@ -2,7 +2,7 @@
 	"name": "lift-tracker",
 	"description": "Workout logging app with templates, timed exercises, stats, and Supabase sync",
 	"private": true,
-	"version": "1.0.14",
+	"version": "1.0.15",
 	"homepage": "https://lift-tracker-self.vercel.app",
 	"repository": {
 		"type": "git",
@@ -27,6 +27,8 @@
 		"build:apk:release": "./scripts/build-release-apk.fish",
 		"db:setup": "./scripts/setup-db.fish",
 		"db:migrate": "./scripts/migrate-db.fish",
+		"import:wger": "node --env-file=.env scripts/import.ts",
+		"build:svgs": "node scripts/build-svgs.ts",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
@@ -59,7 +61,9 @@
 		"@capacitor/app": "^8.1.0",
 		"@capacitor/core": "^8.4.0",
 		"@capacitor/filesystem": "^8.1.2",
+		"@capacitor/haptics": "^8.0.2",
 		"@capacitor/keyboard": "^8.0.3",
+		"@capacitor/local-notifications": "^8.3.1",
 		"@capacitor/preferences": "^8.0.1",
 		"@capacitor/splash-screen": "^8.0.1",
 		"@capacitor/status-bar": "^8.0.2",

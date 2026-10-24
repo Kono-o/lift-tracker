@@ -4,7 +4,7 @@
     size?: number;
     className?: string;
     rounded?: number;
-    seed?: string; // temporary: influences identicon along with userId
+    seed?: string | null; // temporary: influences identicon along with userId
   }>();
 
   const borderRadius = $derived(`${(rounded / 100) * size}px`);

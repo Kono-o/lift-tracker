@@ -7,11 +7,16 @@ Workout logging app with day templates, rep and timed exercises, live timers, st
 ## Features
 
 - **Workout templates** — build routines with drag-and-drop ordering and a shared exercise library
+- **Weekly or cycle routines** — classic weekday schedules, or a repeating day sequence (e.g. Upper / Rest / Lower / Rest) with a 1–28 slot cycle
+- **Per-day overrides & supersets** — override sets, reps, load, or rest for the same exercise on a specific day; chain exercises into supersets
 - **Rep & timed exercises** — weight/rep tracking plus countdown timers with a visual progress bar
-- **Live workout mode** — session timers, set logging, PR badges, and overtime tracking
-- **Stats** — custom metrics with daily logs and history
+- **Live workout mode** — session timers, set logging, PR badges, auto rest timer, and overtime tracking
+- **Progressive overload** — automatic load progression with per-day override support
+- **Built-in exercise catalog** — 900+ movements from [wger](https://wger.de) with search, category/equipment/muscle filters, instructions, and an interactive muscle diagram
+- **Workout history & stats** — full session archive with per-exercise set details, plus custom metrics with charts
+- **Settings** — dark/OLED themes, haptics, sound effects, reduced motion, rest notifications, and weekly workout reminders
 - **Accounts** — sign in with Supabase Auth (Google OAuth on web; native redirect on Android)
-- **PWA & Android** — installable web app and sideloadable APK via Capacitor
+- **PWA & Android** — installable web app and sideloadable APK via Capacitor with in-app updates
 
 ## Tech stack
 
@@ -39,8 +44,8 @@ Open [http://localhost:5173](http://localhost:5173).
 |---|---|---|
 | `PUBLIC_SUPABASE_URL` | `.env` | Supabase project URL |
 | `PUBLIC_SUPABASE_ANON_KEY` | `.env` | Public anon key (safe in frontend) |
-| `SUPABASE_SERVICE_ROLE_KEY` | `.env` / deploy | Account deletion API only — **never expose to the client** |
-| `SUPABASE_DB_URL` | shell | `scripts/setup-db.fish` only (direct Postgres connection) |
+| `SUPABASE_SERVICE_ROLE_KEY` | `.env` / deploy | Account deletion API and the wger import script — **never expose to the client or commit it** |
+| `SUPABASE_DB_URL` | shell | `scripts/setup-db.fish` / `npm run db:migrate` only (direct Postgres connection) |
 
 See [`.env.example`](.env.example) for Capacitor OAuth and dev-server options.
 
@@ -68,6 +73,29 @@ npm run db:migrate
 
 Or run individual files with `psql "$SUPABASE_DB_URL" -f supabase/migrations/<file>.sql`.
 
+### Exercise catalog (wger)
+
+The exercise catalog is backed by public, read-only tables (`wger_categories`, `wger_equipment`, `wger_muscles`, `wger_exercises`, `wger_exercise_equipment`, `wger_exercise_muscles`). RLS allows `SELECT` for everyone; there are no client-side writes. The schema and RPCs live in [`supabase/migrations/20261024000000_training_overhaul_and_exercise_catalog.sql`](supabase/migrations/20261024000000_training_overhaul_and_exercise_catalog.sql) (also included in `setup.sql`).
+
+Populate it once (or refresh) with the English wger catalog:
+
+```sh
+npm run import:wger            # incremental upsert, cached under .cache/wger
+npm run import:wger -- --refresh
+```
+
+The script pages through `https://wger.de/api/v2/exerciseinfo/?language=2`, throttles requests, caches raw responses, strips HTML from descriptions, and upserts using `SUPABASE_SERVICE_ROLE_KEY` from `.env`. Run it from a trusted machine only; the service-role key is never exposed to the app.
+
+Rebuild the inline muscle diagrams used by the catalog detail view:
+
+```sh
+npm run build:svgs
+```
+
+This downloads the wger body silhouettes + per-muscle overlay SVGs, verifies they share one coordinate space, then writes `static/svg/front.svg` and `static/svg/back.svg` with one `<g id="muscle-{id}">` per muscle and no hardcoded fill/stroke colors (CSS controls them).
+
+**Attribution:** exercise data and muscle images come from [wger](https://wger.de). Each catalog exercise displays its license and author (`license` / `license_author` fields). Exercise content is generally CC-BY-SA 4.0; wger itself is AGPL-licensed. Keep the in-app attribution if you redistribute the catalog.
+
 ## Development
 
 | Command | Description |
@@ -79,6 +107,8 @@ Or run individual files with `psql "$SUPABASE_DB_URL" -f supabase/migrations/<fi
 | `npm run preview` | Preview production build |
 | `npm run check` | Type-check with svelte-check |
 | `npm run db:migrate` | Apply pending SQL migrations (needs `SUPABASE_DB_URL`) |
+| `npm run import:wger` | Import/refresh the wger exercise catalog |
+| `npm run build:svgs` | Rebuild `static/svg/front.svg` + `back.svg` from wger |
 
 ### Phone testing
 
@@ -115,7 +145,8 @@ lift-tracker/
 ├── src/
 │   ├── routes/          # SvelteKit pages and API routes
 │   └── lib/             # DB layer, components, utilities
-├── static/              # PWA manifest, icons
+├── static/              # PWA manifest, icons, inline muscle SVGs
+│   └── svg/             # front.svg / back.svg generated by build:svgs
 ├── supabase/
 │   ├── setup.sql        # Full database bootstrap
 │   ├── migrations/      # Incremental schema changes
@@ -123,6 +154,8 @@ lift-tracker/
 ├── scripts/
 │   ├── dev-phone.fish           # Phone-friendly dev server
 │   ├── setup-db.fish            # Supabase maintenance
+│   ├── import.ts                # wger catalog importer
+│   ├── build-svgs.ts            # wger muscle SVG builder
 │   ├── build-release-apk.fish   # Signed APK build
 │   └── android-signing/         # Release keystore config (secrets gitignored)
 ├── capacitor.config.ts

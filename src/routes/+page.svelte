@@ -16,13 +16,14 @@
   } from '$lib/menuTransitions';
   import { cubicOut } from 'svelte/easing';
   import { PUBLIC_SUPABASE_URL } from '$env/static/public';
-  import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, type Template, type Exercise, type TrackedStat, type StatLogSnapshotRow, type WorkoutHistory, type RoutineWithOwner, type UserRoutineListItem } from '$lib/db';
+  import { db, supabase, canChangePassword, formatAccountError, formatAuthError, formatDbError, getAuthDisplayName, getAuthRedirectError, isTemplateAssignable, isUsernameAccount, isWorkoutInProgress, MAX_PASSWORD_LEN, MAX_USERNAME_LEN, sanitizePasswordInput, sanitizeUsernameInput, validateEmail, validatePassword, validateUsername, DEFAULT_PREFERENCES, applyExerciseOverride, resolveRoutineTemplateForDate, type Template, type Exercise, type TrackedStat, type StatLogSnapshotRow, type WorkoutHistory, type RoutineWithOwner, type UserRoutineListItem, type ActiveRoutinePlan, type AppPreferences, type ExerciseOverride, type CatalogExerciseDetail } from '$lib/db';
   import GeneratedAvatar from '$lib/components/GeneratedAvatar.svelte';
   import HeaderClock from '$lib/components/HeaderClock.svelte';
   import RoutinesMenu from '$lib/components/RoutinesMenu.svelte';
   import TemplateColorPicker from '$lib/components/TemplateColorPicker.svelte';
   import ItemIconPicker from '$lib/components/ItemIconPicker.svelte';
   import ConfirmDeletePopup from '$lib/components/ConfirmDeletePopup.svelte';
+  import type ExerciseCatalog from '$lib/components/ExerciseCatalog.svelte';
   import { touchReorder } from '$lib/touchReorder';
   import { clampTemplateColor, DEFAULT_TEMPLATE_COLOR, getTemplateColor } from '$lib/templateColor';
   import {
@@ -59,6 +60,7 @@
     clampRestSecsFieldInput,
     formatOneDecimal,
     sanitizeTemplateName,
+    sanitizeExerciseName,
     validateDraftExercises,
     normalizeDraftExercise,
     captureExerciseTypeFields,
@@ -124,7 +126,19 @@
     User,
     X,
     Bookmark,
+    BookOpen,
+    Bell,
+    BellRing,
+    Clock3,
+    Moon,
+    Settings2,
+    TimerReset,
+    Vibrate,
+    Volume2,
+    ZapOff,
     Search,
+    Link2,
+    SlidersHorizontal,
   } from '@lucide/svelte';
   import AuthBrandIcon from '$lib/components/auth-brand-icons.svelte';
   import {
@@ -146,6 +160,17 @@
   import DOMPurify from 'dompurify';
   import { App } from '@capacitor/app';
   import confetti from 'canvas-confetti';
+  import { showUndoToast } from '$lib/undo.svelte';
+  import UndoToast from '$lib/components/UndoToast.svelte';
+  import { hapticLight, hapticMedium, hapticSuccess, hapticWarning, setHapticsEnabled } from '$lib/haptics';
+  import { playError, playRestEnd, playRestStart, playSetLogged, playWorkoutComplete, setSoundsEnabled } from '$lib/sounds';
+  import {
+    ensureNotificationPermission,
+    notificationsAvailable,
+    cancelRestEndNotification,
+    scheduleRestEndNotification,
+    syncWorkoutReminders,
+  } from '$lib/notifications';
 
   // Constants
   const DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -188,10 +213,45 @@ const getStatIcon = getItemIcon;
     return Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
   }
 
-  const REAL_TODAY = new Date();
-  REAL_TODAY.setHours(0, 0, 0, 0);
-  const REAL_TODAY_STR = toDateStr(REAL_TODAY);
-  const TODAY_WEEKDAY = REAL_TODAY.getDay();
+  function startOfLocalDay(source: Date = new Date()): Date {
+    const d = new Date(source);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+
+  // "Today" must roll over at midnight. A module-load constant made the whole UI
+  // (week strip, past/future gating, stats cutoffs, workout dates) stay on the
+  // launch day until a full reload, while DB writes already used the live date.
+  let todayEpoch = $state(Date.now());
+  let REAL_TODAY = $derived(startOfLocalDay(new Date(todayEpoch)));
+  let REAL_TODAY_STR = $derived(toDateStr(REAL_TODAY));
+  let TODAY_WEEKDAY = $derived(REAL_TODAY.getDay());
+  let todayCheckTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Recompute "today"; move the selection forward only when it was on the old today. */
+  function refreshTodayIfNeeded() {
+    const now = new Date();
+    const nextStr = toDateStr(now);
+    if (nextStr === REAL_TODAY_STR) return;
+    const wasViewingPreviousToday = selectedDateStr === REAL_TODAY_STR;
+    todayEpoch = now.getTime();
+    if (wasViewingPreviousToday) {
+      selectedDate = startOfLocalDay(now);
+    }
+    // The new day may already have a log (another device, or a session crossing midnight).
+    if (currentUser) {
+      db.getLogForDate(nextStr)
+        .then((log) => {
+          if (REAL_TODAY_STR !== nextStr) return;
+          todayLog = log;
+          weekLogs = { ...weekLogs, [nextStr]: log };
+          if (selectedDateStr === nextStr) viewedLog = log;
+        })
+        .catch((err) => console.error('today log refresh after midnight failed', err));
+    } else {
+      todayLog = null;
+    }
+  }
 
   let dbIoFlash = $state(false);
   let dbIoFlashTimer: ReturnType<typeof setTimeout> | null = null;
@@ -223,6 +283,104 @@ const getStatIcon = getItemIcon;
     }
     return 'ROUTINE';
   });
+
+  /** Full metadata for the active routine (cycle slot plan included). */
+  let activeRoutinePlan = $state<ActiveRoutinePlan | null>(null);
+  let activeRoutineMeta = $derived.by<ActiveRoutinePlan | UserRoutineListItem | null>(() => {
+    if (!activeRoutineId) return null;
+    const listed = preloadedRoutineList.find((r) => r.id === activeRoutineId);
+    if (listed) return listed;
+    if (activeRoutinePlan?.id === activeRoutineId) return activeRoutinePlan;
+    return null;
+  });
+  let activeRoutineIsCycle = $derived(activeRoutineMeta?.schedule_mode === 'cycle');
+
+  /** User preference blob (theme, haptics, reminders, …). */
+  let preferences = $state<Required<AppPreferences>>({ ...DEFAULT_PREFERENCES });
+  let preferencesSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  function setPreference<K extends keyof AppPreferences>(key: K, value: AppPreferences[K]) {
+    preferences = { ...preferences, [key]: value } as Required<AppPreferences>;
+    queuePreferencesSave();
+  }
+  function queuePreferencesSave() {
+    if (preferencesSaveTimer) clearTimeout(preferencesSaveTimer);
+    preferencesSaveTimer = setTimeout(() => {
+      preferencesSaveTimer = null;
+      void db.savePreferences(preferences).catch((err) => console.error('save preferences failed', err));
+    }, 400);
+  }
+
+  let notificationPermissionHint = $state<string | null>(null);
+
+  /** Apply device-wide preference classes + module gates. */
+  $effect(() => {
+    if (typeof document === 'undefined') return;
+    const root = document.documentElement;
+    root.classList.toggle('oled-theme', preferences.theme === 'oled');
+    root.classList.toggle('reduce-motion', preferences.reduce_motion === true);
+    setHapticsEnabled(preferences.haptics !== false);
+    setSoundsEnabled(preferences.sounds !== false);
+  });
+
+  let remindersSyncKey = '';
+  /** Re-register weekly reminders when their schedule changes (native only). */
+  $effect(() => {
+    if (!notificationsAvailable()) return;
+    const key = `${preferences.workout_reminders === true}|${preferences.reminder_time}|${(preferences.reminder_days ?? []).join(',')}`;
+    if (key === remindersSyncKey) return;
+    remindersSyncKey = key;
+    void syncWorkoutReminders(
+      preferences.workout_reminders === true,
+      preferences.reminder_time,
+      preferences.reminder_days ?? [],
+    ).then((ok) => {
+      if (!ok && preferences.workout_reminders === true) {
+        preferences = { ...preferences, workout_reminders: false };
+        queuePreferencesSave();
+        notificationPermissionHint =
+          'Notification permission is off. Enable it in Android settings to use reminders.';
+      }
+    });
+  });
+
+  async function toggleNotificationPreference(
+    key: 'rest_notifications' | 'workout_reminders',
+    next: boolean,
+  ) {
+    notificationPermissionHint = null;
+    if (!next) {
+      setPreference(key, false);
+      return;
+    }
+    if (!notificationsAvailable()) {
+      notificationPermissionHint = 'Notifications require the installed Android app.';
+      return;
+    }
+    const granted = await ensureNotificationPermission();
+    if (!granted) {
+      notificationPermissionHint =
+        'Notification permission was denied. Allow notifications for Lift Tracker in Android settings.';
+      return;
+    }
+    setPreference(key, true);
+    void hapticLight();
+  }
+
+  function toggleReminderDay(day: number) {
+    const current = new Set(preferences.reminder_days ?? []);
+    if (current.has(day)) current.delete(day);
+    else current.add(day);
+    setPreference('reminder_days', [...current].sort((a, b) => a - b));
+  }
+
+  /** Template assigned to a calendar date, honoring weekly vs. cycle plans. */
+  function templateIdForDate(dateStr: string, weekday: number): string | null {
+    if (activeRoutineMeta?.schedule_mode === 'cycle') {
+      return resolveRoutineTemplateForDate(activeRoutineMeta, dateStr);
+    }
+    return scheduleByDay.get(weekday)?.template_id ?? null;
+  }
+
   /**
    * Templates newly created while editing the active routine (not yet on any day).
    * Cleared on routine switch so empty routines don't inherit the previous list.
@@ -421,9 +579,11 @@ const getStatIcon = getItemIcon;
   }
 
   // State
-  let selectedDate = $state(new Date(REAL_TODAY));
+  let selectedDate = $state(startOfLocalDay());
   let viewedLog = $state<any>(null);
   let weekLogs = $state<Record<string, any | null>>({});
+  /** Dates whose log fetch failed — stops the day view from spinning forever. */
+  let weekLogLoadErrors = $state<Record<string, true>>({});
   let trackedStats = $state<TrackedStat[]>([]);
   let statLogs = $state<Record<string, Record<string, number>>>({});
   let statLogSnapshots = $state<StatLogSnapshotRow[]>([]);
@@ -432,11 +592,20 @@ const getStatIcon = getItemIcon;
   type RangeMode = '3weeks' | '3m' | '6m' | 'ytd' | 'all';
   let statRangeMode = $state<RangeMode>('3weeks');
   const rangeModes: RangeMode[] = ['3weeks', '3m', '6m', 'ytd', 'all'];
+  type StatsTab = 'tracked' | 'history';
+  let statsTab = $state<StatsTab>('tracked');
+  let historyEntries = $state<WorkoutHistory[]>([]);
+  let historyLoading = $state(false);
+  let historyLoadingMore = $state(false);
+  let historyHasMore = $state(true);
+  let historyError = $state<string | null>(null);
+  let historyExpandedDate = $state<string | null>(null);
   let draftStats = $state<TrackedStat[]>([]);
   let selectedDraftStatId = $state<string | null>(null);
   let editingStatNameId = $state<string | null>(null);
   let statSaveError = $state<string | null>(null);
-  let statDraftSaveInFlight = false;
+  let statDraftSavePromise: Promise<void> | null = null;
+  let statDraftSavePending = false;
   let statDraggedIndex = $state<number | null>(null);
   let statDragOverIndex = $state<number | null>(null);
   let statRowDragged = false;
@@ -530,6 +699,9 @@ const getStatIcon = getItemIcon;
       countdownRunning = false;
       clearInterval(countdownTimer);
       clearInterval(visualUpdateTimer);
+      clearTimeout(restCountdownTimer);
+      clearInterval(restVisualUpdateTimer);
+      clearTimeout(restFadeTimer);
       timerStartTimestamp = null;
       wasMet = false;
       metPhaseShift = 0;
@@ -537,7 +709,17 @@ const getStatIcon = getItemIcon;
       currentVisualDot = 0;
       visualMsPerDot = 0;
       visualRawStep = 0;
-      visualRawStep = 0;
+
+      // Switching days must also drop any rest/fade UI tied to the previous day's sets.
+      activeRestExerciseId = null;
+      activeRestSetIndex = null;
+      restCountdownRunning = false;
+      restTimerStartTimestamp = null;
+      restCurrentTargetSeconds = 0;
+      restVisualMsPerDot = 0;
+      restVisualRawStep = 0;
+      restFadeExerciseId = null;
+      restFadeSetIndex = null;
     }
     selectedDate = new Date(newD);
     selectedDate.setHours(0, 0, 0, 0);
@@ -572,7 +754,7 @@ const getStatIcon = getItemIcon;
   }
 
   function goToToday() {
-    if (isViewingToday) return;
+    if (isViewingToday || weekCalendarLocked) return;
     selectDate(REAL_TODAY);
   }
   let builderAssignments = $state<Record<number, string | null>>({});
@@ -590,12 +772,172 @@ const getStatIcon = getItemIcon;
     effectiveAssignmentTemplateId(builderAssignments[builderEditingDay] ?? null),
   );
   let builderDayAssignmentLabel = $derived.by(() => {
+    if (builderScheduleMode === 'cycle') {
+      const tid = effectiveAssignmentTemplateId(builderAssignments[builderEditingDay] ?? null);
+      if (tid === null) return `DAY ${builderEditingDay + 1} - [ REST ]`;
+      const tpl = templates.find((t) => t.id === tid);
+      return `DAY ${builderEditingDay + 1} - [ ${tpl?.name ?? 'Workout'} ]`;
+    }
     const day = DAY_NAMES[builderEditingDay].toUpperCase();
     const tid = effectiveAssignmentTemplateId(builderAssignments[builderEditingDay] ?? null);
     if (tid === null) return `${day} - [ REST DAY ]`;
     const tpl = templates.find((t) => t.id === tid);
     return `${day} - [ ${tpl?.name ?? 'Workout'} ]`;
   });
+
+  // --- Repeating cycle plans (not tied to weekdays) ---
+  let builderScheduleMode = $state<'weekly' | 'cycle'>('weekly');
+  let builderCycleLength = $state(7);
+  let builderCycleAnchor = $state('');
+  let builderCycleSaving = $state(false);
+  let builderCycleError = $state<string | null>(null);
+  let builderCycleSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  const MAX_CYCLE_LENGTH = 28;
+
+  function applyLocalRoutineCycleMeta(
+    mode: 'weekly' | 'cycle',
+    length: number,
+    anchor: string,
+    slots: Array<string | null>,
+  ) {
+    if (!activeRoutineId) return;
+    const patch = {
+      schedule_mode: mode,
+      cycle_length: length,
+      cycle_anchor_date: anchor,
+      cycle_slots: mode === 'cycle' ? slots : [],
+    };
+    preloadedRoutineList = preloadedRoutineList.map((r) =>
+      r.id === activeRoutineId ? { ...r, ...patch } : r,
+    );
+    if (activeRoutinePlan?.id === activeRoutineId) {
+      activeRoutinePlan = { ...activeRoutinePlan, ...patch };
+    }
+  }
+
+  function builderCycleSlots(): Array<string | null> {
+    return Array.from({ length: builderCycleLength }, (_, i) =>
+      effectiveAssignmentTemplateId(builderAssignments[i] ?? null),
+    );
+  }
+
+  /** Seed cycle editor state from the routine plan (or the current week). */
+  function seedBuilderCycleState(seedFromWeek: boolean) {
+    const meta = activeRoutineMeta;
+    const len = Math.max(
+      1,
+      Math.min(MAX_CYCLE_LENGTH, meta?.schedule_mode === 'cycle' ? (meta.cycle_length ?? 7) : 7),
+    );
+    builderCycleLength = len;
+    builderCycleAnchor =
+      (meta?.schedule_mode === 'cycle' ? meta.cycle_anchor_date : null) || REAL_TODAY_STR;
+    const existing =
+      meta?.schedule_mode === 'cycle' && Array.isArray(meta.cycle_slots) ? meta.cycle_slots : [];
+    const next: Record<number, string | null> = {};
+    for (let i = 0; i < len; i++) {
+      if (existing.length > 0) {
+        next[i] = effectiveAssignmentTemplateId(existing[i] ?? null);
+      } else if (seedFromWeek) {
+        next[i] = effectiveAssignmentTemplateId(
+          scheduleByDay.get(i % 7)?.template_id ?? null,
+        );
+      } else {
+        next[i] = null;
+      }
+    }
+    builderAssignments = next;
+    builderScheduleMode = 'cycle';
+  }
+
+  function builderCycleTodayIndex(): number {
+    if (!builderCycleAnchor) return 0;
+    const [ay, am, ad] = builderCycleAnchor.split('-').map(Number);
+    const [ty, tm, td] = REAL_TODAY_STR.split('-').map(Number);
+    if (!ay || !am || !ad || !ty || !tm || !td) return 0;
+    const diff = Math.round(
+      (Date.UTC(ty, tm - 1, td) - Date.UTC(ay, am - 1, ad)) / 86_400_000,
+    );
+    return ((diff % builderCycleLength) + builderCycleLength) % builderCycleLength;
+  }
+
+  async function persistBuilderCyclePlan(snapshot?: {
+    length: number;
+    anchor: string;
+    slots: Array<string | null>;
+  }) {
+    if (activeRoutineIsReadonly) return;
+    const routineId = activeRoutineId;
+    if (!routineId || routineId.startsWith('temp-')) return;
+    const length = snapshot?.length ?? builderCycleLength;
+    const anchor = snapshot?.anchor ?? builderCycleAnchor;
+    const slots = snapshot?.slots ?? builderCycleSlots();
+    builderCycleSaving = true;
+    builderCycleError = null;
+    try {
+      await runDbActivityBatch(() =>
+        db.saveRoutineCycle(routineId, length, anchor, slots),
+      );
+      applyLocalRoutineCycleMeta('cycle', length, anchor, slots);
+    } catch (e) {
+      console.error('save routine cycle failed', e);
+      builderCycleError = formatDbError(e) || 'Failed to save cycle';
+    } finally {
+      builderCycleSaving = false;
+    }
+  }
+
+  function queueBuilderCycleSave() {
+    if (builderCycleSaveTimer) clearTimeout(builderCycleSaveTimer);
+    builderCycleSaveTimer = setTimeout(() => {
+      builderCycleSaveTimer = null;
+      void persistBuilderCyclePlan();
+    }, 300);
+  }
+
+  function setBuilderScheduleMode(mode: 'weekly' | 'cycle') {
+    if (activeRoutineIsReadonly || mode === builderScheduleMode) return;
+    builderCycleError = null;
+    if (mode === 'cycle') {
+      seedBuilderCycleState(true);
+      builderEditingDay = builderCycleTodayIndex();
+      void persistBuilderCyclePlan();
+    } else {
+      builderScheduleMode = 'weekly';
+      if (activeRoutineId && !activeRoutineId.startsWith('temp-')) {
+        void runDbActivityBatch(() => db.resetRoutineToWeekly(activeRoutineId!))
+          .then(() => {
+            applyLocalRoutineCycleMeta('weekly', 7, builderCycleAnchor, []);
+            void loadData({ preserveSession: true });
+          })
+          .catch((e) => {
+            console.error('reset routine to weekly failed', e);
+            builderCycleError = 'Failed to switch to weekly';
+          });
+      }
+      builderEditingDay = selectedWeekday;
+      syncBuilderAssignmentsFromSchedule(schedule);
+    }
+  }
+
+  function setBuilderCycleLength(next: number) {
+    if (activeRoutineIsReadonly) return;
+    const len = Math.max(1, Math.min(MAX_CYCLE_LENGTH, Math.round(next) || 1));
+    if (len === builderCycleLength) return;
+    const prev = builderAssignments;
+    const resized: Record<number, string | null> = {};
+    for (let i = 0; i < len; i++) resized[i] = prev[i] ?? null;
+    builderCycleLength = len;
+    builderAssignments = resized;
+    if (builderEditingDay >= len) builderEditingDay = len - 1;
+    queueBuilderCycleSave();
+  }
+
+  function setBuilderCycleAnchor(value: string) {
+    if (activeRoutineIsReadonly || !value) return;
+    builderCycleAnchor = value;
+    queueBuilderCycleSave();
+  }
+
 
   // --- Routine export (JSON v2 .lift.json) ---
   async function downloadTextFile(
@@ -605,12 +947,12 @@ const getStatIcon = getItemIcon;
   ) {
     if (isNativeApp()) {
       try {
-        const { Directory, Filesystem } = await import('@capacitor/filesystem');
+        const { Directory, Filesystem, Encoding } = await import('@capacitor/filesystem');
         await Filesystem.writeFile({
           path: filename,
           data: content,
           directory: Directory.Documents,
-          encoding: 'utf8',
+          encoding: Encoding.UTF8,
         });
         const successMsg = 'Saved to Documents folder';
         templateError = successMsg;
@@ -704,6 +1046,13 @@ const getStatIcon = getItemIcon;
       }
       builderAssignments = newAssignments;
       builderEditingDay = selectedWeekday;
+      builderCycleError = null;
+      if (activeRoutineMeta?.schedule_mode === 'cycle') {
+        seedBuilderCycleState(false);
+        builderEditingDay = Math.min(builderCycleTodayIndex(), builderCycleLength - 1);
+      } else {
+        builderScheduleMode = 'weekly';
+      }
       // Seed stable keys for existing templates so first paint doesn't animate them all
       let keys = { ...templateListKeyById };
       for (const t of templates) keys = rememberListKey(keys, t.id);
@@ -1054,6 +1403,8 @@ const getStatIcon = getItemIcon;
 
   // Data arrays
   let schedule = $state<any[]>([]);
+  // schedule rows are sparse until every day has been materialized; never index by array position.
+  let scheduleByDay = $derived(new Map<number, any>(schedule.map((s) => [Number(s.day_of_week), s])));
   let templates = $state<Template[]>([]);
   let exerciseLibrary = $state<Exercise[]>([]);
   let todayLog = $state<any>(null);
@@ -1241,6 +1592,10 @@ const getStatIcon = getItemIcon;
   let wasMet = $state(false);
   let metPhaseShift = $state(0);
 
+  // Measured widths for dynamic cube count: the whole bar and its fixed parts (label, actions)
+  // so we can compute exact available for the progress after label+buttons take their intrinsic size.
+  let timerBarProgressWidth = $state(200);
+
   // Dynamic cube count derived from measured progress width (for square cubes + fill)
   let activeCubeCount = $derived(
     Math.max(12, Math.min(36, Math.floor((timerBarProgressWidth || 200) / 6))),
@@ -1265,10 +1620,8 @@ const getStatIcon = getItemIcon;
   let restVisualDotCount = $state(42);
   let restCountdownTimer: any = null;
   let restVisualUpdateTimer: any = null;
-
-  // Measured widths for dynamic cube count: the whole bar and its fixed parts (label, actions)
-  // so we can compute exact available for the progress after label+buttons take their intrinsic size.
-  let timerBarProgressWidth = $state(200);
+  /** Native notification scheduled for the current rest; cancelled when rest stops early. */
+  let restNotificationPending = false;
 
   // Post-log fade-to-rest state (1s visual fade to orange before rest timer UI/countdown starts)
   let restFadeExerciseId = $state<string | null>(null);
@@ -1413,6 +1766,96 @@ const getStatIcon = getItemIcon;
   let selectedLibraryExerciseId = $state<string | null>(null);
   let deletedLibraryExerciseIds = $state(new Set<string>());
   let librarySearchQuery = $state('');
+  let showExerciseCatalog = $state(false);
+  /** Lazily loaded so the inline muscle SVGs stay out of the initial bundle. */
+  let CatalogView = $state<typeof ExerciseCatalog | null>(null);
+  let catalogLoadPromise: Promise<void> | null = null;
+
+  /** Catalog ids already present in the template draft (disables duplicate adds). */
+  let draftCatalogIds = $derived.by(() => {
+    const ids = new Set<number>();
+    for (const ex of draftExercises) {
+      if (typeof ex.catalog_exercise_id === 'number') ids.add(ex.catalog_exercise_id);
+    }
+    return ids;
+  });
+
+  /** Exercise ids in this template carrying a per-day override (values differ from base). */
+  let draftOverrideIds = $state<Set<string>>(new Set());
+  /** Exercise ids whose following exercise is performed back-to-back (superset). */
+  let draftSupersetIds = $state<Set<string>>(new Set());
+  /** Base (non-overridden) values captured when an override is enabled. */
+  let overrideBaseById = $state<Record<string, ExerciseOverride>>({});
+
+  function exerciseValueSnapshot(row: any): ExerciseOverride {
+    return {
+      target_sets: Number(row.target_sets) || 0,
+      target_reps: Number(row.target_reps) || 0,
+      target_minutes: Number(row.target_minutes) || 0,
+      target_seconds: Number(row.target_seconds) || 0,
+      rest_minutes: Number(row.rest_minutes) || 0,
+      rest_seconds: Number(row.rest_seconds) || 0,
+      increment: Number(row.increment) || 0,
+      current_weight:
+        row.current_weight === null || row.current_weight === undefined
+          ? null
+          : Number(row.current_weight) || 0,
+    };
+  }
+
+  function baseSnapshotForExercise(row: any): ExerciseOverride {
+    const base =
+      exerciseLibrary.find((e) => e.id === row.id) ??
+      librarySourcePool.get(row.id);
+    return base ? exerciseValueSnapshot(base) : exerciseValueSnapshot(row);
+  }
+
+  function toggleExerciseDayOverride(exerciseId: string) {
+    if (activeRoutineIsReadonly) return;
+    const row = draftExercises.find((e: any) => e.id === exerciseId);
+    if (!row) return;
+    const enabled = draftOverrideIds.has(exerciseId);
+    if (enabled) {
+      const base = overrideBaseById[exerciseId];
+      draftExercises = draftExercises.map((e: any) => {
+        if (e.id !== exerciseId) return e;
+        const next = { ...e };
+        if (base) {
+          for (const key of Object.keys(base) as Array<keyof ExerciseOverride>) {
+            (next as any)[key] = base[key];
+          }
+        }
+        return next;
+      });
+      const nextOverrides = new Set(draftOverrideIds);
+      nextOverrides.delete(exerciseId);
+      draftOverrideIds = nextOverrides;
+      const nextBase = { ...overrideBaseById };
+      delete nextBase[exerciseId];
+      overrideBaseById = nextBase;
+    } else {
+      overrideBaseById = {
+        ...overrideBaseById,
+        [exerciseId]: baseSnapshotForExercise(row),
+      };
+      draftOverrideIds = new Set([...draftOverrideIds, exerciseId]);
+    }
+    void persistTemplateExercisesNow();
+    void hapticLight();
+  }
+
+  function toggleExerciseSuperset(exerciseId: string) {
+    if (activeRoutineIsReadonly) return;
+    const idx = draftExercises.findIndex((e: any) => e.id === exerciseId);
+    if (idx < 0 || idx >= draftExercises.length - 1) return;
+    const next = new Set(draftSupersetIds);
+    if (next.has(exerciseId)) next.delete(exerciseId);
+    else next.add(exerciseId);
+    draftSupersetIds = next;
+    void persistTemplateExercisesNow();
+    void hapticLight();
+  }
+
 
   function isLibraryExerciseId(id: string | null | undefined): boolean {
     return !!id && !id.startsWith('temp-');
@@ -1561,7 +2004,7 @@ const getStatIcon = getItemIcon;
 
   let editingTemplateId = $state('');
   let templateSaveError = $state<string | null>(null);
-  let templateDraftSaveInFlight = false;
+  let templateDraftSavePromise: Promise<void> | null = null;
   let templateDraftSavePending = false;
   let templateNamePersistTimer: ReturnType<typeof setTimeout> | null = null;
   let templateNamePersistId: string | null = null;
@@ -1574,8 +2017,10 @@ const getStatIcon = getItemIcon;
   let selectedDateStr = $derived(toDateStr(selectedDate));
   let selectedWeekday = $derived(selectedDate.getDay());
   let currentDaySchedule = $derived(schedule.find(s => s.day_of_week === selectedWeekday));
+  /** Date-aware template id — cycle routines resolve by elapsed days, weekly by weekday. */
+  let currentDayTemplateId = $derived(templateIdForDate(selectedDateStr, selectedWeekday));
   let activeTemplate = $derived.by(() => {
-    const tid = effectiveAssignmentTemplateId(currentDaySchedule?.template_id ?? null);
+    const tid = effectiveAssignmentTemplateId(currentDayTemplateId ?? null);
     if (!tid) return null;
     return templates.find((t) => t.id === tid) ?? null;
   });
@@ -1605,8 +2050,18 @@ const getStatIcon = getItemIcon;
   /** Real workout log for the selected day (completed, skipped, or in progress — not rest). */
   let hasViewedWorkoutLog = $derived(!!viewedLog && !viewedLog.workout_snapshot?.is_rest);
   /** Past day log fetch finished (null = confirmed no log). */
-  let isSelectedDayLogResolved = $derived(isViewingToday || weekLogs[selectedDateStr] !== undefined);
+  let isSelectedDayLogResolved = $derived(
+    isViewingToday ||
+      weekLogs[selectedDateStr] !== undefined ||
+      weekLogLoadErrors[selectedDateStr] === true,
+  );
   let isSelectedDayLogLoading = $derived(!isViewingToday && !!currentUser && !isSelectedDayLogResolved);
+  let isSelectedDayLogError = $derived(
+    !isViewingToday &&
+      !!currentUser &&
+      weekLogs[selectedDateStr] === undefined &&
+      weekLogLoadErrors[selectedDateStr] === true,
+  );
   /** Past day with no log — includes every day before the account existed. */
   let isPastUnloggedWorkoutDay = $derived(
     isPastSelected &&
@@ -1705,8 +2160,9 @@ const getStatIcon = getItemIcon;
     return currentWeekDates.map((dayInfo) => {
       const isSelected = dayInfo.key === selectedDateStr;
       const isRealToday = dayInfo.isRealToday;
-      const daySchedule = schedule[dayInfo.weekday];
-      const hasTemplate = !!effectiveAssignmentTemplateId(daySchedule?.template_id ?? null);
+      const hasTemplate = !!effectiveAssignmentTemplateId(
+        templateIdForDate(dayInfo.key, dayInfo.weekday),
+      );
       const isRest = !hasTemplate;
       const dayLog = isRealToday ? todayLog : (weekLogs[dayInfo.key] ?? null);
       const dayHasWorkoutLog = !!dayLog && !dayLog.workout_snapshot?.is_rest;
@@ -1743,13 +2199,14 @@ const getStatIcon = getItemIcon;
     });
   });
   let weekPlan = $derived.by(() =>
-    Array.from({ length: 7 }, (_, dayOfWeek) => {
-      const row = schedule.find((s) => s.day_of_week === dayOfWeek);
-      const tid = effectiveAssignmentTemplateId(row?.template_id ?? null);
+    currentWeekDates.map((dayInfo) => {
+      const tid = effectiveAssignmentTemplateId(
+        templateIdForDate(dayInfo.key, dayInfo.weekday),
+      );
       const tpl = tid ? templates.find((t) => t.id === tid) : null;
       const color = tpl ? getTemplateColor(tpl.color ?? 0) : null;
       return {
-        day: DAYS[dayOfWeek],
+        day: dayInfo.letter,
         hasTemplate: !!tid,
         color,
         icon: clampItemIcon(tpl?.icon ?? DEFAULT_TEMPLATE_ICON),
@@ -1903,13 +2360,37 @@ const getStatIcon = getItemIcon;
         if (selectedDateStr === key) {
           viewedLog = log;
         }
+        weekLogLoadErrors = withoutKey(weekLogLoadErrors, key);
       })
-      .catch(() => {
+      .catch((err) => {
+        console.error('day log fetch failed', err);
         if (selectedDateStr === key) {
           viewedLog = null;
+          weekLogLoadErrors = { ...weekLogLoadErrors, [key]: true };
         }
       });
   });
+
+  function withoutKey<T>(source: Record<string, T>, key: string): Record<string, T> {
+    if (!(key in source)) return source;
+    const next = { ...source };
+    delete next[key];
+    return next;
+  }
+
+  async function retrySelectedDayLog() {
+    const key = selectedDateStr;
+    if (key === REAL_TODAY_STR) return;
+    weekLogLoadErrors = withoutKey(weekLogLoadErrors, key);
+    try {
+      const log = await db.getLogForDate(key);
+      weekLogs = { ...weekLogs, [key]: log };
+      if (selectedDateStr === key) viewedLog = log;
+    } catch (err) {
+      console.error('day log retry failed', err);
+      weekLogLoadErrors = { ...weekLogLoadErrors, [key]: true };
+    }
+  }
 
   // Preload logs for the current visible week eagerly (even when the week dropdown/calendar is collapsed).
   // This ensures the week strip shows correct per-day status immediately, and selecting any day
@@ -1953,10 +2434,18 @@ const getStatIcon = getItemIcon;
           }
           if (Object.keys(updates).length > 0) {
             weekLogs = { ...weekLogs, ...updates };
+            let nextErrors = weekLogLoadErrors;
+            for (const k of Object.keys(updates)) nextErrors = withoutKey(nextErrors, k);
+            weekLogLoadErrors = nextErrors;
           }
         })
         .catch((err) => {
           console.error('week log batch fetch failed', err);
+          // Mark attempted days as failed so selecting one shows an error + retry
+          // instead of an endless "Loading day…" spinner.
+          const failed: Record<string, true> = {};
+          for (const k of stillMissing) failed[k] = true;
+          weekLogLoadErrors = { ...weekLogLoadErrors, ...failed };
         });
     }, delay);
   });
@@ -2535,7 +3024,10 @@ const getStatIcon = getItemIcon;
     if (perf?.times) {
       for (const [key, entry] of Object.entries(perf.times)) {
         const e = entry as { result: string; target?: number };
-        const exId = key.split('-')[0];
+        // Tracking keys are `<exercise-uuid>-<set-index>`; UUIDs contain hyphens,
+        // so only the final segment is the set index.
+        const sep = key.lastIndexOf('-');
+        const exId = sep > 0 ? key.slice(0, sep) : key;
         let targetSecs = 0;
         if (e && typeof e === 'object' && e.target != null) {
           // Prefer the exact target that was in effect when this set was logged (frozen in perf for in-progress stability across refresh/template edits)
@@ -2813,10 +3305,12 @@ const getStatIcon = getItemIcon;
     }
     if (activeRestExerciseId != null && restTimerStartTimestamp != null && restCountdownRunning) {
       const elapsed = Math.floor((Date.now() - restTimerStartTimestamp) / 1000);
-      restCountdownSeconds = Math.max(0, restCurrentTargetSeconds - elapsed);
-      if (restCountdownSeconds <= 0) {
-        restCountdownSeconds = 0;
-        restCountdownRunning = false;
+      const remaining = Math.max(0, restCurrentTargetSeconds - elapsed);
+      if (remaining <= 0) {
+        // Expired while backgrounded: clear the bar instead of leaving a locked 0:00.
+        stopRestTimer();
+      } else {
+        restCountdownSeconds = remaining;
       }
     }
     writeActiveSessionBackup();
@@ -2905,6 +3399,9 @@ const getStatIcon = getItemIcon;
       restCountdownRunning = false;
       restVisualMsPerDot = 0;
       restVisualRawStep = restVisualDotCount;
+    } else {
+      // Nothing left to show (e.g. expiry was persisted before the tab closed).
+      stopRestTimer();
     }
   }
 
@@ -3024,11 +3521,14 @@ const getStatIcon = getItemIcon;
 
   function patchExerciseWeights(
     updates: Array<{ id: string; current_weight: number | null }>,
+    skipLibraryIds: Set<string> = new Set(),
   ) {
     if (!updates.length) return;
     const byId = new Map(updates.map((row) => [row.id, row.current_weight]));
     exerciseLibrary = exerciseLibrary.map((ex) =>
-      byId.has(ex.id) ? { ...ex, current_weight: byId.get(ex.id) ?? ex.current_weight } : ex,
+      byId.has(ex.id) && !skipLibraryIds.has(ex.id)
+        ? { ...ex, current_weight: byId.get(ex.id) ?? ex.current_weight }
+        : ex,
     );
     templates = templates.map((tpl) => ({
       ...tpl,
@@ -3036,14 +3536,6 @@ const getStatIcon = getItemIcon;
         byId.has(ex.id) ? { ...ex, current_weight: byId.get(ex.id) ?? ex.current_weight } : ex,
       ),
     }));
-    if (activeTemplate) {
-      activeTemplate = {
-        ...activeTemplate,
-        exercises: activeTemplate.exercises.map((ex) =>
-          byId.has(ex.id) ? { ...ex, current_weight: byId.get(ex.id) ?? ex.current_weight } : ex,
-        ),
-      };
-    }
     if (activeWorkoutTemplate) {
       activeWorkoutTemplate = {
         ...activeWorkoutTemplate,
@@ -3367,12 +3859,23 @@ const getStatIcon = getItemIcon;
     builderAssignments = newAssignments;
   }
 
+  function syncBuilderModeFromActiveRoutine() {
+    if (activeRoutineMeta?.schedule_mode === 'cycle') {
+      seedBuilderCycleState(false);
+      builderEditingDay = Math.min(builderCycleTodayIndex(), builderCycleLength - 1);
+    } else {
+      builderScheduleMode = 'weekly';
+      builderCycleError = null;
+    }
+  }
+
   /** Navigate back immediately; refresh schedule in the background (no await on click). */
   function closeRoutinesMenu() {
     templateError = null;
     templateErrorFading = false;
     builderEditingDay = selectedWeekday;
     syncBuilderAssignmentsFromSchedule(schedule);
+    syncBuilderModeFromActiveRoutine();
     currentView = 'swap_template';
 
     if (!currentUser?.id) return;
@@ -3388,6 +3891,7 @@ const getStatIcon = getItemIcon;
         const active = await db.getActiveRoutineId();
         if (active != null) activeRoutineId = active;
         syncBuilderAssignmentsFromSchedule(schedule);
+        syncBuilderModeFromActiveRoutine();
       } catch (e) {
         console.error('closeRoutinesMenu background refresh failed', e);
       }
@@ -3436,6 +3940,7 @@ const getStatIcon = getItemIcon;
         exerciseLibrary = app.exerciseLibrary ?? [];
         syncBuilderAssignmentsFromSchedule(schedule);
       }
+      syncBuilderModeFromActiveRoutine();
     } catch (e) {
       console.error('Failed to update editor after routine activation', e);
     }
@@ -3533,12 +4038,56 @@ const getStatIcon = getItemIcon;
   });
 
   function enterStatsView() {
-    if (!isViewingToday) return;
     currentView = 'stats';
   }
 
   function exitStatsView() {
     currentView = 'track';
+  }
+
+  const HISTORY_PAGE_SIZE = 30;
+
+  async function loadWorkoutHistory(reset = false) {
+    if (reset) {
+      historyLoading = true;
+      historyError = null;
+    } else {
+      if (!historyHasMore || historyLoadingMore || historyLoading) return;
+      historyLoadingMore = true;
+    }
+    try {
+      const before = reset ? null : (historyEntries[historyEntries.length - 1]?.workout_date ?? null);
+      const page = await db.getHistoryPage(before, HISTORY_PAGE_SIZE);
+      historyEntries = reset ? page : [...historyEntries, ...page];
+      historyHasMore = page.length >= HISTORY_PAGE_SIZE;
+    } catch (err) {
+      console.error('load workout history failed', err);
+      historyError = formatDbError(err);
+    } finally {
+      historyLoading = false;
+      historyLoadingMore = false;
+    }
+  }
+
+  function selectStatsTab(tab: StatsTab) {
+    if (statsTab === tab) return;
+    statsTab = tab;
+    void hapticLight();
+    if (tab === 'history') {
+      historyExpandedDate = null;
+      void loadWorkoutHistory(true);
+    }
+  }
+
+  function openHistoryDate(dateStr: string) {
+    statsTab = 'tracked';
+    selectDate(new Date(dateStr + 'T00:00:00'));
+  }
+
+  function historyEntryDuration(entry: WorkoutHistory): number {
+    const perf = entry.performance_snapshot ?? {};
+    const snap = entry.workout_snapshot ?? {};
+    return entry.duration_seconds ?? perf.duration_seconds ?? snap.duration_seconds ?? 0;
   }
 
   function draftStatById(id: string) {
@@ -3563,7 +4112,6 @@ const getStatIcon = getItemIcon;
     editorExitSaving = true;
     trackedStats = draftStats.map((s) => ({ ...s }));
     currentView = 'stats';
-    statSaveError = null;
     void runDbActivityBatch(persistTrackedStatsNow).finally(() => {
       editorExitSaving = false;
     });
@@ -3612,67 +4160,105 @@ const getStatIcon = getItemIcon;
     ];
     selectDraftStat(tempId);
     void persistTrackedStatsNow();
+    void hapticSuccess();
   }
 
   function deleteSelectedStat() {
     if (!selectedDraftStatId) return;
     const id = selectedDraftStatId;
+    const prevSelected = selectedDraftStatId;
+    const prevStats = draftStats.map((s) => ({ ...s }));
+    const prevKeys = { ...statListKeyById };
+    const deletedName = draftStats.find((s) => s.id === id)?.name?.trim() || 'stat';
+
     statListKeyById = forgetListKey(statListKeyById, id);
     draftStats = draftStats.filter((s) => s.id !== id);
     selectedDraftStatId = draftStats.length > 0 ? draftStats[draftStats.length - 1].id : null;
     editingStatNameId = null;
     void persistTrackedStatsNow();
+
+    void hapticMedium();
+    showUndoToast({
+      label: `Deleted "${deletedName}"`,
+      onUndo: () => {
+        // Restore local state; persistTrackedStatsNow re-saves the whole list
+        // (upsert), which re-creates the DB row.
+        const restore = { ...prevKeys };
+        for (const s of prevStats) restore[s.id] = restore[s.id] ?? s.id;
+        statListKeyById = restore;
+        draftStats = prevStats;
+        trackedStats = prevStats.map((s) => ({ ...s }));
+        selectedDraftStatId = prevSelected;
+        editingStatNameId = null;
+        void persistTrackedStatsNow();
+      },
+    });
   }
 
-  async function persistTrackedStatsNow() {
-    if (statDraftSaveInFlight) return;
-
-    const snapStats = draftStats.map((s, i) => {
-      const copy = { ...s };
-      normalizeDraftStat(copy);
-      copy.display_order = i;
-      return copy;
-    });
-    const validationErr = validateDraftStats(snapStats);
-    if (validationErr) {
-      statSaveError = validationErr;
-      return;
+  function persistTrackedStatsNow(): Promise<void> {
+    if (statDraftSavePromise) {
+      // Coalesce: the running loop re-snapshots the latest drafts before exiting.
+      statDraftSavePending = true;
+      return statDraftSavePromise;
     }
 
-    statDraftSaveInFlight = true;
-    try {
-      const saved = await db.saveTrackedStats(snapStats);
-      const prevDraft = draftStats;
-      const prevSelected = selectedDraftStatId;
-      withSuppressedListEnter(() => {
-        let nextStatKeys = statListKeyById;
-        saved.forEach((s, i) => {
-          const prevId = prevDraft[i]?.id;
-          if (prevId && prevId !== s.id) nextStatKeys = promoteListKey(nextStatKeys, prevId, s.id);
-          else if (s.id) nextStatKeys = rememberListKey(nextStatKeys, s.id);
+    const run = async () => {
+      while (true) {
+        statDraftSavePending = false;
+
+        const snapStats = draftStats.map((s, i) => {
+          const copy = { ...s };
+          normalizeDraftStat(copy);
+          copy.display_order = i;
+          return copy;
         });
-        statListKeyById = nextStatKeys;
-        draftStats = saved.map((s) => ({ ...s }));
-        trackedStats = draftStats.map((s) => ({ ...s }));
-        const nextSelected = prevDraft.findIndex((s) => s.id === prevSelected);
-        if (nextSelected >= 0 && saved[nextSelected]) {
-          selectedDraftStatId = saved[nextSelected].id;
-        } else if (prevSelected && saved.some((s) => s.id === prevSelected)) {
-          selectedDraftStatId = prevSelected;
-        } else {
-          selectedDraftStatId = saved[0]?.id ?? null;
+        const validationErr = validateDraftStats(snapStats);
+        if (validationErr) {
+          statSaveError = validationErr;
+          return;
         }
-      });
-      statSaveError = null;
-    } catch (err) {
-      console.error('stat save failed', err);
-      statSaveError =
-        err && typeof err === 'object' && 'message' in err && typeof err.message === 'string'
-          ? err.message
-          : 'Could not save stats. Try again.';
-    } finally {
-      statDraftSaveInFlight = false;
-    }
+
+        try {
+          const saved = await db.saveTrackedStats(snapStats);
+          const prevDraft = draftStats;
+          const prevSelected = selectedDraftStatId;
+          withSuppressedListEnter(() => {
+            let nextStatKeys = statListKeyById;
+            saved.forEach((s, i) => {
+              const prevId = prevDraft[i]?.id;
+              if (prevId && prevId !== s.id) nextStatKeys = promoteListKey(nextStatKeys, prevId, s.id);
+              else if (s.id) nextStatKeys = rememberListKey(nextStatKeys, s.id);
+            });
+            statListKeyById = nextStatKeys;
+            draftStats = saved.map((s) => ({ ...s }));
+            trackedStats = draftStats.map((s) => ({ ...s }));
+            const nextSelected = prevDraft.findIndex((s) => s.id === prevSelected);
+            if (nextSelected >= 0 && saved[nextSelected]) {
+              selectedDraftStatId = saved[nextSelected].id;
+            } else if (prevSelected && saved.some((s) => s.id === prevSelected)) {
+              selectedDraftStatId = prevSelected;
+            } else {
+              selectedDraftStatId = saved[0]?.id ?? null;
+            }
+          });
+          statSaveError = null;
+        } catch (err) {
+          console.error('stat save failed', err);
+          statSaveError =
+            err && typeof err === 'object' && 'message' in err && typeof err.message === 'string'
+              ? err.message
+              : 'Could not save stats. Try again.';
+          return;
+        }
+
+        if (!statDraftSavePending) return;
+      }
+    };
+
+    statDraftSavePromise = run().finally(() => {
+      statDraftSavePromise = null;
+    });
+    return statDraftSavePromise;
   }
 
   function handleStatDragStart(e: DragEvent, index: number) {
@@ -3699,6 +4285,7 @@ const getStatIcon = getItemIcon;
     if (!next) return;
     draftStats = next;
     void persistTrackedStatsNow();
+    void hapticMedium();
   }
 
   function handleStatDrop(e: DragEvent) {
@@ -3835,7 +4422,14 @@ const getStatIcon = getItemIcon;
   }
 
   function deleteStatLogEntry(statId: string, logDate: string) {
+    const prevValue = statLogs[statId]?.[logDate];
     persistStatLogEntry(statId, logDate, 0);
+    showUndoToast({
+      label: 'Deleted log entry',
+      onUndo: () => {
+        if (prevValue != null) persistStatLogEntry(statId, logDate, prevValue);
+      },
+    });
   }
 
   function applySupabaseHealthError(e: unknown) {
@@ -4293,6 +4887,8 @@ const getStatIcon = getItemIcon;
 			statLogSnapshots = boot.statLogSnapshots ?? [];
 			statLogs = statLogsFromSnapshots(statLogSnapshots);
 			activeRoutineId = boot.activeRoutineId;
+			activeRoutinePlan = boot.activeRoutinePlan ?? null;
+			preferences = { ...DEFAULT_PREFERENCES, ...(boot.preferences ?? {}) };
 			preloadedRoutineList = boot.routineList ?? [];
 	
 			if (isInitial) {
@@ -4365,6 +4961,9 @@ const getStatIcon = getItemIcon;
     // Load the persisted auth preference (signup for first install, signin thereafter)
     loadPreferredAuthMode();
 
+    refreshTodayIfNeeded();
+    todayCheckTimer = setInterval(refreshTodayIfNeeded, 30_000);
+
     const unsubDbActivity = subscribeDbActivity(flashDbIoIndicator);
     const unsubDbActivitySnapshot = subscribeDbActivitySnapshot(() => {
       dbActivitySnapshot = getDbActivitySnapshot();
@@ -4372,17 +4971,9 @@ const getStatIcon = getItemIcon;
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       void (async () => {
-        if (session?.user) {
-          const { data: { user }, error } = await supabase.auth.getUser();
-          if (error || !user) {
-            currentUser = null;
-            if (error) await supabase.auth.signOut();
-          } else {
-            currentUser = user;
-          }
-        } else {
-          currentUser = null;
-        }
+        // Never await another auth network call inside onAuthStateChange — Supabase
+        // holds the auth lock and getUser() can deadlock the callback.
+        currentUser = session?.user ?? null;
 
         if (
           event === 'INITIAL_SESSION' ||
@@ -4466,6 +5057,7 @@ const getStatIcon = getItemIcon;
       if (document.visibilityState === 'hidden') {
         persistOnBackground();
       } else if (document.visibilityState === 'visible') {
+        refreshTodayIfNeeded();
         resyncActiveSessionFromWallClock();
       }
     };
@@ -4491,6 +5083,10 @@ const getStatIcon = getItemIcon;
       unsubDbActivity();
       unsubDbActivitySnapshot();
       if (dbIoFlashTimer) clearTimeout(dbIoFlashTimer);
+      if (todayCheckTimer) {
+        clearInterval(todayCheckTimer);
+        todayCheckTimer = null;
+      }
       subscription.unsubscribe();
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pagehide', onPageHide);
@@ -4601,6 +5197,7 @@ const getStatIcon = getItemIcon;
     writeActiveSessionBackup();
     ensureActiveSessionHeartbeat();
     void persistWorkoutProgressNow();
+    void hapticLight();
   }
 
   /** DB rejects duration_seconds = 0 on completed workouts. */
@@ -4721,12 +5318,28 @@ const getStatIcon = getItemIcon;
         return;
       }
       applyWorkoutLogLocally(result.workout, REAL_TODAY_STR);
-      patchExerciseWeights(result.updatedExercises);
+      const overrideIds = new Set(
+        (template.exercises || []).filter((ex) => !!ex.override).map((ex) => ex.id),
+      );
+      patchExerciseWeights(result.updatedExercises, overrideIds);
+      if (overrideIds.size > 0) {
+        const overrideUpdates = result.updatedExercises
+          .filter((row) => overrideIds.has(row.id))
+          .map((row) => ({ exercise_id: row.id, current_weight: row.current_weight }));
+        if (overrideUpdates.length > 0) {
+          void runDbActivityBatch(() =>
+            db.advanceTemplateOverrideWeights(template.id, overrideUpdates),
+          ).catch((err) => console.error('override weight advance failed', err));
+        }
+      }
       if (opGen !== workoutProgressSaveGen) return;
       succeeded = true;
+      void hapticSuccess();
+      playWorkoutComplete();
     } catch (err) {
       if (opGen !== workoutProgressSaveGen) return;
       console.error('finish workout failed', err);
+      playError();
       workoutActionError = formatDbError(err);
       if (applyActiveSessionBackup(rollbackBackup)) {
         writeActiveSessionBackup();
@@ -4790,6 +5403,18 @@ const getStatIcon = getItemIcon;
     });
   }
 
+  /** Supersets flow straight into the next exercise: skip auto rest after their last set. */
+  function shouldAutoRestAfterSet(exerciseId: string, setIndex: number): boolean {
+    if (preferences.auto_rest_timer === false) return false;
+    const t = activeWorkoutTemplate ?? activeTemplate;
+    const ex = t?.exercises?.find((e) => e.id === exerciseId);
+    if (!ex) return true;
+    const isLastSet = setIndex >= Math.max(0, (ex.target_sets || 0) - 1);
+    const linked =
+      Array.isArray(t?.superset_with_next) && (t!.superset_with_next as string[]).includes(exerciseId);
+    return !(linked && isLastSet);
+  }
+
   function startRepSetHold(
     e: Event,
     exerciseId: string,
@@ -4820,6 +5445,8 @@ const getStatIcon = getItemIcon;
         repSetHoldProgress = 0;
         repSetHoldKey = null;
         scheduleWorkoutProgressSave();
+        playSetLogged();
+        void hapticLight();
         // start rest fade (1s to orange) then timer
         const t = activeWorkoutTemplate ?? activeTemplate;
         const ex = t?.exercises?.find((e) => e.id === exerciseId);
@@ -4827,7 +5454,7 @@ const getStatIcon = getItemIcon;
           const rMin = ex.rest_minutes || 0;
           const rSec = ex.rest_seconds || 0;
           const rTotal = rMin * 60 + rSec;
-          if (rTotal > 0) {
+          if (rTotal > 0 && shouldAutoRestAfterSet(exerciseId, setIndex)) {
             startRestFade(exerciseId, setIndex, rTotal);
           }
         }
@@ -4857,6 +5484,7 @@ const getStatIcon = getItemIcon;
       syncClampedInput(inputEl, display);
       if (inputEl.value.trim() !== '' && value > 0) {
         trackedReps = { ...trackedReps, [key]: value };
+        playSetLogged();
       } else {
         const next = { ...trackedReps };
         delete next[key];
@@ -4870,7 +5498,7 @@ const getStatIcon = getItemIcon;
         const rMin = ex.rest_minutes || 0;
         const rSec = ex.rest_seconds || 0;
         const rTotal = rMin * 60 + rSec;
-        if (rTotal > 0) {
+        if (rTotal > 0 && shouldAutoRestAfterSet(exerciseId, setIndex)) {
           startRestFade(exerciseId, setIndex, rTotal);
         }
       }
@@ -4907,6 +5535,8 @@ const getStatIcon = getItemIcon;
           const desiredP = N - 1;
           metPhaseShift = (desiredP - p + cycle) % cycle;
           wasMet = true;
+          playRestEnd();
+          void hapticSuccess();
         }
         if (!isMetNow) {
           wasMet = false;
@@ -4952,8 +5582,8 @@ const getStatIcon = getItemIcon;
       startExerciseCountdownInterval();
       startExerciseVisualInterval();
     } else {
-      // Paused: freeze at last known elapsed; rebuild wall-clock base for resume.
-      timerStartTimestamp = Date.now() - Math.max(0, timer.countdownSeconds) * 1000;
+      // Paused: freeze at last known elapsed; resume anchors to this value.
+      timerStartTimestamp = null;
       countdownSeconds = Math.max(0, timer.countdownSeconds);
       visualRawStep =
         visualMsPerDot > 0
@@ -4989,14 +5619,17 @@ const getStatIcon = getItemIcon;
 
   function toggleExerciseTimer() {
     if (countdownRunning) {
-      clearInterval(countdownTimer);
-      clearInterval(visualUpdateTimer);
-      countdownRunning = false;
-    } else {
-      countdownRunning = true;
       if (timerStartTimestamp != null) {
         countdownSeconds = Math.max(0, Math.floor((Date.now() - timerStartTimestamp) / 1000));
       }
+      clearInterval(countdownTimer);
+      clearInterval(visualUpdateTimer);
+      countdownRunning = false;
+      // Freeze the elapsed clock: paused time must not count toward this set.
+      timerStartTimestamp = null;
+    } else {
+      countdownRunning = true;
+      // Anchor to the frozen elapsed time so the pause gap is excluded.
       timerStartTimestamp = Date.now() - countdownSeconds * 1000;
       startExerciseCountdownInterval();
       startExerciseVisualInterval();
@@ -5012,7 +5645,7 @@ const getStatIcon = getItemIcon;
     // Prefer wall-time elapsed from the start timestamp (more accurate/robust than the 1s count var)
     // for the logged performed time. Fall back to countdownSeconds if no timestamp.
     let secs = countdownSeconds;
-    if (timerStartTimestamp != null) {
+    if (countdownRunning && timerStartTimestamp != null) {
       secs = Math.max(0, Math.floor((Date.now() - timerStartTimestamp) / 1000));
     }
     completedTimers = {
@@ -5046,7 +5679,7 @@ const getStatIcon = getItemIcon;
       const rMin = ex.rest_minutes || 0;
       const rSec = ex.rest_seconds || 0;
       const rTotal = rMin * 60 + rSec;
-      if (rTotal > 0) {
+      if (rTotal > 0 && shouldAutoRestAfterSet(exerciseId, setIndex)) {
         startRestFade(exerciseId, setIndex, rTotal);
       }
     }
@@ -5119,6 +5752,11 @@ const getStatIcon = getItemIcon;
     startRestCountdownInterval();
     startRestVisualInterval();
     writeActiveSessionBackup();
+    playRestStart();
+    if (preferences.rest_notifications !== false) {
+      restNotificationPending = true;
+      void scheduleRestEndNotification(totalSeconds);
+    }
   }
 
   function stopRestTimer() {
@@ -5138,6 +5776,10 @@ const getStatIcon = getItemIcon;
     restFadeTimer = null;
     restFadeExerciseId = null;
     restFadeSetIndex = null;
+    if (restNotificationPending) {
+      restNotificationPending = false;
+      void cancelRestEndNotification();
+    }
     writeActiveSessionBackup();
   }
 
@@ -5160,6 +5802,9 @@ const getStatIcon = getItemIcon;
         // Set rawStep to a value that maps to the last cube in the met bounce logic (using the internal visual count 42)
         restVisualRawStep = restVisualDotCount;
         restCountdownRunning = false;
+        restNotificationPending = false;
+        playRestEnd();
+        void hapticSuccess();
         writeActiveSessionBackup();
         // Show the 100% filled bar briefly (via the isPast force + effectiveRawDot), then stop the rest UI.
         // This makes the visual reach 100% at 00:00 and then the rest "completes" (bar disappears, back to sets).
@@ -5185,7 +5830,12 @@ const getStatIcon = getItemIcon;
     }, 30);
   }
 
-  async function syncSkipWorkout() {
+  async function syncSkipWorkout(previous?: {
+    todayLog: any;
+    viewedLog: any;
+    weekLogHasKey: boolean;
+    weekLog: any;
+  }) {
     const opGen = workoutProgressSaveGen;
     try {
       workoutActionError = null;
@@ -5204,6 +5854,16 @@ const getStatIcon = getItemIcon;
       console.error('skip workout failed', err);
       workoutActionError = formatDbError(err);
       workoutState = 'idle';
+      // The optimistic skip is not persisted — put the previous day state back so the
+      // UI does not show a skipped workout that the server never accepted.
+      if (previous) {
+        todayLog = previous.todayLog;
+        const nextWeekLogs = { ...weekLogs };
+        if (previous.weekLogHasKey) nextWeekLogs[REAL_TODAY_STR] = previous.weekLog;
+        else delete nextWeekLogs[REAL_TODAY_STR];
+        weekLogs = nextWeekLogs;
+        viewedLog = previous.viewedLog;
+      }
     }
   }
 
@@ -5224,9 +5884,15 @@ const getStatIcon = getItemIcon;
     stopSkipHold();
     justFinishedStatus = null;
     resetHeaderTimerDisplay();
+    const previous = {
+      todayLog,
+      viewedLog,
+      weekLogHasKey: Object.prototype.hasOwnProperty.call(weekLogs, REAL_TODAY_STR),
+      weekLog: weekLogs[REAL_TODAY_STR],
+    };
     applySkipOptimisticLog();
     workoutState = 'skipped';
-    void syncSkipWorkout();
+    void syncSkipWorkout(previous);
   }
 
   function beginCancelRevert() {
@@ -5337,6 +6003,7 @@ const getStatIcon = getItemIcon;
         clearInterval(skipHoldTimer);
         skipHoldTimer = null;
         skipProgress = 0;
+        void hapticMedium();
         beginSkipRevert();
       }
     }, 20);
@@ -5360,6 +6027,7 @@ const getStatIcon = getItemIcon;
         clearInterval(cancelHoldTimer);
         cancelHoldTimer = null;
         cancelProgress = 0;
+        void hapticMedium();
         beginCancelRevert();
       }
     }, 20);
@@ -5411,6 +6079,7 @@ const getStatIcon = getItemIcon;
         deleteAllExHoldTimer = null;
         deleteAllExProgress = 0;
         deleteAllExHolding = false;
+        void hapticWarning();
         deleteAllLibraryExercises();
       }
     }, 16);
@@ -5440,6 +6109,7 @@ const getStatIcon = getItemIcon;
         clearInterval(eraseHoldTimer);
         eraseHoldTimer = null;
         eraseProgress = 0;
+        void hapticMedium();
         beginEraseRevert();
       }
     }, 20);
@@ -5484,6 +6154,7 @@ const getStatIcon = getItemIcon;
         clearInterval(signOutHoldTimer!);
         signOutHoldTimer = null;
         signOutProgress = 0;
+        void hapticMedium();
         void handleSignOut();
       }
     }, 20);
@@ -5507,6 +6178,7 @@ const getStatIcon = getItemIcon;
         clearInterval(deleteAccountHoldTimer!);
         deleteAccountHoldTimer = null;
         deleteAccountProgress = 0;
+        void hapticWarning();
         void handleDeleteAccount();
       }
     }, 20);
@@ -5611,7 +6283,11 @@ const getStatIcon = getItemIcon;
     }
   }
 
-  async function saveRoutineEditorDraft() {
+  async function saveRoutineEditorDraft(cycleSnapshot?: {
+    length: number;
+    anchor: string;
+    slots: Array<string | null>;
+  }) {
     if (activeRoutineIsReadonly) {
       // Bookmarked routines are live links — never write back to source
       return;
@@ -5628,6 +6304,14 @@ const getStatIcon = getItemIcon;
     }
     await flushTemplateNamePersist();
     if (activeRoutineId) {
+      if (builderScheduleMode === 'cycle') {
+        if (builderCycleSaveTimer) {
+          clearTimeout(builderCycleSaveTimer);
+          builderCycleSaveTimer = null;
+        }
+        await persistBuilderCyclePlan(cycleSnapshot);
+        return;
+      }
       try {
         await db.saveRoutineSchedule(activeRoutineId, schedule.map((s: any) => ({
           day_of_week: s.day_of_week,
@@ -5642,6 +6326,20 @@ const getStatIcon = getItemIcon;
   function exitRoutineEditor() {
     if (editorExitSaving) return;
     editorExitSaving = true;
+    // Snapshot the cycle plan before tearing down editor state — the save below
+    // runs asynchronously and must not read cleared assignments.
+    const cycleSnapshot =
+      builderScheduleMode === 'cycle'
+        ? {
+            length: builderCycleLength,
+            anchor: builderCycleAnchor,
+            slots: builderCycleSlots(),
+          }
+        : undefined;
+    if (builderCycleSaveTimer) {
+      clearTimeout(builderCycleSaveTimer);
+      builderCycleSaveTimer = null;
+    }
     currentView = 'track';
     builderAssignments = {};
     builderEditingDay = 0;
@@ -5653,7 +6351,7 @@ const getStatIcon = getItemIcon;
     }
     templateErrorFading = false;
     templateError = null;
-    void runDbActivityBatch(saveRoutineEditorDraft).finally(() => {
+    void runDbActivityBatch(() => saveRoutineEditorDraft(cycleSnapshot)).finally(() => {
       editorExitSaving = false;
     });
   }
@@ -5676,6 +6374,16 @@ const getStatIcon = getItemIcon;
     const effectiveId = effectiveAssignmentTemplateId(resolvedId);
     const priorRow = schedule.find((s) => s.day_of_week === dayOfWeek);
     const priorEffective = effectiveAssignmentTemplateId(priorRow?.template_id ?? null);
+
+    if (builderScheduleMode === 'cycle') {
+      if (activeRoutineIsReadonly) {
+        templateError = 'Bookmarked routines are read-only. Copy to edit.';
+        templateErrorFading = false;
+        return;
+      }
+      queueBuilderCycleSave();
+      return;
+    }
     if (effectiveId === priorEffective) return;
 
     if (activeRoutineIsReadonly) {
@@ -6402,6 +7110,7 @@ const getStatIcon = getItemIcon;
         flushWorkoutProgressSave();
       }).catch(() => {});
       App.addListener('resume', () => {
+        refreshTodayIfNeeded();
         resyncActiveSessionFromWallClock();
         if (workoutState === 'active') {
           flushWorkoutProgressSave();
@@ -6512,7 +7221,6 @@ const getStatIcon = getItemIcon;
           version: '1.0.3',
           notes: 'Demo of the update menu (triggered from the website footer).\n\nIn the real Android app this appears automatically after sign-in + data load when a newer GitHub release is detected.',
           downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.3/lift-tracker-v1.0.3.apk',
-          apiAssetUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.3/lift-tracker-v1.0.3.apk',
           size: 3620000,
           tag: 'v1.0.3'
         } as any;
@@ -6528,7 +7236,6 @@ const getStatIcon = getItemIcon;
         version: '1.0.3',
         notes: 'Demo of the update menu (triggered from the website footer). Fetch failed — see console for details.',
         downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.3/lift-tracker-v1.0.3.apk',
-        apiAssetUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.3/lift-tracker-v1.0.3.apk',
         size: 3620000,
         tag: 'v1.0.3'
       } as any;
@@ -6666,12 +7373,15 @@ const getStatIcon = getItemIcon;
     if (accountBusy) return;
     accountBusy = true;
     accountError = null;
-    resetSettingsPanelUi();
+    stopSignOutHold();
     try {
       await db.signOut();
+      resetSettingsPanelUi();
     } catch (e) {
       console.error('Sign out failed', e);
       accountError = formatAuthError(e);
+      // Keep the settings panel open so the failure is visible.
+      showSettingsPanel = true;
     } finally {
       accountBusy = false;
     }
@@ -6707,16 +7417,10 @@ const getStatIcon = getItemIcon;
 
   function undoRestLog(dateStr: string) {
     const prev = weekLogs[dateStr] ?? null;
-    weekLogs = { ...weekLogs, [dateStr]: null };
-    if (selectedDateStr === dateStr) {
-      viewedLog = null;
-    }
+    applyWorkoutLogLocally(null, dateStr);
     void db.deleteLogForDate(dateStr).catch((err) => {
       console.error('undo rest log failed', err);
-      weekLogs = { ...weekLogs, [dateStr]: prev };
-      if (selectedDateStr === dateStr) {
-        viewedLog = prev;
-      }
+      applyWorkoutLogLocally(prev, dateStr);
     });
   }
 
@@ -6968,6 +7672,20 @@ const getStatIcon = getItemIcon;
       typeof tpl.icon === 'number' ? tpl.icon : DEFAULT_TEMPLATE_ICON,
     );
     const firstId = next.length > 0 ? next[0].id : null;
+    const seededOverrideIds = new Set<string>();
+    const seededSupersetIds = new Set<string>();
+    const seededBase: Record<string, ExerciseOverride> = {};
+    for (const row of next) {
+      if (tpl.exercise_overrides?.[row.id]) {
+        seededOverrideIds.add(row.id);
+        const base = exerciseLibrary.find((e) => e.id === row.id);
+        if (base) seededBase[row.id] = exerciseValueSnapshot(base);
+      }
+    }
+    const availableIds = new Set(next.map((e) => e.id));
+    for (const id of tpl.superset_with_next ?? []) {
+      if (availableIds.has(id)) seededSupersetIds.add(id);
+    }
 
     // Single batch: open shell + exercise list immediately (no empty-then-fill lag).
     // Properties panel is deferred one frame — it's the heaviest form subtree.
@@ -6984,12 +7702,16 @@ const getStatIcon = getItemIcon;
       }
       exerciseListKeyById = exKeys;
       draftExercises = next;
+      draftOverrideIds = seededOverrideIds;
+      draftSupersetIds = seededSupersetIds;
+      overrideBaseById = seededBase;
       selectedExerciseId = null;
       editingExerciseNameId = null;
       templateSaveError = null;
       showTemplateColorPicker = false;
       showTemplateIconPicker = false;
       showExerciseLibraryPicker = false;
+      showExerciseCatalog = false;
       libraryPickerClosing = false;
       selectedLibraryExerciseId = null;
       librarySearchQuery = '';
@@ -7066,16 +7788,31 @@ const getStatIcon = getItemIcon;
     exerciseLibrary = [...byId.values()];
   }
 
-  function applySavedTemplateExercises(templateId: string, saved: Exercise[]) {
+  function applySavedTemplateExercises(
+    templateId: string,
+    saved: Exercise[],
+    overridesMap: Record<string, ExerciseOverride> = {},
+    meta?: {
+      overrideIds: Set<string>;
+      supersetIds: Set<string>;
+      baseById: Record<string, ExerciseOverride>;
+    },
+  ) {
     const tpl = templates.find((t) => t.id === templateId);
     const prevSelected = selectedExerciseId;
     const selectedIndex = draftExercises.findIndex((e) => e.id === prevSelected);
     const prevDraft = draftExercises;
+    const overrideSrc = meta?.overrideIds ?? draftOverrideIds;
+    const supersetSrc = meta?.supersetIds ?? draftSupersetIds;
+    const baseSrc = meta?.baseById ?? overrideBaseById;
+    const effectiveSaved: Exercise[] = saved.map((ex) =>
+      overridesMap[ex.id] ? applyExerciseOverride(ex, overridesMap[ex.id]) : ex,
+    );
 
     // Suppress enter so save reconciliation never re-animates the whole list
     // (that stacked with deletes as ghost rows).
     withSuppressedListEnter(() => {
-      patchTemplateInCache(templateId, tpl?.name ?? draftTemplateName, saved, draftTemplateColor);
+      patchTemplateInCache(templateId, tpl?.name ?? draftTemplateName, effectiveSaved, draftTemplateColor);
       mergeSavedExercisesIntoLibrary(saved);
 
       let nextExKeys = exerciseListKeyById;
@@ -7088,7 +7825,23 @@ const getStatIcon = getItemIcon;
         }
       });
       exerciseListKeyById = nextExKeys;
-      draftExercises = saved.map((ex) => ({ ...ex }));
+      draftExercises = effectiveSaved.map((ex) => ({ ...ex }));
+
+      const nextOverrideIds = new Set<string>();
+      const nextSupersetIds = new Set<string>();
+      const nextBase: Record<string, ExerciseOverride> = {};
+      saved.forEach((savedEx, i) => {
+        const prevId = prevDraft[i]?.id as string | undefined;
+        if (!prevId) return;
+        if (overrideSrc.has(prevId)) {
+          nextOverrideIds.add(savedEx.id);
+          if (baseSrc[prevId]) nextBase[savedEx.id] = baseSrc[prevId];
+        }
+        if (supersetSrc.has(prevId)) nextSupersetIds.add(savedEx.id);
+      });
+      draftOverrideIds = nextOverrideIds;
+      draftSupersetIds = nextSupersetIds;
+      overrideBaseById = nextBase;
 
       const nextStash = { ...exerciseTypeFieldStash };
       saved.forEach((savedEx, i) => {
@@ -7111,48 +7864,90 @@ const getStatIcon = getItemIcon;
     });
   }
 
-  async function persistTemplateExercisesNow() {
+  function persistTemplateExercisesNow(): Promise<void> {
     const templateId = editingTemplateId;
-    if (!templateId || templateId.startsWith('temp-')) return;
+    if (!templateId || templateId.startsWith('temp-')) return Promise.resolve();
     if (activeRoutineIsReadonly || isForeignTemplate(templateId)) {
       templateSaveError = 'This template is read-only (bookmarked). Copy the routine to edit.';
-      return;
+      return Promise.resolve();
     }
 
-    if (templateDraftSaveInFlight) {
+    if (templateDraftSavePromise) {
+      // Coalesce: the running loop re-snapshots the latest drafts before exiting.
       templateDraftSavePending = true;
-      return;
+      return templateDraftSavePromise;
     }
 
-    const snapExercises = draftExercisesForSave();
-    const validationErr = validateDraftExercises(snapExercises);
-    if (validationErr) {
-      templateSaveError = validationErr;
-      return;
-    }
-
-    templateDraftSaveInFlight = true;
-    try {
-      const saved = await db.saveTemplateExercises(templateId, snapExercises);
-      applySavedTemplateExercises(templateId, saved);
-      templateSaveError = null;
-
-      if (!isTemplateAssignable({ exercises: saved })) {
-        await clearTemplateFromAllDays(templateId);
-      }
-    } catch (err) {
-      console.error('template exercise save failed', err);
-      templateSaveError =
-        err && typeof err === 'object' && 'message' in err && typeof err.message === 'string'
-          ? err.message
-          : 'Could not save template changes. Try again.';
-    } finally {
-      templateDraftSaveInFlight = false;
-      if (templateDraftSavePending) {
+    const run = async () => {
+      while (true) {
         templateDraftSavePending = false;
-        void persistTemplateExercisesNow();
+
+        const id = editingTemplateId;
+        if (!id || id.startsWith('temp-')) return;
+        if (activeRoutineIsReadonly || isForeignTemplate(id)) {
+          templateSaveError = 'This template is read-only (bookmarked). Copy the routine to edit.';
+          return;
+        }
+
+        const snapExercises = draftExercisesForSave();
+        const validationErr = validateDraftExercises(snapExercises);
+        if (validationErr) {
+          templateSaveError = validationErr;
+          return;
+        }
+        const snapOverrideIds = new Set(draftOverrideIds);
+        const snapSupersetIds = new Set(draftSupersetIds);
+        const snapBaseById = { ...overrideBaseById };
+
+        try {
+          // Overridden rows send their base values to the shared exercise rows;
+          // day-specific values live on the template override blob instead.
+          const basePayload = snapExercises.map((row) => {
+            if (!snapOverrideIds.has(row.id)) return row;
+            const base = snapBaseById[row.id];
+            return base ? { ...row, ...base } : row;
+          });
+          const saved = await db.saveTemplateExercises(id, basePayload);
+
+          const overrides: Record<string, ExerciseOverride> = {};
+          const supersets: string[] = [];
+          snapExercises.forEach((row, i) => {
+            const savedEx = saved[i];
+            if (!savedEx) return;
+            if (snapOverrideIds.has(row.id)) {
+              overrides[savedEx.id] = exerciseValueSnapshot(row);
+            }
+            if (snapSupersetIds.has(row.id)) supersets.push(savedEx.id);
+          });
+          await db.saveTemplateOverrides(id, overrides, supersets);
+
+          applySavedTemplateExercises(id, saved, overrides, {
+            overrideIds: snapOverrideIds,
+            supersetIds: snapSupersetIds,
+            baseById: snapBaseById,
+          });
+          templateSaveError = null;
+
+          if (!isTemplateAssignable({ exercises: saved })) {
+            await clearTemplateFromAllDays(id);
+          }
+        } catch (err) {
+          console.error('template exercise save failed', err);
+          templateSaveError =
+            err && typeof err === 'object' && 'message' in err && typeof err.message === 'string'
+              ? err.message
+              : 'Could not save template changes. Try again.';
+          return;
+        }
+
+        if (!templateDraftSavePending) return;
       }
-    }
+    };
+
+    templateDraftSavePromise = run().finally(() => {
+      templateDraftSavePromise = null;
+    });
+    return templateDraftSavePromise;
   }
 
   function persistTemplateNameNow() {
@@ -7233,6 +8028,7 @@ const getStatIcon = getItemIcon;
     editorExitSaving = true;
     showTemplateColorPicker = false;
     showTemplateIconPicker = false;
+    showExerciseCatalog = false;
     const returnView = templateEditorReturnView;
     templateEditorReturnView = 'track';
     currentView = returnView;
@@ -7247,7 +8043,6 @@ const getStatIcon = getItemIcon;
         editingExerciseNameId = null;
         editingTemplateId = '';
         deletedLibraryExerciseIds = new Set();
-        templateSaveError = null;
         editorExitSaving = false;
       });
   }
@@ -7380,6 +8175,7 @@ const getStatIcon = getItemIcon;
     draftExercises = [...draftExercises, newEx];
     selectExercise(tempId);
     void persistTemplateExercisesNow();
+    void hapticSuccess();
   }
 
   function toggleExerciseLibraryPicker() {
@@ -7391,9 +8187,79 @@ const getStatIcon = getItemIcon;
     }
   }
 
+  async function openExerciseCatalog() {
+    closeLibraryPicker();
+    if (!CatalogView) {
+      catalogLoadPromise ??= import('$lib/components/ExerciseCatalog.svelte')
+        .then((mod) => {
+          CatalogView = mod.default;
+        })
+        .catch((err) => {
+          console.error('Failed to load exercise catalog', err);
+          catalogLoadPromise = null;
+        });
+      await catalogLoadPromise;
+    }
+    if (!CatalogView) return;
+    showExerciseCatalog = true;
+    void hapticLight();
+  }
+
+  /** Adds a wger catalog movement to the current template draft.
+   * Reuses an existing library row with the same catalog id so progression
+   * history stays on one exercise row across templates. */
+  function addCatalogExercise(detail: CatalogExerciseDetail) {
+    if (!editingTemplateId) return;
+    if (draftCatalogIds.has(detail.id)) return;
+
+    const existing = exerciseLibrary.find(
+      (ex) => ex.catalog_exercise_id === detail.id,
+    );
+    if (existing) {
+      moveLibraryExerciseToTemplate(existing);
+      return;
+    }
+
+    const isCardio = detail.category_name === 'Cardio';
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    exerciseListKeyById = rememberListKey(exerciseListKeyById, tempId, tempId);
+    const muscleIds = [
+      ...new Set(
+        [...detail.primary_muscles, ...detail.secondary_muscles].map((muscle) => muscle.id),
+      ),
+    ];
+    const newEx: any = {
+      id: tempId,
+      name: sanitizeExerciseName(detail.name),
+      exercise_type: isCardio ? 'time' : 'reps',
+      target_sets: isCardio ? 1 : 3,
+      target_reps: isCardio ? 0 : DEFAULT_TARGET_REPS,
+      target_minutes: isCardio ? 10 : DEFAULT_TARGET_MINUTES,
+      target_seconds: 0,
+      rest_minutes: isCardio ? 0 : DEFAULT_REST_MINUTES,
+      rest_seconds: isCardio ? 0 : DEFAULT_REST_SECONDS,
+      increment: isCardio ? 0 : DEFAULT_INCREMENT_KG,
+      current_weight: isCardio ? null : DEFAULT_BASE_KG,
+      catalog_exercise_id: detail.id,
+      catalog_muscle_ids: muscleIds,
+      display_order: draftExercises.length,
+      user_id: currentUser?.id ?? '',
+    };
+    draftExercises = [...draftExercises, newEx];
+    selectExercise(tempId);
+    void persistTemplateExercisesNow();
+    void hapticSuccess();
+  }
+
   function deleteSelectedExercise() {
     if (!selectedExerciseId) return;
     const id = selectedExerciseId;
+    const prevSelected = selectedExerciseId;
+    const prevDraft = draftExercises.map((e: any) => ({ ...e }));
+    const prevTemplate = templates.find((t) => t.id === editingTemplateId);
+    const deletedName = draftExercises.find((e: any) => e.id === id)?.name?.trim() || 'exercise';
+    const prevKeys = { ...exerciseListKeyById };
+
     exerciseListKeyById = forgetListKey(exerciseListKeyById, id);
     draftExercises = draftExercises.filter((e: any) => e.id !== id);
     if (editingTemplateId) {
@@ -7414,6 +8280,28 @@ const getStatIcon = getItemIcon;
       resetNewExerciseForm();
     }
     void persistTemplateExercisesNow();
+
+    void hapticMedium();
+    showUndoToast({
+      label: `Removed "${deletedName}" from template`,
+      onUndo: () => {
+        const restore = { ...prevKeys };
+        for (const e of prevDraft) restore[e.id] = restore[e.id] ?? e.id;
+        exerciseListKeyById = restore;
+        draftExercises = prevDraft;
+        if (editingTemplateId && prevTemplate) {
+          patchTemplateInCache(
+            editingTemplateId,
+            prevTemplate.name,
+            prevTemplate.exercises.map((ex) => ({ ...ex })),
+            prevTemplate.color,
+            prevTemplate.icon,
+          );
+        }
+        selectedExerciseId = prevSelected;
+        void persistTemplateExercisesNow();
+      },
+    });
   }
 
   // Drag and drop reorder (replaces arrows)
@@ -7447,6 +8335,7 @@ const getStatIcon = getItemIcon;
     if (!next) return;
     draftExercises = next;
     void persistTemplateExercisesNow();
+    void hapticMedium();
   }
 
   function handleExerciseDrop(e: DragEvent) {
@@ -7525,6 +8414,7 @@ const getStatIcon = getItemIcon;
       ...others.map((t, i) => ({ ...t, display_order: reorderedVisible.length + i })),
     ];
     templates = merged;
+    void hapticMedium();
 
     const orders = merged
       .map((t, i) => ({ id: t.id, display_order: i }))
@@ -7951,6 +8841,185 @@ const getStatIcon = getItemIcon;
                   {panel.sessionError ?? panel.health.error}
                 </p>
               {/if}
+            {/if}
+          </div>
+
+          <div class="settings-prefs">
+            <div class="settings-prefs__head">
+              <Settings2 class="size-3" aria-hidden="true" />
+              <span>APP SETTINGS</span>
+            </div>
+
+            <div class="settings-prefs__theme-row">
+              <span class="settings-prefs__label">
+                <Moon class="size-3" aria-hidden="true" />
+                <span>Theme</span>
+              </span>
+              <div class="settings-prefs__segment" role="radiogroup" aria-label="Theme">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={preferences.theme !== 'oled'}
+                  class="settings-prefs__segment-btn"
+                  class:settings-prefs__segment-btn--on={preferences.theme !== 'oled'}
+                  onclick={() => {
+                    setPreference('theme', 'dark');
+                    void hapticLight();
+                  }}
+                >DARK</button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={preferences.theme === 'oled'}
+                  class="settings-prefs__segment-btn"
+                  class:settings-prefs__segment-btn--on={preferences.theme === 'oled'}
+                  onclick={() => {
+                    setPreference('theme', 'oled');
+                    void hapticLight();
+                  }}
+                >OLED</button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={preferences.haptics !== false}
+              class="settings-prefs__row"
+              onclick={() => {
+                setPreference('haptics', preferences.haptics === false);
+                void hapticLight();
+              }}
+            >
+              <span class="settings-prefs__label">
+                <Vibrate class="size-3" aria-hidden="true" />
+                <span>Haptics</span>
+              </span>
+              <span class="settings-prefs__switch" class:settings-prefs__switch--on={preferences.haptics !== false} aria-hidden="true">
+                <span class="settings-prefs__thumb"></span>
+              </span>
+            </button>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={preferences.sounds !== false}
+              class="settings-prefs__row"
+              onclick={() => {
+                setPreference('sounds', preferences.sounds === false);
+                void hapticLight();
+              }}
+            >
+              <span class="settings-prefs__label">
+                <Volume2 class="size-3" aria-hidden="true" />
+                <span>Sound effects</span>
+              </span>
+              <span class="settings-prefs__switch" class:settings-prefs__switch--on={preferences.sounds !== false} aria-hidden="true">
+                <span class="settings-prefs__thumb"></span>
+              </span>
+            </button>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={preferences.reduce_motion === true}
+              class="settings-prefs__row"
+              onclick={() => {
+                setPreference('reduce_motion', preferences.reduce_motion !== true);
+                void hapticLight();
+              }}
+            >
+              <span class="settings-prefs__label">
+                <ZapOff class="size-3" aria-hidden="true" />
+                <span>Reduce motion</span>
+              </span>
+              <span class="settings-prefs__switch" class:settings-prefs__switch--on={preferences.reduce_motion === true} aria-hidden="true">
+                <span class="settings-prefs__thumb"></span>
+              </span>
+            </button>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={preferences.auto_rest_timer !== false}
+              class="settings-prefs__row"
+              onclick={() => {
+                setPreference('auto_rest_timer', preferences.auto_rest_timer === false);
+                void hapticLight();
+              }}
+            >
+              <span class="settings-prefs__label">
+                <TimerReset class="size-3" aria-hidden="true" />
+                <span>Auto rest timer</span>
+              </span>
+              <span class="settings-prefs__switch" class:settings-prefs__switch--on={preferences.auto_rest_timer !== false} aria-hidden="true">
+                <span class="settings-prefs__thumb"></span>
+              </span>
+            </button>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={preferences.rest_notifications !== false}
+              class="settings-prefs__row"
+              onclick={() => void toggleNotificationPreference('rest_notifications', preferences.rest_notifications === false)}
+            >
+              <span class="settings-prefs__label">
+                <Bell class="size-3" aria-hidden="true" />
+                <span>Rest notifications</span>
+              </span>
+              <span class="settings-prefs__switch" class:settings-prefs__switch--on={preferences.rest_notifications !== false} aria-hidden="true">
+                <span class="settings-prefs__thumb"></span>
+              </span>
+            </button>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={preferences.workout_reminders === true}
+              class="settings-prefs__row"
+              onclick={() => void toggleNotificationPreference('workout_reminders', preferences.workout_reminders !== true)}
+            >
+              <span class="settings-prefs__label">
+                <BellRing class="size-3" aria-hidden="true" />
+                <span>Workout reminders</span>
+              </span>
+              <span class="settings-prefs__switch" class:settings-prefs__switch--on={preferences.workout_reminders === true} aria-hidden="true">
+                <span class="settings-prefs__thumb"></span>
+              </span>
+            </button>
+
+            {#if preferences.workout_reminders === true}
+              <div class="settings-prefs__schedule">
+                <label class="settings-prefs__time">
+                  <span class="settings-prefs__label">
+                    <Clock3 class="size-3" aria-hidden="true" />
+                    <span>Reminder time</span>
+                  </span>
+                  <input
+                    type="time"
+                    value={preferences.reminder_time}
+                    aria-label="Reminder time"
+                    onchange={(e) => setPreference('reminder_time', (e.currentTarget as HTMLInputElement).value)}
+                  />
+                </label>
+                <div class="settings-prefs__days" role="group" aria-label="Reminder days">
+                  {#each [{ value: 1, label: 'M' }, { value: 2, label: 'T' }, { value: 3, label: 'W' }, { value: 4, label: 'T' }, { value: 5, label: 'F' }, { value: 6, label: 'S' }, { value: 0, label: 'S' }] as day (day.value)}
+                    <button
+                      type="button"
+                      class="settings-prefs__day"
+                      class:settings-prefs__day--on={(preferences.reminder_days ?? []).includes(day.value)}
+                      aria-pressed={(preferences.reminder_days ?? []).includes(day.value)}
+                      aria-label={day.value === 0 ? 'Sunday' : day.value === 1 ? 'Monday' : day.value === 2 ? 'Tuesday' : day.value === 3 ? 'Wednesday' : day.value === 4 ? 'Thursday' : day.value === 5 ? 'Friday' : 'Saturday'}
+                      onclick={() => toggleReminderDay(day.value)}
+                    >{day.label}</button>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
+            {#if notificationPermissionHint}
+              <p class="settings-prefs__hint">{notificationPermissionHint}</p>
             {/if}
           </div>
 
@@ -8597,7 +9666,7 @@ const getStatIcon = getItemIcon;
         type="button"
         title="Account and backend"
         aria-label="Account and backend"
-        class="w-7 h-7 shrink-0 rounded bg-emerald-950/40 flex items-center justify-center hover:bg-emerald-900/40 transition"
+        class="w-8 h-8 shrink-0 rounded bg-emerald-950/40 flex items-center justify-center hover:bg-emerald-900/40 transition"
         onclick={(e) => { e.stopPropagation(); openSettingsPanel(); }}
       >
         {#key avatarSeed}
@@ -8727,6 +9796,18 @@ const getStatIcon = getItemIcon;
         <RefreshCw class="size-5 animate-spin mb-3 opacity-70" aria-hidden="true" />
         <div class="text-[10px] uppercase tracking-[2px]">Loading day…</div>
       </div>
+    {:else if isSelectedDayLogError}
+      <div class="flex flex-col items-center justify-center py-16 px-2 text-center text-zinc-500 gap-3">
+        <CircleAlert class="size-5 opacity-70" aria-hidden="true" />
+        <div class="text-[10px] uppercase tracking-[2px]">Could not load this day</div>
+        <button
+          type="button"
+          class="h-9 px-4 rounded-lg border border-[#2a2a2a] text-[10px] font-black tracking-[0.12em] text-zinc-300 hover:border-zinc-500 hover:text-white transition-colors"
+          onclick={retrySelectedDayLog}
+        >
+          RETRY
+        </button>
+      </div>
     {:else if isPastUnloggedWorkoutDay}
       <!-- UNLOGGED: past day with no saved log (incl. every day before account existed) -->
       <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
@@ -8751,7 +9832,7 @@ const getStatIcon = getItemIcon;
           onclick={() => enterRoutineBuilder({ fromWeeklyPlan: true })}
           title="Open routine editor"
         >
-          <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 mb-2 text-center pointer-events-none">WEEKLY PLAN</div>
+          <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 mb-2 text-center pointer-events-none">{activeRoutineIsCycle ? 'CYCLE PLAN' : 'WEEKLY PLAN'}</div>
           <div class="grid grid-cols-7 gap-1 pointer-events-none">
             {#each weekPlan as d, i}
               {@const PlanIcon = getItemIcon(d.icon)}
@@ -8840,7 +9921,7 @@ const getStatIcon = getItemIcon;
           onclick={() => enterRoutineBuilder({ fromWeeklyPlan: true })}
           title="Open routine editor"
         >
-          <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 mb-2 text-center pointer-events-none">WEEKLY PLAN</div>
+          <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 mb-2 text-center pointer-events-none">{activeRoutineIsCycle ? 'CYCLE PLAN' : 'WEEKLY PLAN'}</div>
           <div class="grid grid-cols-7 gap-1 pointer-events-none">
             {#each weekPlan as d, i}
               {@const PlanIcon = getItemIcon(d.icon)}
@@ -9055,8 +10136,12 @@ const getStatIcon = getItemIcon;
           {@const logSrc = isViewingToday ? todayLog : viewedLog}
           {@const isDoneViewed = !!logSrc?.workout_snapshot?.exercises && (isViewingToday ? (workoutState === 'done') : true)}
           {@const loggedEx = isDoneViewed ? getLoggedEx(logSrc, exercise.id) : null}
-          {@const displayCurrentWeight = formatOneDecimal(loggedEx?.weight_before ?? exercise.current_weight ?? 0)}
+          {@const shownWeight = loggedEx?.weight_before ?? exercise.current_weight ?? null}
+          {@const displayCurrentWeight = shownWeight !== null ? formatOneDecimal(shownWeight) : null}
           {@const displayIncrementKg = formatOneDecimal(exercise.increment)}
+          {@const isSupersetWithNext =
+            Array.isArray((dispTemplate as any)?.superset_with_next) &&
+            ((dispTemplate as any).superset_with_next as string[]).includes(exercise.id)}
           <div
             class="track-ex-row p-3 flex gap-1 min-w-0 status-surface status-surface--row {exSurfaceClass} {(hasActiveRestThis || isFadingToRestThis) ? '!bg-orange-900 text-orange-200' : ''} {hasActiveRestElsewhere ? 'opacity-70' : ''} {isFadingToRestThis ? 'transition-colors duration-1000' : ''} {workoutExercisesEditable ? 'hover:brightness-110' : ''} {index > 0 ? (exRed ? 'border-t border-[color:var(--w-skipped-border)]' : 'border-t border-[#1e1e1e]') : ''}"
           >
@@ -9082,11 +10167,16 @@ const getStatIcon = getItemIcon;
                     {:else if showPrBadge(exercise, loggedEx)}
                       <span class="pr-badge">NEW PR</span>
                     {/if}
+                    {#if isSupersetWithNext}
+                      <span class="superset-badge" title="Superset — go straight into the next exercise">
+                        <Link2 class="size-2.5" /> SUPERSET
+                      </span>
+                    {/if}
                   </div>
                 </div>
                 <div class="ex-meta text-xs mt-0.5 tracking-wide transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'w-fg-skipped-muted' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-400' : 'text-zinc-400'}">
                   {#if exercise.exercise_type === 'reps'}
-                    {exercise.target_sets}×{exercise.target_reps} @{displayCurrentWeight}kg +{displayIncrementKg}kg
+                    {exercise.target_sets}×{exercise.target_reps} @{displayCurrentWeight ?? '—'}kg +{displayIncrementKg}kg
                   {:else}
                     {exercise.target_sets}× {exercise.target_minutes}m {exercise.target_seconds.toString().padStart(2, '0')}s{exercise.increment ? ` +${exercise.increment}s` : ''}
                   {/if}
@@ -9136,7 +10226,7 @@ const getStatIcon = getItemIcon;
               {/if}
             </div>
 
-            {#snippet timerProgressCubes(running, met, yellow, cubeCount, displayDot, direction, inReverse, isRest = false)}
+            {#snippet timerProgressCubes(running: boolean, met: boolean, yellow: boolean, cubeCount: number, displayDot: number, direction: number, inReverse: boolean, isRest = false)}
               <div
                 class="timer-progress-cubes"
                 class:timer-progress-cubes--running={running}
@@ -9444,7 +10534,11 @@ const getStatIcon = getItemIcon;
             ? 'text-left'
             : 'text-center'}"
         >
-          {activeRoutineIsReadonly ? 'WEEK OVERVIEW' : 'CLICK DAY TO ASSIGN'}
+          {#if activeRoutineIsReadonly}
+            {builderScheduleMode === 'cycle' ? 'CYCLE OVERVIEW' : 'WEEK OVERVIEW'}
+          {:else}
+            {builderScheduleMode === 'cycle' ? 'TAP A DAY TO ASSIGN' : 'CLICK DAY TO ASSIGN'}
+          {/if}
         </span>
         {#if activeRoutineIsReadonly}
           <span class="min-w-0 max-w-[70%] truncate inline-flex items-center justify-end gap-1 text-[10px] font-normal uppercase tracking-wide leading-none px-2 py-1.5 rounded border border-emerald-900/50 bg-emerald-950/40 text-emerald-300/90">
@@ -9457,6 +10551,109 @@ const getStatIcon = getItemIcon;
           </span>
         {/if}
       </div>
+
+      {#if !activeRoutineIsReadonly}
+        <div
+          class="relative grid grid-cols-2 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
+          role="group"
+          aria-label="Routine schedule mode"
+        >
+          <div
+            class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+            style="transform: translateX({builderScheduleMode === 'cycle' ? 'calc(100% + 4px)' : '0'})"
+          ></div>
+          <button
+            type="button"
+            class="relative z-10 h-7 flex items-center justify-center gap-1 text-[9px] font-black tracking-[0.12em] transition-colors {builderScheduleMode === 'weekly' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+            onclick={() => setBuilderScheduleMode('weekly')}
+          >
+            <CalendarDays class="size-3" /> WEEKLY
+          </button>
+          <button
+            type="button"
+            class="relative z-10 h-7 flex items-center justify-center gap-1 text-[9px] font-black tracking-[0.12em] transition-colors {builderScheduleMode === 'cycle' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+            onclick={() => setBuilderScheduleMode('cycle')}
+          >
+            <Repeat class="size-3" /> CYCLE
+          </button>
+        </div>
+      {/if}
+
+      {#if builderScheduleMode === 'cycle'}
+        <div class="space-y-1.5">
+          <div class="flex gap-1 overflow-x-auto overscroll-x-contain no-scrollbar pb-0.5">
+            {#each Array.from({ length: builderCycleLength }, (_, i) => i) as i}
+              {@const dayAssignedId = effectiveAssignmentTemplateId(builderAssignments[i] ?? null)}
+              {@const dayTpl = dayAssignedId ? templates.find((t) => t.id === dayAssignedId) : null}
+              {@const dayColor = dayTpl ? getTemplateColor(dayTpl.color ?? 0) : null}
+              {@const DayIcon = getItemIcon(dayTpl?.icon ?? DEFAULT_TEMPLATE_ICON)}
+              {@const isDaySelected = builderEditingDay === i}
+              {@const isCycleToday = i === builderCycleTodayIndex()}
+              <button
+                type="button"
+                class="flex flex-col items-center gap-0.5 shrink-0 min-w-10 transition-all duration-150"
+                onclick={() => { builderEditingDay = i; }}
+                aria-label={`Cycle day ${i + 1}`}
+              >
+                <div class="text-[9px] font-medium leading-none flex items-center gap-0.5 {isDaySelected ? 'text-white' : isCycleToday ? 'text-emerald-400' : 'text-zinc-500'}">
+                  D{i + 1}{#if isCycleToday}<span class="size-1 rounded-full bg-emerald-400"></span>{/if}
+                </div>
+                <div
+                  class="w-10 aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {isDaySelected ? (dayColor ? '' : 'bg-white') : (dayColor ? '' : 'border border-[#2a2a2a] hover:border-[#3a3a3a]')} {isDaySelected ? '' : 'scale-90'}"
+                  style={dayColor ? `background-color: ${dayColor};` : isDaySelected ? 'background-color: white;' : ''}
+                >
+                  {#if dayAssignedId}
+                    <DayIcon class={isDaySelected ? 'size-5' : 'size-4'} strokeWidth={ITEM_ICON_STROKE} style={isDaySelected && dayColor ? 'color: color-mix(in srgb, ' + dayColor + ' 20%, black)' : 'color: black'} />
+                  {:else}
+                    <Bed class={isDaySelected ? 'size-5 text-black' : 'size-4 text-zinc-500'} />
+                  {/if}
+                </div>
+              </button>
+            {/each}
+          </div>
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-1">
+              <span class="text-[9px] uppercase tracking-[1.5px] text-zinc-500">Cycle</span>
+              <button
+                type="button"
+                class="size-6 rounded border border-[#2a2a2a] text-zinc-300 flex items-center justify-center disabled:opacity-30"
+                disabled={activeRoutineIsReadonly || builderCycleLength <= 1}
+                onclick={() => setBuilderCycleLength(builderCycleLength - 1)}
+                aria-label="Remove cycle day"
+              >
+                <Minus class="size-3" />
+              </button>
+              <span class="min-w-12 text-center text-[10px] text-white tabular-nums">{builderCycleLength} days</span>
+              <button
+                type="button"
+                class="size-6 rounded border border-[#2a2a2a] text-zinc-300 flex items-center justify-center disabled:opacity-30"
+                disabled={activeRoutineIsReadonly || builderCycleLength >= MAX_CYCLE_LENGTH}
+                onclick={() => setBuilderCycleLength(builderCycleLength + 1)}
+                aria-label="Add cycle day"
+              >
+                <Plus class="size-3" />
+              </button>
+            </div>
+            <label class="flex items-center gap-1.5 min-w-0">
+              <span class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 shrink-0">Start</span>
+              <input
+                type="date"
+                class="h-7 min-w-0 rounded border border-[#2a2a2a] bg-black px-1.5 text-[10px] text-white outline-none focus:border-zinc-500"
+                value={builderCycleAnchor}
+                disabled={activeRoutineIsReadonly}
+                onchange={(e) => setBuilderCycleAnchor((e.currentTarget as HTMLInputElement).value)}
+              />
+            </label>
+          </div>
+          {#if builderCycleError}
+            <p class="text-[9px] text-red-400 leading-snug">{builderCycleError}</p>
+          {:else if builderCycleSaving}
+            <p class="text-[9px] text-zinc-500 leading-snug">Saving cycle…</p>
+          {:else}
+            <p class="text-[9px] text-zinc-600 leading-snug">Repeats forever from the start date; rest days included.</p>
+          {/if}
+        </div>
+      {:else}
       <div class="grid grid-cols-7 gap-1">
         {#each DAYS as d, i}
           {@const hasTemplate = !!effectiveAssignmentTemplateId(builderAssignments[i] ?? null)}
@@ -9485,6 +10682,7 @@ const getStatIcon = getItemIcon;
           </button>
         {/each}
       </div>
+      {/if}
 
       <div class="space-y-1.5">
         <div class="flex items-baseline gap-1 min-h-[10px]">
@@ -9664,7 +10862,7 @@ const getStatIcon = getItemIcon;
                       type="button"
                       data-no-drag
                       draggable="false"
-                      class="w-6 h-6 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors disabled:opacity-50"
+                      class="w-8 h-8 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors disabled:opacity-50"
                       title="Delete template"
                       aria-label="Delete template {template.name}"
                       onmousedown={(e) => e.stopPropagation()}
@@ -9701,7 +10899,7 @@ const getStatIcon = getItemIcon;
         {#if !activeRoutineIsReadonly}
           <button
             type="button"
-            class="w-full h-7 shrink-0 mt-1.5 rounded border border-[#1e1e1e] bg-white flex items-center justify-center text-black hover:bg-zinc-100 hover:border-[#2a2a2a] transition disabled:opacity-50"
+            class="w-full h-9 shrink-0 mt-1.5 rounded border border-[#1e1e1e] bg-white flex items-center justify-center text-black hover:bg-zinc-100 hover:border-[#2a2a2a] transition disabled:opacity-50"
             onclick={createTemplateFromRoutineBuilder}
             disabled={!currentUser}
             title="Create template"
@@ -9727,20 +10925,50 @@ const getStatIcon = getItemIcon;
         <div class="flex-1 min-w-0">
           <div class="text-[11px] font-medium tracking-[0.14em] text-zinc-400 leading-none">STATS</div>
           <div class="text-[10px] text-zinc-600 leading-none mt-1 tabular-nums">
-            {trackedStats.length} tracked
+            {#if statsTab === 'tracked'}
+              {trackedStats.length} tracked
+            {:else}
+              {historyEntries.length} logged
+            {/if}
           </div>
         </div>
-        <button
-          type="button"
-          class="h-8 px-2.5 gap-1.5 rounded-md shrink-0 flex items-center justify-center border border-[#1e1e1e] bg-transparent text-zinc-400 hover:bg-[#1a1a1a] hover:text-white text-[10px] font-medium tracking-wide"
-          onclick={openStatsEditor}
-          title="Edit stats"
-        >
-          <Pencil class="size-3.5 shrink-0" />
-          <span>EDIT</span>
-        </button>
+        {#if statsTab === 'tracked'}
+          <button
+            type="button"
+            class="h-8 px-2.5 gap-1.5 rounded-md shrink-0 flex items-center justify-center border border-[#1e1e1e] bg-transparent text-zinc-400 hover:bg-[#1a1a1a] hover:text-white text-[10px] font-medium tracking-wide"
+            onclick={openStatsEditor}
+            title="Edit stats"
+          >
+            <Pencil class="size-3.5 shrink-0" />
+            <span>EDIT</span>
+          </button>
+        {/if}
       </div>
 
+      <div class="stats-tabs" role="tablist" aria-label="Stats sections">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={statsTab === 'tracked'}
+          class="stats-tabs__btn"
+          class:stats-tabs__btn--on={statsTab === 'tracked'}
+          onclick={() => selectStatsTab('tracked')}
+        >TRACKED STATS</button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={statsTab === 'history'}
+          class="stats-tabs__btn"
+          class:stats-tabs__btn--on={statsTab === 'history'}
+          onclick={() => selectStatsTab('history')}
+        >WORKOUT HISTORY</button>
+      </div>
+
+      {#if statSaveError}
+        <p class="shrink-0 mx-2.5 mt-2 text-[10px] text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{statSaveError}</p>
+      {/if}
+
+      {#if statsTab === 'tracked'}
       <div class="stats-screen__body flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar p-2.5 space-y-2">
       {#if trackedStats.length === 0}
         <div class="stats-empty flex flex-col items-center justify-center gap-3 py-12 px-4 text-center border border-dashed border-[#1e1e1e] rounded-lg bg-[#0d0d0d]">
@@ -10126,6 +11354,130 @@ const getStatIcon = getItemIcon;
         </div>
       {/if}
       </div>
+      {:else}
+      <div class="stats-screen__body flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar p-2.5 space-y-2">
+        {#if historyLoading && historyEntries.length === 0}
+          <div class="history-state">
+            <RefreshCw class="size-4 animate-spin text-zinc-500" aria-hidden="true" />
+            <span>Loading workout history…</span>
+          </div>
+        {:else if historyError}
+          <div class="history-state history-state--error">
+            <span>{historyError}</span>
+            <button type="button" onclick={() => void loadWorkoutHistory(true)}>RETRY</button>
+          </div>
+        {:else if historyEntries.length === 0}
+          <div class="history-state">
+            <History class="size-5 text-zinc-600" aria-hidden="true" />
+            <span>No finished workouts yet.<br />Finish a session and it will appear here.</span>
+          </div>
+        {:else}
+          <div class="history-list">
+            {#each historyEntries as entry (entry.workout_date)}
+              {@const entryDate = new Date(entry.workout_date + 'T00:00:00')}
+              {@const perf = entry.performance_snapshot ?? {}}
+              {@const snap = entry.workout_snapshot ?? {}}
+              {@const exercises = snap.exercises ?? []}
+              {@const duration = historyEntryDuration(entry)}
+              {@const isOpen = historyExpandedDate === entry.workout_date}
+              {@const isSkipped = entry.is_skipped}
+              <div class="history-card" class:history-card--open={isOpen} class:history-card--skipped={isSkipped}>
+                <button
+                  type="button"
+                  class="history-card__head"
+                  aria-expanded={isOpen}
+                  onclick={() => { historyExpandedDate = isOpen ? null : entry.workout_date; void hapticLight(); }}
+                >
+                  <span class="history-card__date">
+                    <span class="history-card__day">{entryDate.getDate()}</span>
+                    <span class="history-card__month">{entryDate.toLocaleDateString('en-US', { month: 'short' })}</span>
+                  </span>
+                  <span class="history-card__main">
+                    <span class="history-card__name">{entry.template_name_snapshot || snap.template_name || 'Workout'}</span>
+                    <span class="history-card__meta">
+                      {#if isSkipped}
+                        Skipped
+                      {:else}
+                        {#if perf.total_sets != null}<span>{perf.total_sets} sets</span>{/if}
+                        {#if perf.total_volume_kg != null && perf.total_volume_kg > 0}
+                          <span>·</span><span>{Math.round(perf.total_volume_kg).toLocaleString()} kg</span>
+                        {/if}
+                        {#if perf.pr_count != null && perf.pr_count > 0}
+                          <span>·</span><span class="history-card__pr">{perf.pr_count} PR{perf.pr_count === 1 ? '' : 's'}</span>
+                        {/if}
+                        {#if duration > 0}
+                          <span>·</span><span>{formatDurationHrsMins(duration)}</span>
+                        {/if}
+                      {/if}
+                    </span>
+                  </span>
+                  <span class="history-card__side">
+                    {#if entry.is_perfect_day}
+                      <span class="history-pill history-pill--perfect">PERFECT</span>
+                    {:else if isSkipped}
+                      <span class="history-pill history-pill--skipped">SKIPPED</span>
+                    {:else}
+                      <span class="history-pill">DONE</span>
+                    {/if}
+                    <ChevronDown class="size-3.5 history-card__chevron {isOpen ? 'history-card__chevron--open' : ''}" aria-hidden="true" />
+                  </span>
+                </button>
+
+                {#if isOpen}
+                  <div class="history-card__body">
+                    {#if exercises.length === 0}
+                      <p class="history-card__empty">No exercise details stored for this session.</p>
+                    {:else}
+                      {#each exercises as ex (ex.exercise_id + ':' + ex.name)}
+                        <div class="history-ex">
+                          <div class="history-ex__head">
+                            <span class="history-ex__name">{ex.name}</span>
+                            <span class="history-ex__count">{ex.sets.length} set{ex.sets.length === 1 ? '' : 's'}</span>
+                          </div>
+                          <div class="history-ex__sets">
+                            {#each ex.sets as set (set.set_number)}
+                              <span class="history-set" class:history-set--pr={set.is_pr}>
+                                {#if ex.exercise_type === 'time'}
+                                  {set.seconds_completed ?? 0}s
+                                {:else}
+                                  {set.reps_completed ?? 0} × {set.weight != null ? `${formatOneDecimal(set.weight)}kg` : '—'}
+                                {/if}
+                              </span>
+                            {/each}
+                          </div>
+                        </div>
+                      {/each}
+                    {/if}
+                    <button
+                      type="button"
+                      class="history-card__open-day"
+                      onclick={() => openHistoryDate(entry.workout_date)}
+                    >OPEN THIS DAY <ChevronRight class="size-3" aria-hidden="true" /></button>
+                  </div>
+                {/if}
+              </div>
+            {/each}
+
+            {#if historyHasMore}
+              <button
+                type="button"
+                class="history-load-more"
+                disabled={historyLoadingMore}
+                onclick={() => void loadWorkoutHistory(false)}
+              >
+                {#if historyLoadingMore}
+                  <RefreshCw class="size-3.5 animate-spin" aria-hidden="true" /> LOADING…
+                {:else}
+                  LOAD OLDER
+                {/if}
+              </button>
+            {:else}
+              <p class="history-end">END OF HISTORY</p>
+            {/if}
+          </div>
+        {/if}
+      </div>
+      {/if}
     </div>
 
   {:else if currentView === 'edit_stats'}
@@ -10158,7 +11510,7 @@ const getStatIcon = getItemIcon;
               value={selectedStat?.name ?? ''}
               oninput={(e) => {
                 const v = (e.currentTarget as HTMLInputElement).value;
-                patchDraftStat(selectedDraftStatId, { name: v });
+                if (selectedStat) patchDraftStat(selectedStat.id, { name: v });
                 void persistTrackedStatsNow();
               }}
             />
@@ -10197,7 +11549,7 @@ const getStatIcon = getItemIcon;
             accentColor={statColorHex}
             anchorEl={statIconBtnEl ?? null}
             onChange={(idx) => {
-              patchDraftStat(selectedDraftStatId, { icon: clampItemIcon(idx) });
+              if (selectedStat) patchDraftStat(selectedStat.id, { icon: clampItemIcon(idx) });
               void persistTrackedStatsNow();
             }}
           />
@@ -10206,7 +11558,7 @@ const getStatIcon = getItemIcon;
             colorIndex={statColorIdx}
             anchorEl={statColorBtnEl ?? null}
             onChange={(idx) => {
-              patchDraftStat(selectedDraftStatId, { color: clampTemplateColor(idx) });
+              if (selectedStat) patchDraftStat(selectedStat.id, { color: clampTemplateColor(idx) });
               void persistTrackedStatsNow();
             }}
           />
@@ -10342,11 +11694,11 @@ const getStatIcon = getItemIcon;
                     {#if isSelected}
                       <button
                         type="button"
-                        class="w-6 h-6 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
+                        class="w-8 h-8 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
                         title="Delete stat"
                         onclick={(e) => { e.stopPropagation(); deleteSelectedStat(); }}
                       >
-                        <Trash2 class="size-3 pointer-events-none" />
+                        <Trash2 class="size-4 pointer-events-none" />
                       </button>
                     {/if}
                   </div>
@@ -10554,7 +11906,7 @@ const getStatIcon = getItemIcon;
         >
           <ArrowLeft class="size-4" />
         </button>
-        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">TEMPLATE EDITOR</span>
+        <span class="template-editor-label text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">TEMPLATE EDITOR</span>
         <div class="flex-1 min-w-0 flex items-center">
           <input
             autocomplete="off"
@@ -10617,6 +11969,14 @@ const getStatIcon = getItemIcon;
             void persistTemplateColorNow();
           }}
         />
+        {#if CatalogView}
+          <CatalogView
+            open={showExerciseCatalog}
+            onclose={() => { showExerciseCatalog = false; }}
+            onadd={addCatalogExercise}
+            addedCatalogIds={draftCatalogIds}
+          />
+        {/if}
       </div>
       {#if templateSaveError && currentView === 'edit_template'}
         <p class="text-[10px] text-red-300 leading-snug">{templateSaveError}</p>
@@ -10643,9 +12003,9 @@ const getStatIcon = getItemIcon;
                 <div class="text-center py-4 border border-dashed border-[#1e1e1e] rounded-lg text-[10px] text-zinc-500 leading-snug">
                   No exercises yet.<br />
                   {#if libraryExercisesAvailable.length > 0}
-                    Tap NEW to create one, or LIBRARY to pick from exercises you've already made.
+                    Tap NEW to create one, LIBRARY to pick from exercises you've already made, or EXERCISE CATALOG to browse built-ins.
                   {:else}
-                    Tap NEW to create a new exercise.
+                    Tap NEW to create a new exercise, or EXERCISE CATALOG to browse built-ins.
                   {/if}
                 </div>
               {/if}
@@ -10740,11 +12100,11 @@ const getStatIcon = getItemIcon;
                       {#if isSelected}
                         <button
                           type="button"
-                          class="w-6 h-6 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
+                          class="w-8 h-8 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
                           title="Remove from template"
                           onclick={(e) => { e.stopPropagation(); deleteSelectedExercise(); }}
                         >
-                          <Minus class="size-3 pointer-events-none" />
+                          <Minus class="size-4 pointer-events-none" />
                         </button>
                       {/if}
                     </div>
@@ -10786,6 +12146,18 @@ const getStatIcon = getItemIcon;
               </div>
             </div>
 
+            <button
+              type="button"
+              class="catalog-launch mt-1.5"
+              onclick={openExerciseCatalog}
+              title="Browse the built-in wger exercise catalog"
+            >
+              <BookOpen class="size-3.5 shrink-0" />
+              <span class="catalog-launch__label">EXERCISE CATALOG</span>
+              <span class="catalog-launch__meta">WGER</span>
+              <ChevronRight class="size-3.5 shrink-0" />
+            </button>
+
             <div
               class="library-picker-panel"
               class:library-picker-panel--open={showExerciseLibraryPicker && !libraryPickerClosing}
@@ -10818,7 +12190,7 @@ const getStatIcon = getItemIcon;
                     {#if exerciseLibrary.length > 0}
                       <button
                         type="button"
-                        class="relative overflow-hidden h-7 px-1.5 shrink-0 flex items-center gap-1 rounded border transition-colors {deleteAllExHolding
+                        class="relative overflow-hidden h-9 px-2.5 shrink-0 flex items-center gap-1 rounded border transition-colors {deleteAllExHolding
                           ? 'border-red-500 text-red-300'
                           : 'border-red-900/50 bg-red-950/30 text-red-400 hover:text-red-300 hover:border-red-800 hover:bg-red-950/50'}"
                         title="Hold to delete all exercises"
@@ -10880,20 +12252,19 @@ const getStatIcon = getItemIcon;
                           {#if isSelectedLib}
                             <button
                               type="button"
-                              class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-[#2a2a2a] bg-[#1e1e1e] text-zinc-400 hover:text-white hover:border-[#3a3a3a] transition-colors"
+                              class="w-8 h-8 shrink-0 flex items-center justify-center rounded border border-[#2a2a2a] bg-[#1e1e1e] text-zinc-300 hover:text-white hover:border-[#3a3a3a] transition-colors"
                               onclick={(e) => { e.stopPropagation(); moveLibraryExerciseToTemplate(libraryEx); }}
                               title="Move into this template"
                             >
-                              <ChevronUp class="size-3 pointer-events-none" />
+                              <ChevronUp class="size-4 pointer-events-none" />
                             </button>
                             <button
                               type="button"
-                              class="w-5 h-5 shrink-0 flex items-center justify-center rounded border border-red-900/70 bg-red-950/40 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
+                              class="w-8 h-8 shrink-0 flex items-center justify-center rounded border border-red-900/70 bg-red-950/40 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
                               onclick={(e) => { e.stopPropagation(); deleteLibraryExercise(libraryEx); }}
                               title="Delete from library (removes from all templates)"
                             >
-                        <Trash2 class="size-3 pointer-events-none" />
-                        <span>DELETE ALL</span>
+                              <Trash2 class="size-4 pointer-events-none" />
                             </button>
                           {/if}
                         </div>
@@ -10911,6 +12282,10 @@ const getStatIcon = getItemIcon;
                 {@const ex = draftExercises.find((e: any) => e.id === selectedExerciseId)}
                 {#if ex}
                   {@const isReps = ex.exercise_type === 'reps'}
+                  {@const isLastExercise = draftExercises[draftExercises.length - 1]?.id === ex.id}
+                  {@const hasOverride = draftOverrideIds.has(ex.id)}
+                  {@const isSuperset = draftSupersetIds.has(ex.id)}
+                  {@const baseValues = overrideBaseById[ex.id] ?? baseSnapshotForExercise(ex)}
                   <!-- Fixed structure both modes: type + work + load/progress + rest -->
                   <div class="rounded-lg border border-[#1e1e1e] bg-[#0d0d0d] p-2 flex flex-col gap-2">
                     <div
@@ -11149,6 +12524,44 @@ const getStatIcon = getItemIcon;
                         </div>
                       </div>
                       <p class="text-[9px] text-zinc-600 leading-snug">Between sets during the workout.</p>
+                    </div>
+
+                    <!-- Supersets & day-specific overrides -->
+                    <div class="space-y-1.5 pt-1.5 border-t border-[#1e1e1e]">
+                      <button
+                        type="button"
+                        class="w-full h-8 flex items-center justify-between gap-2 rounded border px-2 transition-colors {isSuperset ? 'border-emerald-700/60 bg-emerald-950/30' : 'border-[#1e1e1e] bg-black hover:border-[#2a2a2a]'} disabled:opacity-40"
+                        disabled={isLastExercise}
+                        title={isLastExercise ? 'Add another exercise after this one to make a superset' : 'Run straight into the next exercise without a rest timer'}
+                        onclick={() => toggleExerciseSuperset(ex.id)}
+                      >
+                        <span class="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[1.2px] {isSuperset ? 'text-emerald-300' : 'text-zinc-400'}">
+                          <Link2 class="size-3.5" />
+                          Superset with next
+                        </span>
+                        <span class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors {isSuperset ? 'bg-emerald-500' : 'bg-[#2a2a2a]'}">
+                          <span class="absolute size-3 rounded-full bg-white transition-transform duration-150 {isSuperset ? 'translate-x-3.5' : 'translate-x-0.5'}"></span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        class="w-full h-8 flex items-center justify-between gap-2 rounded border px-2 transition-colors {hasOverride ? 'border-amber-700/60 bg-amber-950/30' : 'border-[#1e1e1e] bg-black hover:border-[#2a2a2a]'}"
+                        title="Keep values for this day separate from the shared exercise"
+                        onclick={() => toggleExerciseDayOverride(ex.id)}
+                      >
+                        <span class="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[1.2px] {hasOverride ? 'text-amber-300' : 'text-zinc-400'}">
+                          <SlidersHorizontal class="size-3.5" />
+                          Override for this day
+                        </span>
+                        <span class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors {hasOverride ? 'bg-amber-500' : 'bg-[#2a2a2a]'}">
+                          <span class="absolute size-3 rounded-full bg-white transition-transform duration-150 {hasOverride ? 'translate-x-3.5' : 'translate-x-0.5'}"></span>
+                        </span>
+                      </button>
+                      {#if hasOverride}
+                        <p class="text-[9px] leading-snug text-amber-300/80">
+                          This day only. Base stays {baseValues.target_sets ?? 0} × {isReps ? `${baseValues.target_reps ?? 0} reps` : `${baseValues.target_minutes ?? 0}m ${baseValues.target_seconds ?? 0}s`}{isReps ? ` @ ${formatOneDecimal(Number(baseValues.current_weight ?? 0))}kg` : ''}.
+                        </p>
+                      {/if}
                     </div>
                   </div>
                 {/if}
@@ -11390,6 +12803,16 @@ const getStatIcon = getItemIcon;
                 </div>
               {/if}
             </div>
+            <div class="text-center">
+              <button
+                type="button"
+                class="text-[10px] font-medium tracking-[0.08em] text-zinc-500 hover:text-zinc-300 active:text-white transition-colors disabled:opacity-50"
+                disabled={signingIn}
+                onclick={toggleEmailAuth}
+              >
+                {authCredentialMethod === 'email' ? 'USE USERNAME INSTEAD' : 'USE EMAIL INSTEAD'}
+              </button>
+            </div>
           </form>
         </div>
       </div>
@@ -11448,3 +12871,5 @@ const getStatIcon = getItemIcon;
   anchorEl={templateDeleteConfirmAnchorEl}
   onConfirm={confirmTemplateDelete}
 />
+
+<UndoToast />

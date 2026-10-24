@@ -2,6 +2,33 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.15] - 2026-10-24
+
+**The overhaul release** — same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.
+
+### New features
+- **Routine cycles** — routines can run on any 1–28 day loop anchored to a date (e.g. Upper / Rest / Lower / Rest repeating, or a multi-week periodization) instead of being tied to weekdays. Weekly schedules stay the default and you can switch modes at any time.
+- **Supersets** — chain exercises back-to-back. The tracker shows a SUPERSET badge, keeps the superseded exercise locked until you finish the current set, and unlocks the pair correctly between rounds.
+- **Per-day exercise overrides** — the same exercise can prescribe different sets, reps, weight, rest, and increment in each template/day without touching the shared exercise base. Override weights progress independently from the base exercise.
+- **wger exercise catalog** — 932 built-in English exercises with search plus category / equipment / muscle filters, a full detail view with instructions, license attribution, and inline front/back muscle diagrams (primary and secondary highlighting). No custom exercise required anymore.
+- **App settings** — Dark / OLED themes, haptics, sound effects, reduce motion, auto rest timer, rest-finished notifications, and weekly workout reminders with configurable time and days.
+- **Stats & history** — tracked stats editor, volume / PR / duration history, and access to every past workout directly from the calendar.
+
+### Core workout
+- Hold-to-log set bubbles (500 ms) with a short-press manual rep editor; rest timer with orange rest state, countdown, and one-tap stop.
+- PR / NEW PR and PERFECT DAY feedback, instant finish with undo toast, and full history writes.
+- Rest state no longer gets stuck after backgrounding, and switching days clears any stale rest/fade state.
+- Completing all target sets advances weight; per-day overrides advance their own stored weight, not the shared base.
+
+### Visual & mobile polish
+- Mobile-first responsive layout: editors stack vertically on phones and keep the two-column desktop layout on wide screens; bigger touch targets, safe-area padding, and no iOS focus zoom.
+- Sci-fi functional styling: 7-segment numerals, animated template underline, breathing start CTA, hold-to-confirm morphs, status surfaces, and OLED-friendly contrast.
+- Fixed the EDIT button showing on the history tab, stale header counts, and the OLED change-password button visibility.
+
+### Fixes & hardening
+- Leaving the routine editor no longer wipes cycle-day assignments (snapshot is captured before teardown).
+- Audit remediation across the stack: RLS/RPC authorization, cross-user data leaks, autosave races, local/UTC date drift, optimistic rollback gaps, import/export atomicity, auth edge cases, and 24 TypeScript errors. See `AUDIT.md` for the full list.
+
 ## [1.0.14] - 2026-08-24
 
 **Mobile UX overhaul + new-account fix** — same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.

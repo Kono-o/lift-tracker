@@ -13,6 +13,8 @@ const USER_DATA_TABLES = [
 	"workout_history",
 	"stat_logs",
 	"tracked_stats",
+	"body_readings",
+	"profiles",
 	"routine_bookmarks",
 	"routines",
 	"schedule",

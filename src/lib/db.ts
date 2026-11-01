@@ -20,10 +20,21 @@ import {
 	validateDraftStats,
 	type DraftStatLike,
 } from "./statSanitize";
+import {
+	clampDeviceLabel,
+	toBodyProfile,
+	toBodyReading,
+	toBodyReadingList,
+	type BodyProfile,
+	type BodyProfileInput,
+	type BodyReading,
+	type BodyReadingInput,
+} from "./bodySanitize";
 import { createDbTrackingFetch, pulseDbActivity } from "./dbActivity";
 import { getNativeOAuthRedirectUrl, isNativeApp } from "./native";
 import { clampItemIcon, DEFAULT_ITEM_ICON, DEFAULT_TEMPLATE_ICON } from "./itemIcons";
 import { clampTemplateColor, getTemplateColor, hexToNearestIndex } from "./templateColor";
+import type { BodyUnits } from "./units";
 import { APP_VERSION } from "./version";
 
 export const supabase = createClient(
@@ -854,6 +865,11 @@ export interface AppPreferences {
 	reduce_motion?: boolean;
 	confirm_deletes?: boolean;
 	compact_cards?: boolean;
+	/**
+	 * Display-only for body mass and height. Storage is always kg/cm, and lifting
+	 * weights stay in kg — this changes how a weigh-in is shown, nothing else.
+	 */
+	body_units?: BodyUnits;
 }
 
 export const DEFAULT_PREFERENCES: Required<AppPreferences> = {
@@ -870,6 +886,7 @@ export const DEFAULT_PREFERENCES: Required<AppPreferences> = {
 	reduce_motion: false,
 	confirm_deletes: true,
 	compact_cards: false,
+	body_units: "metric",
 };
 
 export interface RoutineSchedule {
@@ -1593,6 +1610,8 @@ export const db = {
 		recentLogs: WorkoutHistory[];
 		trackedStats: TrackedStat[];
 		statLogSnapshots: StatLogSnapshotRow[];
+		bodyProfile: BodyProfile;
+		bodyReadings: BodyReading[];
 		activeRoutineId: string | null;
 		activeRoutinePlan: ActiveRoutinePlan | null;
 		preferences: Required<AppPreferences>;
@@ -1659,6 +1678,8 @@ export const db = {
 			statsRes,
 			snapshotsRes,
 			profileRes,
+			bodyProfileRes,
+			bodyReadingsRes,
 			ownedRoutinesRes,
 			bookmarksRes,
 			usersRes,
@@ -1703,6 +1724,22 @@ export const db = {
 						.eq("user_id", userId)
 						.maybeSingle()
 				: Promise.resolve({ data: null, error: null }),
+			includeStats
+				? supabase
+						.from("profiles")
+						.select("sex, date_of_birth, height_cm")
+						.maybeSingle()
+				: Promise.resolve({ data: null, error: null }),
+			// A recent window only — the BODY tab fetches the range it is showing.
+			includeStats && userId
+				? supabase
+						.from("body_readings")
+						.select(
+							"id, user_id, measured_at, weight_kg, heart_rate, impedance_raw, source, device_label, profile_snapshot",
+						)
+						.order("measured_at", { ascending: false })
+						.limit(120)
+				: Promise.resolve({ data: [], error: null }),
 			includeRoutines && ownedRoutinesQ
 				? ownedRoutinesQ
 				: Promise.resolve({ data: [], error: null }),
@@ -1933,12 +1970,23 @@ export const db = {
 			...((profileRes.data?.preferences as AppPreferences | null) ?? {}),
 		};
 
+		// No row, or a project that has not run the migration yet, both mean "nothing
+		// filled in" — the app must still load, so neither is an error here.
+		const bodyProfile: BodyProfile = toBodyProfile(
+			(bodyProfileRes.data as Record<string, unknown> | null) ?? null,
+		);
+		const bodyReadings = toBodyReadingList(
+			bodyReadingsRes.data as Array<Record<string, unknown>> | null,
+		);
+
 		return {
 			...core,
 			todayLog: (todayRes.data as WorkoutHistory) ?? null,
 			recentLogs,
 			trackedStats,
 			statLogSnapshots,
+			bodyProfile,
+			bodyReadings,
 			activeRoutineId,
 			activeRoutinePlan,
 			preferences,
@@ -2173,6 +2221,94 @@ export const db = {
 				display_order,
 			);
 		});
+	},
+
+	/* ==================================================
+		 BODY PROFILE + SCALE READINGS (profiles / body_readings)
+		 Both tables are own-only. The RPCs validate, clamp the label and
+		 stamp the profile snapshot, so the client never writes those.
+		 ================================================== */
+
+	async getProfile(): Promise<BodyProfile> {
+		const { data, error } = await supabase
+			.from("profiles")
+			.select("sex, date_of_birth, height_cm")
+			.maybeSingle();
+		if (error) console.warn("[db] profiles fetch warning:", error.message);
+		return toBodyProfile(data as Record<string, unknown> | null);
+	},
+
+	/** Any field may be cleared — a null here means "not set", not "delete me". */
+	async saveProfile(profile: BodyProfileInput): Promise<BodyProfile> {
+		const { data, error } = await supabase.rpc("save_profile", {
+			p_sex: profile.sex,
+			p_date_of_birth: profile.date_of_birth,
+			p_height_cm: profile.height_cm,
+		});
+		if (error) throw error;
+		return toBodyProfile(data as Record<string, unknown> | null);
+	},
+
+	/** Newest first. An explicit limit caps rows; otherwise fetch every page. */
+	async getBodyReadings(
+		opts: { days?: number | null; limit?: number | null } = {},
+	): Promise<BodyReading[]> {
+		const pageSize = 1000;
+		const since = opts.days
+			? (() => {
+					const date = new Date();
+					date.setDate(date.getDate() - opts.days!);
+					return date.toISOString();
+				})()
+			: null;
+		const rows: Array<Record<string, unknown>> = [];
+		let offset = 0;
+		while (true) {
+			const remaining = opts.limit ? opts.limit - rows.length : pageSize;
+			if (remaining <= 0) break;
+			let query = supabase
+				.from("body_readings")
+				.select(
+					"id, user_id, measured_at, weight_kg, heart_rate, impedance_raw, source, device_label, profile_snapshot",
+				)
+				.order("measured_at", { ascending: false })
+				.range(offset, offset + Math.min(pageSize, remaining) - 1);
+			if (since) query = query.gte("measured_at", since);
+			const { data, error } = await query;
+			if (error) {
+				console.warn("[db] body_readings fetch warning:", error.message);
+				return [];
+			}
+			const page = (data ?? []) as Array<Record<string, unknown>>;
+			rows.push(...page);
+			if (page.length < pageSize || (opts.limit && rows.length >= opts.limit)) break;
+			offset += page.length;
+		}
+		return toBodyReadingList(rows);
+	},
+
+	/** No id inserts (and snapshots today's profile); an id updates that own row. */
+	async saveBodyReading(reading: BodyReadingInput): Promise<BodyReading> {
+		const isNew = !reading.id || reading.id.startsWith("temp-");
+		const { data, error } = await supabase.rpc("save_body_reading", {
+			p_id: isNew ? null : reading.id,
+			p_measured_at: reading.measured_at ?? null,
+			p_weight_kg: reading.weight_kg,
+			p_heart_rate: reading.heart_rate ?? null,
+			p_impedance_raw: reading.impedance_raw ?? null,
+			p_source: reading.source ?? "manual",
+			p_device_label: clampDeviceLabel(reading.device_label),
+		});
+		if (error) throw error;
+
+		const saved = toBodyReading(data as Record<string, unknown>);
+		if (!saved) throw new Error("Saved reading came back unusable");
+		return saved;
+	},
+
+	async deleteBodyReading(id: string): Promise<void> {
+		const { error } = await supabase.from("body_readings").delete().eq("id", id);
+		if (error) throw error;
 	},
 
 	/* ==================================================

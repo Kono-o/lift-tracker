@@ -5,6 +5,18 @@
 **Branch:** `master` (working tree; no commit was made)  
 **Status:** All verified functional and security defects fixed in the working tree. Database migrations applied to the linked Supabase project. `svelte-check` reports 0 errors; production build succeeds; browser end-to-end flows pass.
 
+### Follow-up audit — 2026-11-01
+
+Reviewed the current uncommitted body-profile / scale work and existing app changes. This addendum supersedes the historical warning count and captures only the follow-up work verified in this tree; it does not assert that the new migration has been applied to a live Supabase project.
+
+- Fixed both BODY and tracked-stat `YTD` chart ranges, which had been showing a rolling year, to start on January 1.
+- Removed the implicit 400-reading ceiling from BODY history. The database client now pages through all readings when no explicit limit is supplied, so `ALL` covers the user's full history.
+- Restricted authenticated direct writes to `profiles` and `body_readings`. Inserts and updates now go through the validation RPCs; authenticated users retain own-row reads and deletes. The migration and full-reset schema match.
+- Made DOB parsing reject impossible calendar dates before deriving age.
+- Made Vite config tolerate environments where Node cannot enumerate network interfaces; LAN HMR selection remains optional.
+- `svelte-check` → **0 errors, 31 warnings**. `npm run build` → success. `git diff --check` → clean. Warnings are existing Svelte accessibility/CSS warnings and the optional Supabase OpenTelemetry peer notice; the production bundle also reports the existing large main chunk.
+- No tests were added or run. Live Supabase migration/RLS checks, real Bluetooth hardware, and native APK installation were not exercised in this follow-up.
+
 ---
 
 ## 1. Executive summary

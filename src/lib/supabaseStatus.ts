@@ -29,6 +29,7 @@ export type UserDataUsage = {
 	workout_history: number;
 	tracked_stats?: number;
 	stat_logs?: number;
+	body_readings?: number;
 	routines?: number;
 	estimated_bytes: number;
 	exact: boolean;
@@ -129,12 +130,13 @@ function estimateBytesFromCounts(counts: Omit<UserDataUsage, 'estimated_bytes' |
 		counts.schedule * 120 +
 		counts.workout_history * 3500 +
 		(counts.tracked_stats ?? 0) * 200 +
-		(counts.stat_logs ?? 0) * 80
+		(counts.stat_logs ?? 0) * 80 +
+		(counts.body_readings ?? 0) * 160
 	);
 }
 
 async function countTable(
-	table: 'templates' | 'exercises' | 'schedule' | 'workout_history' | 'tracked_stats' | 'stat_logs',
+	table: 'templates' | 'exercises' | 'schedule' | 'workout_history' | 'tracked_stats' | 'stat_logs' | 'body_readings',
 ): Promise<number> {
 	const { count, error } = await supabase
 		.from(table)
@@ -157,6 +159,7 @@ export async function fetchUserDataUsage(): Promise<UserDataUsage | null> {
 			workout_history: Number(row.workout_history ?? 0),
 			tracked_stats: Number(row.tracked_stats ?? 0),
 			stat_logs: Number(row.stat_logs ?? 0),
+			body_readings: Number(row.body_readings ?? 0),
 			routines: Number(row.routines ?? 0),
 			estimated_bytes: Number(row.estimated_bytes ?? 0),
 			exact: true,
@@ -164,15 +167,16 @@ export async function fetchUserDataUsage(): Promise<UserDataUsage | null> {
 	}
 
 	try {
-		const [templates, exercises, schedule, workout_history, tracked_stats, stat_logs] = await Promise.all([
+		const [templates, exercises, schedule, workout_history, tracked_stats, stat_logs, body_readings] = await Promise.all([
 			countTable('templates'),
 			countTable('exercises'),
 			countTable('schedule'),
 			countTable('workout_history'),
 			countTable('tracked_stats'),
 			countTable('stat_logs'),
+			countTable('body_readings'),
 		]);
-		const counts = { templates, exercises, schedule, workout_history, tracked_stats, stat_logs };
+		const counts = { templates, exercises, schedule, workout_history, tracked_stats, stat_logs, body_readings };
 		return {
 			...counts,
 			estimated_bytes: estimateBytesFromCounts(counts),

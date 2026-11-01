@@ -23,8 +23,13 @@
   import TemplateColorPicker from '$lib/components/TemplateColorPicker.svelte';
   import ItemIconPicker from '$lib/components/ItemIconPicker.svelte';
   import ConfirmDeletePopup from '$lib/components/ConfirmDeletePopup.svelte';
+  import BodyPanel from '$lib/components/BodyPanel.svelte';
+  import MeasureSheet from '$lib/components/MeasureSheet.svelte';
+  import ProfileSheet from '$lib/components/ProfileSheet.svelte';
+  import type { BodyProfile, BodyProfileInput, BodyReading, BodyReadingInput } from '$lib/bodySanitize';
   import type ExerciseCatalog from '$lib/components/ExerciseCatalog.svelte';
   import { touchReorder } from '$lib/touchReorder';
+  import { promotionsFromSave, promoteId, promoteIdSet, promoteKeyedRecord } from '$lib/listReconcile';
   import { clampTemplateColor, DEFAULT_TEMPLATE_COLOR, getTemplateColor } from '$lib/templateColor';
   import {
     clampItemIcon,
@@ -119,6 +124,7 @@
     CircleCheck,
     RefreshCw,
     Repeat,
+    Scale,
     SkipForward,
     Square,
     Timer,
@@ -162,7 +168,7 @@
   import confetti from 'canvas-confetti';
   import { showUndoToast } from '$lib/undo.svelte';
   import UndoToast from '$lib/components/UndoToast.svelte';
-  import { hapticLight, hapticMedium, hapticSuccess, hapticWarning, setHapticsEnabled } from '$lib/haptics';
+  import { hapticLight, hapticMedium, hapticPlace, hapticSuccess, hapticWarning, setHapticsEnabled } from '$lib/haptics';
   import { playError, playRestEnd, playRestStart, playSetLogged, playWorkoutComplete, setSoundsEnabled } from '$lib/sounds';
   import {
     ensureNotificationPermission,
@@ -592,7 +598,7 @@ const getStatIcon = getItemIcon;
   type RangeMode = '3weeks' | '3m' | '6m' | 'ytd' | 'all';
   let statRangeMode = $state<RangeMode>('3weeks');
   const rangeModes: RangeMode[] = ['3weeks', '3m', '6m', 'ytd', 'all'];
-  type StatsTab = 'tracked' | 'history';
+  type StatsTab = 'tracked' | 'body' | 'history';
   let statsTab = $state<StatsTab>('tracked');
   let historyEntries = $state<WorkoutHistory[]>([]);
   let historyLoading = $state(false);
@@ -611,6 +617,17 @@ const getStatIcon = getItemIcon;
   let statRowDragged = false;
   let statListBody = $state<HTMLDivElement | undefined>();
 
+  // --- BODY tab: profile, weigh-ins and the sheets that write them ---
+  let bodyProfile = $state<BodyProfile>({ sex: null, date_of_birth: null, height_cm: null });
+  let bodyReadings = $state<BodyReading[]>([]);
+  let measureSheetOpen = $state(false);
+  /** Opened straight to the form (MANUAL), or to correct one stored reading. */
+  let measureManual = $state(false);
+  let measureEditing = $state<BodyReading | null>(null);
+  let profileSheetOpen = $state(false);
+  let profileSheetOnboarding = $state(false);
+  let bodySaveError = $state<string | null>(null);
+
   const ROW_TOTAL = 36;
   function dragShift(draggedIdx: number | null, overIdx: number | null, itemIdx: number): number {
       if (draggedIdx == null || overIdx == null || draggedIdx === overIdx) return 0;
@@ -625,14 +642,14 @@ const getStatIcon = getItemIcon;
 
   /**
    * Resolve drop target from pointer Y against real row boxes (not fixed math).
-   * Avoids wrong indices when lists are filtered subsets or row heights vary.
+   * Rows live inside `.list-row-shell` wrappers, so scanning direct children
+   * always missed them and silently fell back to fixed-height math that ignored
+   * scroll position — the source of erratic desktop drops in long lists.
    */
   function computeRowIndex(e: DragEvent, container: HTMLElement, maxIndex: number, _firstRowOffset: number = 0): number {
     if (maxIndex < 0) return 0;
-    const rows = Array.from(container.children).filter(
-      (el): el is HTMLElement =>
-        el instanceof HTMLElement &&
-        (el.draggable || el.getAttribute('draggable') === 'true' || el.hasAttribute('data-list-row')),
+    const rows = Array.from(container.querySelectorAll<HTMLElement>('[data-list-row]')).filter(
+      (el) => el.getClientRects().length > 0,
     );
     if (rows.length > 0) {
       const y = e.clientY;
@@ -640,11 +657,11 @@ const getStatIcon = getItemIcon;
         const r = rows[i].getBoundingClientRect();
         if (y < r.top + r.height / 2) return Math.max(0, Math.min(maxIndex, i));
       }
-      return maxIndex;
+      return Math.max(0, Math.min(maxIndex, rows.length - 1));
     }
-    // Fallback: uniform row height estimate
+    // Fallback: uniform row height estimate, including this container's scroll.
     const rect = container.getBoundingClientRect();
-    const y = e.clientY - rect.top;
+    const y = e.clientY - rect.top + container.scrollTop;
     const idx = Math.floor(y / ROW_TOTAL);
     return Math.max(0, Math.min(maxIndex, idx));
   }
@@ -1084,6 +1101,8 @@ const getStatIcon = getItemIcon;
     bootOverlayVisible = false;
     bootOverlayExiting = false;
     stageRevealActive = true;
+    // A brand-new account has no profile fields at all — this is the moment to ask.
+    maybePromptBodyProfile();
   }
 
   let weekCalendarCollapsed = $state(true);
@@ -2009,6 +2028,8 @@ const getStatIcon = getItemIcon;
   let templateNamePersistTimer: ReturnType<typeof setTimeout> | null = null;
   let templateNamePersistId: string | null = null;
   let editorExitSaving = $state(false);
+  /** Bumped whenever a template editor opens; late async work from an older editor checks this. */
+  let templateEditorSession = 0;
   let editingTemplate = $derived(
     editingTemplateId ? templates.find((t) => t.id === editingTemplateId) ?? null : null,
   );
@@ -4077,6 +4098,108 @@ const getStatIcon = getItemIcon;
       historyExpandedDate = null;
       void loadWorkoutHistory(true);
     }
+    if (tab === 'body') void refreshBodyReadings();
+  }
+
+  /** Re-pull weigh-ins so a save made on another device shows up without a reload. */
+  async function refreshBodyReadings() {
+    try {
+      // Load the full history so ALL and long-term trends mean what they say.
+      bodyReadings = await db.getBodyReadings();
+      bodyProfile = await db.getProfile();
+    } catch (err) {
+      // The bootstrap copy is still on screen; a background refresh failing is not a user error.
+      console.warn('[body] refresh failed', err);
+    }
+  }
+
+  function mergeBodyReading(list: BodyReading[], row: BodyReading): BodyReading[] {
+    const rest = list.filter((r) => r.id !== row.id);
+    return [row, ...rest].sort(
+      (a, b) => new Date(b.measured_at).getTime() - new Date(a.measured_at).getTime(),
+    );
+  }
+
+  function openMeasureSheet(options: { manual?: boolean; editing?: BodyReading | null } = {}) {
+    measureManual = options.manual ?? false;
+    measureEditing = options.editing ?? null;
+    bodySaveError = null;
+    measureSheetOpen = true;
+    void hapticLight();
+  }
+
+  /** Throws so the sheet can show the reason next to its own SAVE button. */
+  async function persistBodyReading(input: BodyReadingInput) {
+    const saved = await db.saveBodyReading(input);
+    bodyReadings = mergeBodyReading(bodyReadings, saved);
+  }
+
+  async function removeBodyReading(reading: BodyReading) {
+    try {
+      await db.deleteBodyReading(reading.id);
+    } catch (err) {
+      bodySaveError = formatDbError(err);
+      void hapticWarning();
+      throw err;
+    }
+    bodyReadings = bodyReadings.filter((r) => r.id !== reading.id);
+    showUndoToast({
+      label: 'Weigh-in deleted',
+      onUndo: () => {
+        // Undo restores the data, not the key: the id is server-generated on insert.
+        void db
+          .saveBodyReading({
+            measured_at: reading.measured_at,
+            weight_kg: reading.weight_kg,
+            heart_rate: reading.heart_rate,
+            impedance_raw: reading.impedance_raw,
+            source: reading.source,
+            device_label: reading.device_label,
+          })
+          .then((row) => {
+            bodyReadings = mergeBodyReading(bodyReadings, row);
+            void hapticSuccess();
+          })
+          .catch((err) => {
+            bodySaveError = formatDbError(err);
+            void hapticWarning();
+          });
+      },
+    });
+  }
+
+  /** Throws so the sheet can retry with its own fields still filled in. */
+  async function persistBodyProfile(input: BodyProfileInput) {
+    bodyProfile = await db.saveProfile(input);
+  }
+
+  const bodyProfileMissing = $derived(
+    bodyProfile.sex == null || bodyProfile.date_of_birth == null || bodyProfile.height_cm == null,
+  );
+
+  /**
+   * Once per account per device: ask for the three fields every derived metric needs.
+   * Declining is permanent for this install, and the BODY tab keeps a tappable nudge,
+   * so the prompt can never dead-end. The marker is written when it actually opens,
+   * so a load that had to wait behind the update prompt retries on the next sync.
+   */
+  function maybePromptBodyProfile(delay = 900) {
+    const userId = currentUser?.id;
+    if (!userId || !bodyProfileMissing) return;
+    const key = `lift-tracker-body-profile-prompted:${userId}`;
+    setTimeout(() => {
+      if (!hasInitialLoad || profileSheetOpen || measureSheetOpen || showUpdatePrompt) return;
+      let seen = false;
+      try {
+        seen = !!localStorage.getItem(key);
+        if (!seen) localStorage.setItem(key, '1');
+      } catch {
+        return; // storage blocked (private mode): prompting on every load would be worse
+      }
+      if (seen) return;
+      profileSheetOnboarding = true;
+      profileSheetOpen = true;
+    }, delay);
   }
 
   function openHistoryDate(dateStr: string) {
@@ -4220,26 +4343,25 @@ const getStatIcon = getItemIcon;
 
         try {
           const saved = await db.saveTrackedStats(snapStats);
-          const prevDraft = draftStats;
+          // The response reflects an older snapshot. Trust it only for temp→real
+          // id swaps; applying its values/order would drop rows added, resurrect
+          // rows deleted, and undo drag reorders that landed during the round-trip.
+          const promotions = promotionsFromSave(snapStats, saved);
           const prevSelected = selectedDraftStatId;
           withSuppressedListEnter(() => {
-            let nextStatKeys = statListKeyById;
-            saved.forEach((s, i) => {
-              const prevId = prevDraft[i]?.id;
-              if (prevId && prevId !== s.id) nextStatKeys = promoteListKey(nextStatKeys, prevId, s.id);
-              else if (s.id) nextStatKeys = rememberListKey(nextStatKeys, s.id);
-            });
-            statListKeyById = nextStatKeys;
-            draftStats = saved.map((s) => ({ ...s }));
-            trackedStats = draftStats.map((s) => ({ ...s }));
-            const nextSelected = prevDraft.findIndex((s) => s.id === prevSelected);
-            if (nextSelected >= 0 && saved[nextSelected]) {
-              selectedDraftStatId = saved[nextSelected].id;
-            } else if (prevSelected && saved.some((s) => s.id === prevSelected)) {
-              selectedDraftStatId = prevSelected;
-            } else {
-              selectedDraftStatId = saved[0]?.id ?? null;
+            if (promotions.size > 0) {
+              let nextStatKeys = statListKeyById;
+              for (const [fromId, toId] of promotions) {
+                nextStatKeys = promoteListKey(nextStatKeys, fromId, toId);
+              }
+              statListKeyById = nextStatKeys;
+              draftStats = draftStats.map((s) => {
+                const nextId = promotions.get(s.id);
+                return nextId ? { ...s, id: nextId } : s;
+              });
+              selectedDraftStatId = prevSelected ? promoteId(prevSelected, promotions) : null;
             }
+            trackedStats = draftStats.map((s) => ({ ...s }));
           });
           statSaveError = null;
         } catch (err) {
@@ -4255,13 +4377,23 @@ const getStatIcon = getItemIcon;
       }
     };
 
-    statDraftSavePromise = run().finally(() => {
+    const promise = run();
+    statDraftSavePromise = promise.finally(() => {
       statDraftSavePromise = null;
+      if (statDraftSavePending) {
+        statDraftSavePending = false;
+        if (!statSaveError) void persistTrackedStatsNow();
+      }
     });
     return statDraftSavePromise;
   }
 
   function handleStatDragStart(e: DragEvent, index: number) {
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.('button, input, a, [data-no-drag], .touch-reorder--engaged')) {
+      e.preventDefault();
+      return;
+    }
     statDraggedIndex = index;
     statDragOverIndex = index;
     if (e.dataTransfer) {
@@ -4282,10 +4414,13 @@ const getStatIcon = getItemIcon;
   function commitStatReorder(from: number, targetIndex: number) {
     if (from < 0 || from >= draftStats.length || targetIndex < 0 || targetIndex >= draftStats.length) return;
     const next = reorderByIndex(draftStats, from, targetIndex);
-    if (!next) return;
+    if (!next) {
+      void hapticLight();
+      return;
+    }
     draftStats = next;
     void persistTrackedStatsNow();
-    void hapticMedium();
+    void hapticPlace();
   }
 
   function handleStatDrop(e: DragEvent) {
@@ -4872,7 +5007,7 @@ const getStatIcon = getItemIcon;
 			const boot = await runDbActivityBatch(() =>
 				db.getSessionBootstrap(currentUser?.id, {
 					historyDays: 21,
-					statDays: 90,
+					statDays: 400,
 					includeRoutines: true,
 					includeStats: true,
 				}),
@@ -4890,6 +5025,9 @@ const getStatIcon = getItemIcon;
 			activeRoutinePlan = boot.activeRoutinePlan ?? null;
 			preferences = { ...DEFAULT_PREFERENCES, ...(boot.preferences ?? {}) };
 			preloadedRoutineList = boot.routineList ?? [];
+			bodyProfile = boot.bodyProfile;
+			bodyReadings = boot.bodyReadings ?? [];
+			maybePromptBodyProfile();
 	
 			if (isInitial) {
 				bootSections = buildBootSections(currentUser, schedule, templates, todayLog, recentLogs);
@@ -7656,6 +7794,8 @@ const getStatIcon = getItemIcon;
       return;
     }
 
+    templateEditorSession += 1;
+
     // Precompute everything before any reactive writes so Svelte batches one paint.
     const sourceEx = Array.isArray(tpl.exercises) ? tpl.exercises : [];
     const next: any[] = new Array(sourceEx.length);
@@ -7791,76 +7931,53 @@ const getStatIcon = getItemIcon;
   function applySavedTemplateExercises(
     templateId: string,
     saved: Exercise[],
+    snapshot: Array<{ id?: string }>,
     overridesMap: Record<string, ExerciseOverride> = {},
-    meta?: {
-      overrideIds: Set<string>;
-      supersetIds: Set<string>;
-      baseById: Record<string, ExerciseOverride>;
-    },
   ) {
     const tpl = templates.find((t) => t.id === templateId);
-    const prevSelected = selectedExerciseId;
-    const selectedIndex = draftExercises.findIndex((e) => e.id === prevSelected);
-    const prevDraft = draftExercises;
-    const overrideSrc = meta?.overrideIds ?? draftOverrideIds;
-    const supersetSrc = meta?.supersetIds ?? draftSupersetIds;
-    const baseSrc = meta?.baseById ?? overrideBaseById;
     const effectiveSaved: Exercise[] = saved.map((ex) =>
       overridesMap[ex.id] ? applyExerciseOverride(ex, overridesMap[ex.id]) : ex,
     );
 
-    // Suppress enter so save reconciliation never re-animates the whole list
-    // (that stacked with deletes as ghost rows).
+    // The cached template body always mirrors the server response.
+    patchTemplateInCache(
+      templateId,
+      tpl?.name ?? draftTemplateName,
+      effectiveSaved,
+      tpl?.color,
+      tpl?.icon,
+    );
+    mergeSavedExercisesIntoLibrary(saved);
+
+    // A newer editor session owns the draft now — never replace its rows.
+    if (editingTemplateId !== templateId || currentView !== 'edit_template') return;
+
+    const promotions = promotionsFromSave(
+      snapshot.filter((row): row is { id: string } => typeof row.id === 'string' && row.id.length > 0),
+      saved,
+    );
+    if (promotions.size === 0) return;
+
+    // Trust the response only for temp→real id swaps. Values and order stay with
+    // the live draft so edits made during the round-trip are not reverted.
     withSuppressedListEnter(() => {
-      patchTemplateInCache(templateId, tpl?.name ?? draftTemplateName, effectiveSaved, draftTemplateColor);
-      mergeSavedExercisesIntoLibrary(saved);
-
       let nextExKeys = exerciseListKeyById;
-      saved.forEach((savedEx, i) => {
-        const prevId = prevDraft[i]?.id as string | undefined;
-        if (prevId && prevId !== savedEx.id) {
-          nextExKeys = promoteListKey(nextExKeys, prevId, savedEx.id);
-        } else if (savedEx.id) {
-          nextExKeys = rememberListKey(nextExKeys, savedEx.id);
-        }
-      });
-      exerciseListKeyById = nextExKeys;
-      draftExercises = effectiveSaved.map((ex) => ({ ...ex }));
-
-      const nextOverrideIds = new Set<string>();
-      const nextSupersetIds = new Set<string>();
-      const nextBase: Record<string, ExerciseOverride> = {};
-      saved.forEach((savedEx, i) => {
-        const prevId = prevDraft[i]?.id as string | undefined;
-        if (!prevId) return;
-        if (overrideSrc.has(prevId)) {
-          nextOverrideIds.add(savedEx.id);
-          if (baseSrc[prevId]) nextBase[savedEx.id] = baseSrc[prevId];
-        }
-        if (supersetSrc.has(prevId)) nextSupersetIds.add(savedEx.id);
-      });
-      draftOverrideIds = nextOverrideIds;
-      draftSupersetIds = nextSupersetIds;
-      overrideBaseById = nextBase;
-
-      const nextStash = { ...exerciseTypeFieldStash };
-      saved.forEach((savedEx, i) => {
-        const prevId = prevDraft[i]?.id;
-        if (prevId && prevId !== savedEx.id && nextStash[prevId]) {
-          nextStash[savedEx.id] = mergeExerciseTypeStash(
-            nextStash[savedEx.id],
-            nextStash[prevId],
-          );
-          delete nextStash[prevId];
-        }
-      });
-      exerciseTypeFieldStash = nextStash;
-
-      if (selectedIndex >= 0 && saved[selectedIndex]) {
-        selectedExerciseId = saved[selectedIndex].id;
-      } else if (prevSelected && saved.some((ex) => ex.id === prevSelected)) {
-        selectedExerciseId = prevSelected;
+      for (const [fromId, toId] of promotions) {
+        nextExKeys = promoteListKey(nextExKeys, fromId, toId);
       }
+      exerciseListKeyById = nextExKeys;
+
+      draftExercises = draftExercises.map((e: any) => {
+        const nextId = promotions.get(e.id);
+        return nextId ? { ...e, id: nextId } : e;
+      });
+      selectedExerciseId = selectedExerciseId ? promoteId(selectedExerciseId, promotions) : null;
+      if (editingExerciseNameId) editingExerciseNameId = promoteId(editingExerciseNameId, promotions);
+
+      draftOverrideIds = promoteIdSet(draftOverrideIds, promotions);
+      draftSupersetIds = promoteIdSet(draftSupersetIds, promotions);
+      overrideBaseById = promoteKeyedRecord(overrideBaseById, promotions);
+      exerciseTypeFieldStash = promoteKeyedRecord(exerciseTypeFieldStash, promotions);
     });
   }
 
@@ -7878,14 +7995,19 @@ const getStatIcon = getItemIcon;
       return templateDraftSavePromise;
     }
 
+    let stopped = false;
     const run = async () => {
       while (true) {
         templateDraftSavePending = false;
 
         const id = editingTemplateId;
-        if (!id || id.startsWith('temp-')) return;
+        if (!id || id.startsWith('temp-')) {
+          stopped = true;
+          return;
+        }
         if (activeRoutineIsReadonly || isForeignTemplate(id)) {
           templateSaveError = 'This template is read-only (bookmarked). Copy the routine to edit.';
+          stopped = true;
           return;
         }
 
@@ -7893,6 +8015,7 @@ const getStatIcon = getItemIcon;
         const validationErr = validateDraftExercises(snapExercises);
         if (validationErr) {
           templateSaveError = validationErr;
+          stopped = true;
           return;
         }
         const snapOverrideIds = new Set(draftOverrideIds);
@@ -7921,11 +8044,7 @@ const getStatIcon = getItemIcon;
           });
           await db.saveTemplateOverrides(id, overrides, supersets);
 
-          applySavedTemplateExercises(id, saved, overrides, {
-            overrideIds: snapOverrideIds,
-            supersetIds: snapSupersetIds,
-            baseById: snapBaseById,
-          });
+          applySavedTemplateExercises(id, saved, snapExercises, overrides);
           templateSaveError = null;
 
           if (!isTemplateAssignable({ exercises: saved })) {
@@ -7937,6 +8056,7 @@ const getStatIcon = getItemIcon;
             err && typeof err === 'object' && 'message' in err && typeof err.message === 'string'
               ? err.message
               : 'Could not save template changes. Try again.';
+          stopped = true;
           return;
         }
 
@@ -7944,8 +8064,13 @@ const getStatIcon = getItemIcon;
       }
     };
 
-    templateDraftSavePromise = run().finally(() => {
+    const promise = run();
+    templateDraftSavePromise = promise.finally(() => {
       templateDraftSavePromise = null;
+      if (templateDraftSavePending) {
+        templateDraftSavePending = false;
+        if (!stopped && !templateSaveError) void persistTemplateExercisesNow();
+      }
     });
     return templateDraftSavePromise;
   }
@@ -7957,75 +8082,79 @@ const getStatIcon = getItemIcon;
     void flushTemplateNamePersist();
   }
 
-  async function persistTemplateColorNow() {
-    const templateId = editingTemplateId;
+  async function persistTemplateColorValue(templateId: string, color: number, icon = draftTemplateIcon) {
     if (!templateId || templateId.startsWith('temp-')) return;
     if (activeRoutineIsReadonly || isForeignTemplate(templateId)) return;
 
     const tpl = templates.find((t) => t.id === templateId);
-    const prevColor = tpl?.color ?? 0;
-    if (draftTemplateColor === prevColor) return;
+    if (!tpl) return;
+    const prevColor = tpl.color ?? 0;
+    if (color === prevColor) return;
 
-    patchTemplateInCache(
-      templateId,
-      tpl?.name ?? draftTemplateName,
-      tpl?.exercises ?? [],
-      draftTemplateColor,
-      draftTemplateIcon,
-    );
+    patchTemplateInCache(templateId, tpl.name, tpl.exercises, color, icon);
 
     try {
-      await db.updateTemplateColor(templateId, draftTemplateColor);
-      templateSaveError = null;
+      await db.updateTemplateColor(templateId, color);
+      if (editingTemplateId === templateId) templateSaveError = null;
     } catch (err) {
       console.error('template color save failed', err);
-      templateSaveError = 'Could not save template color.';
+      if (editingTemplateId === templateId) templateSaveError = 'Could not save template color.';
+      void loadData({ preserveSession: true }).catch(() => {});
+    }
+  }
+
+  async function persistTemplateColorNow() {
+    await persistTemplateColorValue(editingTemplateId, draftTemplateColor, draftTemplateIcon);
+  }
+
+  async function persistTemplateIconValue(templateId: string, icon: number, color = draftTemplateColor) {
+    if (!templateId || templateId.startsWith('temp-')) return;
+    if (activeRoutineIsReadonly || isForeignTemplate(templateId)) return;
+
+    const tpl = templates.find((t) => t.id === templateId);
+    if (!tpl) return;
+    const prevIcon = clampItemIcon(tpl.icon ?? DEFAULT_TEMPLATE_ICON);
+    const nextIcon = clampItemIcon(icon);
+    if (nextIcon === prevIcon) return;
+
+    patchTemplateInCache(templateId, tpl.name, tpl.exercises, color, nextIcon);
+
+    try {
+      await db.updateTemplateIcon(templateId, nextIcon);
+      if (editingTemplateId === templateId) templateSaveError = null;
+    } catch (err) {
+      console.error('template icon save failed', err);
+      if (editingTemplateId === templateId) templateSaveError = 'Could not save template icon.';
       void loadData({ preserveSession: true }).catch(() => {});
     }
   }
 
   async function persistTemplateIconNow() {
-    const templateId = editingTemplateId;
-    if (!templateId || templateId.startsWith('temp-')) return;
-    if (activeRoutineIsReadonly || isForeignTemplate(templateId)) return;
-
-    const tpl = templates.find((t) => t.id === templateId);
-    const prevIcon = clampItemIcon(tpl?.icon ?? DEFAULT_TEMPLATE_ICON);
-    if (draftTemplateIcon === prevIcon) return;
-
-    patchTemplateInCache(
-      templateId,
-      tpl?.name ?? draftTemplateName,
-      tpl?.exercises ?? [],
-      draftTemplateColor,
-      draftTemplateIcon,
-    );
-
-    try {
-      await db.updateTemplateIcon(templateId, draftTemplateIcon);
-      templateSaveError = null;
-    } catch (err) {
-      console.error('template icon save failed', err);
-      templateSaveError = 'Could not save template icon.';
-      void loadData({ preserveSession: true }).catch(() => {});
-    }
+    await persistTemplateIconValue(editingTemplateId, draftTemplateIcon, draftTemplateColor);
   }
 
   async function saveTemplateEditorDraft() {
     const templateId = editingTemplateId;
+    const session = templateEditorSession;
+    const name = draftTemplateName;
+    const color = draftTemplateColor;
+    const icon = draftTemplateIcon;
     editingExerciseNameId = null;
     await flushTemplateNamePersist();
-    if (templateId && !templateId.startsWith('temp-')) {
-      await persistTemplateNameById(templateId, draftTemplateName);
-      await persistTemplateColorNow();
-      await persistTemplateIconNow();
-      await persistTemplateExercisesNow();
-    }
+    if (!templateId || templateId.startsWith('temp-')) return;
+    // Use captured values: a new editor may open while these awaits run, and it
+    // must not have its name/color/icon overwritten by this outgoing session.
+    await persistTemplateNameById(templateId, name);
+    await persistTemplateColorValue(templateId, color, icon);
+    await persistTemplateIconValue(templateId, icon, color);
+    if (templateEditorSession !== session) return;
+    await persistTemplateExercisesNow();
   }
 
   function exitEditTemplate() {
     if (editorExitSaving) return;
     editorExitSaving = true;
+    const session = templateEditorSession;
     showTemplateColorPicker = false;
     showTemplateIconPicker = false;
     showExerciseCatalog = false;
@@ -8034,15 +8163,18 @@ const getStatIcon = getItemIcon;
     currentView = returnView;
     void runDbActivityBatch(saveTemplateEditorDraft)
       .finally(() => {
-        draftExercises = [];
-        exerciseTypeFieldStash = {};
-        draftTemplateName = '';
-        draftTemplateColor = DEFAULT_TEMPLATE_COLOR;
-        draftTemplateIcon = DEFAULT_TEMPLATE_ICON;
-        selectedExerciseId = null;
-        editingExerciseNameId = null;
-        editingTemplateId = '';
-        deletedLibraryExerciseIds = new Set();
+        // A template opened while the exit save was running owns the draft now.
+        if (templateEditorSession === session) {
+          draftExercises = [];
+          exerciseTypeFieldStash = {};
+          draftTemplateName = '';
+          draftTemplateColor = DEFAULT_TEMPLATE_COLOR;
+          draftTemplateIcon = DEFAULT_TEMPLATE_ICON;
+          selectedExerciseId = null;
+          editingExerciseNameId = null;
+          editingTemplateId = '';
+          deletedLibraryExerciseIds = new Set();
+        }
         editorExitSaving = false;
       });
   }
@@ -8310,6 +8442,13 @@ const getStatIcon = getItemIcon;
   let exerciseListBody = $state<HTMLDivElement | undefined>();
 
   function handleDragStart(e: DragEvent, index: number) {
+    // Never start a row drag from a control, or from a finger whose long-press
+    // reorder already engaged (Android can otherwise start a native drag too).
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.('button, input, a, [data-no-drag], .touch-reorder--engaged')) {
+      e.preventDefault();
+      return;
+    }
     draggedIndex = index;
     dragOverIndex = index;
     if (e.dataTransfer) {
@@ -8332,10 +8471,13 @@ const getStatIcon = getItemIcon;
   function commitExerciseReorder(from: number, targetIndex: number) {
     if (from < 0 || from >= draftExercises.length || targetIndex < 0 || targetIndex >= draftExercises.length) return;
     const next = reorderByIndex(draftExercises, from, targetIndex);
-    if (!next) return;
+    if (!next) {
+      void hapticLight();
+      return;
+    }
     draftExercises = next;
     void persistTemplateExercisesNow();
-    void hapticMedium();
+    void hapticPlace();
   }
 
   function handleExerciseDrop(e: DragEvent) {
@@ -8374,7 +8516,7 @@ const getStatIcon = getItemIcon;
   function handleTemplateDragStart(e: DragEvent, index: number) {
     // Don't start row-drag when interacting with edit/delete controls
     const t = e.target as HTMLElement | null;
-    if (t?.closest?.('button, input, a, [data-no-drag]')) {
+    if (t?.closest?.('button, input, a, [data-no-drag], .touch-reorder--engaged')) {
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -8403,22 +8545,23 @@ const getStatIcon = getItemIcon;
     const visible = builderTemplates;
     if (from < 0 || from >= visible.length || targetIndex < 0 || targetIndex >= visible.length) return;
     const reorderedVisible = reorderByIndex(visible, from, targetIndex);
-    if (!reorderedVisible) return;
+    if (!reorderedVisible) {
+      void hapticLight();
+      return;
+    }
 
-    // Apply new order only to the visible (builder) set; leave other library
-    // templates after them so we never splice the wrong global indices.
-    const visibleIds = new Set(reorderedVisible.map((t) => t.id));
-    const others = templates.filter((t) => !visibleIds.has(t.id));
-    const merged = [
-      ...reorderedVisible.map((t, i) => ({ ...t, display_order: i })),
-      ...others.map((t, i) => ({ ...t, display_order: reorderedVisible.length + i })),
-    ];
-    templates = merged;
-    void hapticMedium();
+    // Renumber ONLY the active routine's templates. Other routines keep their
+    // existing display_order — renumbering the whole library makes one reorder
+    // silently rewrite unrelated routines and shift another routine's list.
+    const nextOrders = new Map(reorderedVisible.map((t, i) => [t.id, i]));
+    templates = templates.map((t) =>
+      nextOrders.has(t.id) ? { ...t, display_order: nextOrders.get(t.id)! } : t,
+    );
+    void hapticPlace();
 
-    const orders = merged
-      .map((t, i) => ({ id: t.id, display_order: i }))
-      .filter((o) => !o.id.startsWith('temp-'));
+    const orders = [...nextOrders]
+      .filter(([id]) => !id.startsWith('temp-'))
+      .map(([id, display_order]) => ({ id, display_order }));
     if (orders.length === 0) return;
     void db.updateTemplateDisplayOrders(orders).catch((err) => {
       console.error('Failed to persist template reorder', err);
@@ -8878,6 +9021,37 @@ const getStatIcon = getItemIcon;
                     void hapticLight();
                   }}
                 >OLED</button>
+              </div>
+            </div>
+
+            <div class="settings-prefs__theme-row">
+              <span class="settings-prefs__label">
+                <Scale class="size-3" aria-hidden="true" />
+                <span>Body weight</span>
+              </span>
+              <div class="settings-prefs__segment" role="radiogroup" aria-label="Body weight units">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={preferences.body_units === 'metric'}
+                  class="settings-prefs__segment-btn"
+                  class:settings-prefs__segment-btn--on={preferences.body_units === 'metric'}
+                  onclick={() => {
+                    setPreference('body_units', 'metric');
+                    void hapticLight();
+                  }}
+                >KG</button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={preferences.body_units === 'imperial'}
+                  class="settings-prefs__segment-btn"
+                  class:settings-prefs__segment-btn--on={preferences.body_units === 'imperial'}
+                  onclick={() => {
+                    setPreference('body_units', 'imperial');
+                    void hapticLight();
+                  }}
+                >LB</button>
               </div>
             </div>
 
@@ -10927,6 +11101,8 @@ const getStatIcon = getItemIcon;
           <div class="text-[10px] text-zinc-600 leading-none mt-1 tabular-nums">
             {#if statsTab === 'tracked'}
               {trackedStats.length} tracked
+            {:else if statsTab === 'body'}
+              {bodyReadings.length} weigh-ins
             {:else}
               {historyEntries.length} logged
             {/if}
@@ -10941,6 +11117,20 @@ const getStatIcon = getItemIcon;
           >
             <Pencil class="size-3.5 shrink-0" />
             <span>EDIT</span>
+          </button>
+        {:else if statsTab === 'body'}
+          <button
+            type="button"
+            class="h-8 px-2.5 gap-1.5 rounded-md shrink-0 flex items-center justify-center border border-[#1e1e1e] bg-transparent text-zinc-400 hover:bg-[#1a1a1a] hover:text-white text-[10px] font-medium tracking-wide"
+            onclick={() => {
+              profileSheetOnboarding = false;
+              profileSheetOpen = true;
+              void hapticLight();
+            }}
+            title="Sex, birthday and height"
+          >
+            <User class="size-3.5 shrink-0" />
+            <span>PROFILE</span>
           </button>
         {/if}
       </div>
@@ -10957,6 +11147,14 @@ const getStatIcon = getItemIcon;
         <button
           type="button"
           role="tab"
+          aria-selected={statsTab === 'body'}
+          class="stats-tabs__btn"
+          class:stats-tabs__btn--on={statsTab === 'body'}
+          onclick={() => selectStatsTab('body')}
+        >BODY</button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={statsTab === 'history'}
           class="stats-tabs__btn"
           class:stats-tabs__btn--on={statsTab === 'history'}
@@ -10966,6 +11164,8 @@ const getStatIcon = getItemIcon;
 
       {#if statSaveError}
         <p class="shrink-0 mx-2.5 mt-2 text-[10px] text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{statSaveError}</p>
+      {:else if statsTab === 'body' && bodySaveError}
+        <p class="shrink-0 mx-2.5 mt-2 text-[10px] text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{bodySaveError}</p>
       {/if}
 
       {#if statsTab === 'tracked'}
@@ -11111,7 +11311,7 @@ const getStatIcon = getItemIcon;
                     : statRangeMode === '6m'
                       ? new Date(REAL_TODAY.getFullYear(), REAL_TODAY.getMonth() - 6, REAL_TODAY.getDate())
                       : statRangeMode === 'ytd'
-                        ? new Date(REAL_TODAY.getFullYear() - 1, REAL_TODAY.getMonth(), REAL_TODAY.getDate())
+                        ? new Date(REAL_TODAY.getFullYear(), 0, 1)
                         : hasData ? new Date(chartData[0].date + 'T00:00:00') : REAL_TODAY}
                 {@const startDate = rangeStartDate}
                 {@const endDate = REAL_TODAY}
@@ -11353,6 +11553,23 @@ const getStatIcon = getItemIcon;
           {/each}
         </div>
       {/if}
+      </div>
+      {:else if statsTab === 'body'}
+      <div class="stats-screen__body flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar p-2.5">
+        <BodyPanel
+          profile={bodyProfile}
+          readings={bodyReadings}
+          units={preferences.body_units}
+          canMeasure={!!currentUser}
+          onMeasure={() => openMeasureSheet()}
+          onAddManual={() => openMeasureSheet({ manual: true })}
+          onEditReading={(reading) => openMeasureSheet({ editing: reading })}
+          onDeleteReading={removeBodyReading}
+          onEditProfile={() => {
+            profileSheetOnboarding = false;
+            profileSheetOpen = true;
+          }}
+        />
       </div>
       {:else}
       <div class="stats-screen__body flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar p-2.5 space-y-2">
@@ -12870,6 +13087,38 @@ const getStatIcon = getItemIcon;
   message="Template and its schedule slots will be removed."
   anchorEl={templateDeleteConfirmAnchorEl}
   onConfirm={confirmTemplateDelete}
+/>
+
+<MeasureSheet
+  bind:open={measureSheetOpen}
+  profile={bodyProfile}
+  editing={measureEditing}
+  startManual={measureManual}
+  units={preferences.body_units}
+  onDismiss={() => {
+    measureSheetOpen = false;
+    measureEditing = null;
+    measureManual = false;
+  }}
+  onSave={persistBodyReading}
+  onEditProfile={() => {
+    measureSheetOpen = false;
+    measureEditing = null;
+    profileSheetOnboarding = false;
+    profileSheetOpen = true;
+  }}
+/>
+
+<ProfileSheet
+  bind:open={profileSheetOpen}
+  profile={bodyProfile}
+  units={preferences.body_units}
+  onboarding={profileSheetOnboarding}
+  onDismiss={() => {
+    profileSheetOpen = false;
+    profileSheetOnboarding = false;
+  }}
+  onSave={persistBodyProfile}
 />
 
 <UndoToast />

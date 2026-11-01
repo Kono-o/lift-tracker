@@ -18,6 +18,15 @@ html {
 	-webkit-user-select: none;
 	user-select: none;
 	touch-action: none;
+	position: relative;
+	z-index: 5;
+	/* Parents fade the dragged row for the desktop ghost; on touch the row stays
+	   in place, so keep it legible and make the lift obvious instead. */
+	opacity: 0.92 !important;
+	outline: 1px solid rgba(255, 255, 255, 0.55);
+	outline-offset: -1px;
+	background-color: rgba(255, 255, 255, 0.05);
+	box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
 }
 
 /*

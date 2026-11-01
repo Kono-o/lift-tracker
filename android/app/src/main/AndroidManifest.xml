@@ -34,4 +34,18 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Required for sideloading / self-update APK installs from GitHub releases -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- Scale readings. neverForLocation asserts scan results are never turned into
+         a location, so Android 12+ asks for Bluetooth only, never for location. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Pre-Android-12 Bluetooth, and the location prompt LE scanning needs there. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+
+    <!-- optional: the app still works (manual weigh-ins) on hardware without LE -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 </manifest>

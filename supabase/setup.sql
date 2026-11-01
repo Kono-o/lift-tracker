@@ -20,6 +20,11 @@
 --   - wger_* tables are a public read-only exercise catalog imported from wger.de
 --   - workout_history: composite PK (user_id, workout_date) — one row/day
 --   - exercise_personal_bests: per-user PR lookup (exercise_id, user_id)
+--   - profiles: own-only anthropometrics (sex, date of birth, height) used to derive
+--     body composition. Never moved onto usernames, which every signed-in user can read
+--   - body_readings: one row per weigh-in (date AND time, so two in a day coexist —
+--     stat_logs is keyed by day and cannot hold them). Stores raw measurements plus
+--     the profile snapshot taken at capture time; metrics are derived client-side
 --   - all SECURITY DEFINER RPCs require auth.uid(); delete_all_accounts is
 --     restricted to service_role/postgres
 -- =============================================================================
@@ -110,6 +115,8 @@ drop table if exists public.week_schedules cascade;
 drop table if exists public.user_active_schedules cascade;
 drop table if exists public.user_schedule_tags cascade;
 drop table if exists public.bodyweight_logs cascade;
+drop table if exists public.body_readings cascade;
+drop table if exists public.profiles cascade;
 
 
 -- Full reset: remove accounts after the app tables are gone.
@@ -119,6 +126,20 @@ delete from auth.users;
 -- -----------------------------------------------------------------------------
 -- 2. Core tables
 -- -----------------------------------------------------------------------------
+
+create table public.body_readings (
+  id uuid default gen_random_uuid() not null,
+  user_id uuid not null,
+  measured_at timestamp with time zone not null,
+  weight_kg numeric(6,3) not null,
+  heart_rate smallint,
+  impedance_raw numeric(8,2),
+  source text default 'manual' not null,
+  device_label text,
+  profile_snapshot jsonb default '{}'::jsonb not null,
+  created_at timestamp with time zone default now() not null,
+  updated_at timestamp with time zone default now() not null
+);
 
 create table public.exercise_personal_bests (
   exercise_id uuid not null,
@@ -145,6 +166,15 @@ create table public.exercises (
   catalog_exercise_id integer,
   catalog_muscle_ids integer[] default '{}'::integer[] not null,
   notes text
+);
+
+create table public.profiles (
+  user_id uuid not null,
+  sex text,
+  date_of_birth date,
+  height_cm numeric(5,2),
+  created_at timestamp with time zone default now() not null,
+  updated_at timestamp with time zone default now() not null
 );
 
 create table public.routine_bookmarks (
@@ -291,8 +321,10 @@ create table public.wger_exercise_muscles (
 -- -----------------------------------------------------------------------------
 -- 3. Constraints
 -- -----------------------------------------------------------------------------
+alter table public.body_readings add constraint body_readings_pkey PRIMARY KEY (id);
 alter table public.exercise_personal_bests add constraint exercise_personal_bests_pkey PRIMARY KEY (exercise_id, user_id);
 alter table public.exercises add constraint exercises_pkey PRIMARY KEY (id);
+alter table public.profiles add constraint profiles_pkey PRIMARY KEY (user_id);
 alter table public.routine_bookmarks add constraint routine_bookmarks_pkey PRIMARY KEY (id);
 alter table public.routine_schedules add constraint routine_schedules_pkey PRIMARY KEY (routine_id, day_of_week);
 alter table public.routines add constraint routines_pkey PRIMARY KEY (id);
@@ -304,12 +336,21 @@ alter table public.usernames add constraint usernames_pkey PRIMARY KEY (username
 alter table public.workout_history add constraint workout_history_pkey PRIMARY KEY (user_id, workout_date);
 alter table public.routine_bookmarks add constraint routine_bookmarks_user_id_routine_id_key UNIQUE (user_id, routine_id);
 alter table public.usernames add constraint usernames_user_id_key UNIQUE (user_id);
+alter table public.body_readings add constraint body_readings_hr_range CHECK (heart_rate is null or (heart_rate >= 20 AND heart_rate <= 260));
+alter table public.body_readings add constraint body_readings_impedance_range CHECK (impedance_raw is null or (impedance_raw >= 0::numeric AND impedance_raw <= 100000::numeric));
+alter table public.body_readings add constraint body_readings_label_length CHECK (device_label is null or char_length(device_label) <= 40);
+alter table public.body_readings add constraint body_readings_snapshot_check CHECK (jsonb_typeof(profile_snapshot) = 'object'::text);
+alter table public.body_readings add constraint body_readings_source_check CHECK (source = any (array['scale'::text, 'manual'::text]));
+alter table public.body_readings add constraint body_readings_weight_range CHECK (weight_kg > 0::numeric AND weight_kg <= 500::numeric);
 alter table public.exercise_personal_bests add constraint exercise_personal_bests_weight_nonneg CHECK (best_weight >= 0::double precision);
 alter table public.exercises add constraint exercises_reps_fields CHECK (exercise_type <> 'reps'::text OR target_reps IS NOT NULL AND target_minutes IS NULL AND target_seconds IS NULL);
 alter table public.exercises add constraint exercises_target_sets_range CHECK (target_sets >= 0 AND target_sets <= 12);
 alter table public.exercises add constraint exercises_time_fields CHECK (exercise_type <> 'time'::text OR target_reps IS NULL AND target_minutes IS NOT NULL AND target_seconds IS NOT NULL);
 alter table public.exercises add constraint exercises_time_no_weight CHECK (exercise_type <> 'time'::text OR current_weight IS NULL);
 alter table public.exercises add constraint exercises_type_check CHECK (exercise_type = ANY (ARRAY['reps'::text, 'time'::text]));
+alter table public.profiles add constraint profiles_dob_floor CHECK (date_of_birth is null or date_of_birth >= '1900-01-01'::date);
+alter table public.profiles add constraint profiles_height_range CHECK (height_cm is null or (height_cm >= 30::numeric AND height_cm <= 280::numeric));
+alter table public.profiles add constraint profiles_sex_check CHECK (sex is null or sex = any (array['male'::text, 'female'::text, 'other'::text]));
 alter table public.routine_schedules add constraint routine_schedules_day_of_week_check CHECK (day_of_week >= 0 AND day_of_week <= 6);
 alter table public.routines add constraint routines_name_not_empty CHECK (char_length(TRIM(BOTH FROM name)) > 0);
 alter table public.routines add constraint routines_schedule_mode_check CHECK (schedule_mode = ANY (ARRAY['weekly'::text, 'cycle'::text]));
@@ -334,10 +375,12 @@ alter table public.usernames add constraint usernames_preferences_check CHECK (j
 alter table public.workout_history add constraint workout_history_duration_seconds_check CHECK (duration_seconds IS NULL OR duration_seconds >= 1);
 alter table public.workout_history add constraint workout_history_skip_consistency CHECK (workout_status = 1 AND is_skipped = true OR workout_status <> 1 AND is_skipped = false);
 alter table public.workout_history add constraint workout_history_status_check CHECK (workout_status >= 0 AND workout_status <= 3);
+alter table public.body_readings add constraint body_readings_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
 alter table public.exercise_personal_bests add constraint exercise_personal_bests_exercise_id_fkey FOREIGN KEY (exercise_id) REFERENCES exercises(id) ON DELETE CASCADE;
 alter table public.exercise_personal_bests add constraint exercise_personal_bests_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
 alter table public.exercises add constraint exercises_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
 alter table public.exercises add constraint exercises_catalog_exercise_id_fkey FOREIGN KEY (catalog_exercise_id) REFERENCES public.wger_exercises(id) ON DELETE SET NULL;
+alter table public.profiles add constraint profiles_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
 alter table public.routine_bookmarks add constraint routine_bookmarks_routine_id_fkey FOREIGN KEY (routine_id) REFERENCES routines(id) ON DELETE CASCADE;
 alter table public.routine_bookmarks add constraint routine_bookmarks_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
 alter table public.routine_schedules add constraint routine_schedules_routine_id_fkey FOREIGN KEY (routine_id) REFERENCES routines(id) ON DELETE CASCADE;
@@ -357,6 +400,7 @@ alter table public.workout_history add constraint workout_history_user_id_fkey F
 -- 4. Indexes (those not owned by constraints)
 -- -----------------------------------------------------------------------------
 
+CREATE INDEX body_readings_user_measured_idx ON public.body_readings USING btree (user_id, measured_at DESC);
 CREATE INDEX exercise_personal_bests_user_id_idx ON public.exercise_personal_bests USING btree (user_id);
 CREATE INDEX exercises_user_id_idx ON public.exercises USING btree (user_id);
 CREATE INDEX routine_bookmarks_display_order_idx ON public.routine_bookmarks USING btree (user_id, display_order);
@@ -1049,6 +1093,8 @@ begin
   delete from public.workout_history;
   delete from public.stat_logs;
   delete from public.tracked_stats;
+  delete from public.body_readings;
+  delete from public.profiles;
   delete from public.routine_bookmarks;
   delete from public.routines; -- cascades templates + routine_schedules
   delete from public.schedule;
@@ -1075,6 +1121,8 @@ begin
   delete from public.workout_history where user_id = uid;
   delete from public.stat_logs where user_id = uid;
   delete from public.tracked_stats where user_id = uid;
+  delete from public.body_readings where user_id = uid;
+  delete from public.profiles where user_id = uid;
   delete from public.routine_bookmarks where user_id = uid;
   delete from public.routines where user_id = uid;
   delete from public.schedule where user_id = uid;
@@ -1257,6 +1305,8 @@ AS $function$
       coalesce((select count(*)::int from public.tracked_stats where user_id = auth.uid()), 0),
     'stat_logs',
       coalesce((select count(*)::int from public.stat_logs where user_id = auth.uid()), 0),
+    'body_readings',
+      coalesce((select count(*)::int from public.body_readings where user_id = auth.uid()), 0),
     'routines',
       coalesce((select count(*)::int from public.routines where user_id = auth.uid()), 0),
     'estimated_bytes',
@@ -1287,6 +1337,10 @@ AS $function$
         )
         + coalesce(
           (select sum(octet_length(row_to_json(p)::text))::bigint from public.exercise_personal_bests p where p.user_id = auth.uid()),
+          0
+        )
+        + coalesce(
+          (select sum(octet_length(row_to_json(br)::text))::bigint from public.body_readings br where br.user_id = auth.uid()),
           0
         )
       )
@@ -1592,6 +1646,127 @@ begin
   update public.usernames
   set avatar_seed = p_seed
   where user_id = uid;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.save_body_reading(p_id uuid, p_measured_at timestamp with time zone, p_weight_kg numeric, p_heart_rate smallint, p_impedance_raw numeric, p_source text, p_device_label text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  uid uuid := auth.uid();
+  row public.body_readings;
+  v_at timestamp with time zone;
+  v_label text;
+begin
+  if uid is null then
+    raise exception 'Not authenticated';
+  end if;
+  if p_weight_kg is null or p_weight_kg <= 0 or p_weight_kg > 500 then
+    raise exception 'Weight must be between 0 and 500 kg';
+  end if;
+  if p_source is not null and p_source <> all (array['scale','manual']) then
+    raise exception 'Invalid source';
+  end if;
+  if p_heart_rate is not null and (p_heart_rate < 20 or p_heart_rate > 260) then
+    raise exception 'Heart rate must be between 20 and 260 bpm';
+  end if;
+  if p_impedance_raw is not null and (p_impedance_raw < 0 or p_impedance_raw > 100000) then
+    raise exception 'Impedance out of range';
+  end if;
+
+  v_at := coalesce(p_measured_at, now());
+  -- A phone with a wrong clock should not make a reading unreachable forever.
+  if v_at > now() + interval '1 day' then
+    v_at := now();
+  end if;
+  v_label := nullif(btrim(coalesce(p_device_label, '')), '');
+  if char_length(v_label) > 40 then
+    v_label := left(v_label, 40);
+  end if;
+
+  if p_id is null then
+    insert into public.body_readings
+      (user_id, measured_at, weight_kg, heart_rate, impedance_raw, source, device_label, profile_snapshot, created_at, updated_at)
+    values (
+      uid,
+      v_at,
+      p_weight_kg,
+      p_heart_rate,
+      p_impedance_raw,
+      coalesce(p_source, 'manual'),
+      v_label,
+      coalesce(
+        (select jsonb_build_object(
+                   'sex', pr.sex,
+                   'date_of_birth', pr.date_of_birth,
+                   'height_cm', pr.height_cm)
+           from public.profiles pr
+          where pr.user_id = uid),
+        '{}'::jsonb),
+      now(),
+      now())
+    returning * into row;
+  else
+    -- profile_snapshot deliberately not refreshed: a correction to an old
+    -- weigh-in must not be re-derived against today's age.
+    update public.body_readings
+       set measured_at = v_at,
+           weight_kg = p_weight_kg,
+           heart_rate = p_heart_rate,
+           impedance_raw = p_impedance_raw,
+           source = coalesce(p_source, source),
+           device_label = v_label,
+           updated_at = now()
+     where id = p_id and user_id = uid
+     returning * into row;
+    if not found then
+      raise exception 'Reading not found';
+    end if;
+  end if;
+
+  return to_jsonb(row);
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.save_profile(p_sex text, p_date_of_birth date, p_height_cm numeric)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  uid uuid := auth.uid();
+  row public.profiles;
+begin
+  if uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  if p_sex is not null and p_sex <> all (array['male','female','other']) then
+    raise exception 'Invalid sex';
+  end if;
+  -- Clock-dependent bounds live here, not in a CHECK constraint: a volatile CHECK
+  -- expression can invalidate rows that were legal when written.
+  if p_date_of_birth is not null and p_date_of_birth > current_date then
+    raise exception 'Date of birth cannot be in the future';
+  end if;
+  if p_height_cm is not null and (p_height_cm < 30 or p_height_cm > 280) then
+    raise exception 'Height must be between 30 and 280 cm';
+  end if;
+
+  insert into public.profiles (user_id, sex, date_of_birth, height_cm, created_at, updated_at)
+  values (uid, p_sex, p_date_of_birth, p_height_cm, now(), now())
+  on conflict (user_id) do update
+    set sex = excluded.sex,
+        date_of_birth = excluded.date_of_birth,
+        height_cm = excluded.height_cm,
+        updated_at = now()
+  returning * into row;
+
+  return to_jsonb(row);
 end;
 $function$;
 
@@ -2510,8 +2685,10 @@ CREATE TRIGGER routine_schedules_mark_weekly_trg BEFORE INSERT OR UPDATE ON publ
 -- 7. Row level security
 -- -----------------------------------------------------------------------------
 
+alter table public.body_readings enable row level security;
 alter table public.exercise_personal_bests enable row level security;
 alter table public.exercises enable row level security;
+alter table public.profiles enable row level security;
 alter table public.routine_bookmarks enable row level security;
 alter table public.routine_schedules enable row level security;
 alter table public.routines enable row level security;
@@ -2535,6 +2712,8 @@ create policy "wger_exercises_read" on public.wger_exercises as permissive for s
 create policy "wger_exercise_equipment_read" on public.wger_exercise_equipment as permissive for select to anon, authenticated using (true);
 create policy "wger_exercise_muscles_read" on public.wger_exercise_muscles as permissive for select to anon, authenticated using (true);
 
+create policy "body_readings_delete_own" on public.body_readings as permissive for delete to authenticated using (user_id = ( SELECT auth.uid() AS uid));
+create policy "body_readings_select_own" on public.body_readings as permissive for select to authenticated using (user_id = ( SELECT auth.uid() AS uid));
 create policy "exercise_personal_bests_delete_own" on public.exercise_personal_bests as permissive for delete to authenticated using (user_id = ( SELECT auth.uid() AS uid));
 create policy "exercise_personal_bests_insert_own" on public.exercise_personal_bests as permissive for insert to authenticated with check (user_id = ( SELECT auth.uid() AS uid));
 create policy "exercise_personal_bests_select_own" on public.exercise_personal_bests as permissive for select to authenticated using (user_id = ( SELECT auth.uid() AS uid));
@@ -2543,6 +2722,10 @@ create policy "exercises_delete_own" on public.exercises as permissive for delet
 create policy "exercises_insert_own" on public.exercises as permissive for insert to authenticated with check (user_id = ( SELECT auth.uid() AS uid));
 create policy "exercises_select_all" on public.exercises as permissive for select to authenticated using (true);
 create policy "exercises_update_own" on public.exercises as permissive for update to authenticated using (user_id = ( SELECT auth.uid() AS uid)) with check (user_id = ( SELECT auth.uid() AS uid));
+-- Own-only on purpose: there is no profiles_select_all. usernames is world-readable,
+-- which is exactly why sex / date of birth / height are not stored there.
+create policy "profiles_delete_own" on public.profiles as permissive for delete to authenticated using (user_id = ( SELECT auth.uid() AS uid));
+create policy "profiles_select_own" on public.profiles as permissive for select to authenticated using (user_id = ( SELECT auth.uid() AS uid));
 create policy "routine_bookmarks_own_all" on public.routine_bookmarks as permissive for all to authenticated using (user_id = ( SELECT auth.uid() AS uid)) with check (user_id = ( SELECT auth.uid() AS uid));
 create policy "routine_schedules_own_all" on public.routine_schedules as permissive for all to authenticated using (EXISTS ( SELECT 1
    FROM routines r
@@ -2595,8 +2778,16 @@ create policy "workout_history_update_own" on public.workout_history as permissi
 
 grant usage on schema public to anon, authenticated, service_role;
 
+-- Writes go through SECURITY DEFINER RPCs so dynamic validation (DOB/timestamps)
+-- cannot be bypassed with a direct PostgREST insert or update.
+revoke all on table public.body_readings from anon, authenticated;
+grant select, delete on table public.body_readings to authenticated;
+grant all on table public.body_readings to service_role;
 grant all on table public.exercise_personal_bests to anon, authenticated, service_role;
 grant all on table public.exercises to anon, authenticated, service_role;
+revoke all on table public.profiles from anon, authenticated;
+grant select, delete on table public.profiles to authenticated;
+grant all on table public.profiles to service_role;
 grant all on table public.routine_bookmarks to anon, authenticated, service_role;
 grant all on table public.routine_schedules to anon, authenticated, service_role;
 grant all on table public.routines to anon, authenticated, service_role;
@@ -2671,6 +2862,10 @@ grant execute on function public.resync_active_bookmarked_routine() to authentic
 revoke all on function public.routine_bookmarks_validate() from public, anon, authenticated;
 revoke all on function public.save_avatar_seed(p_seed text) from public, anon, authenticated;
 grant execute on function public.save_avatar_seed(p_seed text) to authenticated, service_role;
+revoke all on function public.save_body_reading(p_id uuid, p_measured_at timestamp with time zone, p_weight_kg numeric, p_heart_rate smallint, p_impedance_raw numeric, p_source text, p_device_label text) from public, anon, authenticated;
+grant execute on function public.save_body_reading(p_id uuid, p_measured_at timestamp with time zone, p_weight_kg numeric, p_heart_rate smallint, p_impedance_raw numeric, p_source text, p_device_label text) to authenticated, service_role;
+revoke all on function public.save_profile(p_sex text, p_date_of_birth date, p_height_cm numeric) from public, anon, authenticated;
+grant execute on function public.save_profile(p_sex text, p_date_of_birth date, p_height_cm numeric) to authenticated, service_role;
 revoke all on function public.save_routine_schedule(p_routine_id uuid, p_schedule jsonb) from public, anon, authenticated;
 grant execute on function public.save_routine_schedule(p_routine_id uuid, p_schedule jsonb) to authenticated, service_role;
 revoke all on function public.save_stat_log(p_stat_id uuid, p_log_date date, p_value real) from public, anon, authenticated;

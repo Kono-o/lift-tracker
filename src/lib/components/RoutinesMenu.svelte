@@ -12,7 +12,7 @@
   import ConfirmDeletePopup from '$lib/components/ConfirmDeletePopup.svelte';
   import { listItemSlideIn, listItemSlideOut } from '$lib/menuTransitions';
   import { touchReorder } from '$lib/touchReorder';
-  import { hapticMedium, hapticLight } from '$lib/haptics';
+  import { hapticLight, hapticMedium, hapticPlace, hapticWarning } from '$lib/haptics';
   import {
     ArrowLeft,
     Plus,
@@ -155,6 +155,8 @@
   let dragOverOwnedIndex = $state<number | null>(null);
   let routineListBody = $state<HTMLDivElement | undefined>();
   let routineRowDragged = $state(false);
+  /** True while a reorder is persisting; periodic reloads must not clobber it. */
+  let reorderBusy = false;
 
   const ownedRoutines = $derived(myList.filter((r) => r.source === 'owned'));
   const canDeleteOwned = $derived(ownedRoutines.length > 1);
@@ -208,14 +210,13 @@
     return 0;
   }
 
-  /** Drop target from real owned-row geometry. */
+  /** Drop target from real owned-row geometry. Rows sit inside .list-row-shell. */
   function computeOwnedDropIndex(e: DragEvent, container: HTMLElement, ownedCount: number): number {
     if (ownedCount <= 0) return 0;
     const maxIndex = ownedCount - 1;
-    const ownedRows = Array.from(container.children).filter(
-      (el): el is HTMLElement =>
-        el instanceof HTMLElement && el.getAttribute('data-routine-source') === 'owned',
-    );
+    const ownedRows = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-list-row][data-routine-source="owned"]'),
+    ).filter((el) => el.getClientRects().length > 0);
 
     if (ownedRows.length > 0) {
       const y = e.clientY;
@@ -223,10 +224,10 @@
         const r = ownedRows[i].getBoundingClientRect();
         if (y < r.top + r.height / 2) return Math.max(0, Math.min(maxIndex, i));
       }
-      return maxIndex;
+      return Math.max(0, Math.min(maxIndex, ownedRows.length - 1));
     }
     const rect = container.getBoundingClientRect();
-    const y = e.clientY - rect.top;
+    const y = e.clientY - rect.top + container.scrollTop;
     const idx = Math.floor(y / ROW_TOTAL);
     return Math.max(0, Math.min(maxIndex, idx));
   }
@@ -237,7 +238,7 @@
       return;
     }
     const t = e.target as HTMLElement | null;
-    if (t?.closest?.('button, input, a, [data-no-drag]')) {
+    if (t?.closest?.('button, input, a, [data-no-drag], .touch-reorder--engaged')) {
       e.preventDefault();
       return;
     }
@@ -262,13 +263,16 @@
     if (dragOverOwnedIndex !== idx) dragOverOwnedIndex = idx;
   }
 
-  /** Shared commit for desktop drop + touch long-press reorder. */
   async function commitOwnedRoutineReorder(from: number, targetIndex: number) {
+    if (reorderBusy) return;
     const ownedAll = [...ownedRoutines];
     if (from < 0 || from >= ownedAll.length || targetIndex < 0 || targetIndex >= ownedAll.length) {
       return;
     }
-    if (from === targetIndex) return;
+    if (from === targetIndex) {
+      void hapticLight();
+      return;
+    }
 
     const nextOwned = [...ownedAll];
     const [moved] = nextOwned.splice(from, 1);
@@ -286,14 +290,24 @@
       .filter((r) => !r.id.startsWith('temp-'))
       .map((r, i) => ({ id: r.id, display_order: i }));
     if (orders.length === 0) return;
+    reorderBusy = true;
+    let failed: unknown = null;
     try {
       await runDbActivityBatch(() => db.updateRoutineDisplayOrders(orders));
     } catch (err) {
-      console.error('Failed to persist routine reorder', err);
-      errorMsg = 'Failed to reorder routines';
-      await reloadList();
+      failed = err;
+    } finally {
+      reorderBusy = false;
     }
-    void hapticMedium();
+    if (failed) {
+      console.error('Failed to persist routine reorder', failed);
+      errorMsg = 'Failed to reorder routines';
+      // Reload only after the flag clears, otherwise reloadList skips it.
+      await reloadList();
+      void hapticWarning();
+      return;
+    }
+    void hapticPlace();
   }
 
   async function handleDrop(e: DragEvent) {
@@ -308,6 +322,12 @@
     await commitOwnedRoutineReorder(from, computeOwnedDropIndex(e, routineListBody, ownedRoutines.length));
   }
 
+  async function handleTouchDrop(from: number, to: number) {
+    draggedOwnedIndex = null;
+    dragOverOwnedIndex = null;
+    await commitOwnedRoutineReorder(from, to);
+  }
+
   function handleDragEnd() {
     const wasDragging = draggedOwnedIndex !== null;
     draggedOwnedIndex = null;
@@ -318,13 +338,19 @@
     }
   }
 
+  // A refresh must never overwrite rows the user is holding or a reorder that
+  // has not landed on the server yet — the stale list looks like a lost row.
+  function listIsMutable() {
+    return busyAction !== null || reorderBusy || draggedOwnedIndex !== null;
+  }
+
   async function reloadList() {
     // Don't clobber in-flight copy/create/delete optimistic rows
-    if (busyAction !== null) return;
+    if (listIsMutable()) return;
     const gen = listGen;
     try {
       const list = await db.getUserRoutineList();
-      if (destroyed || busyAction !== null || gen !== listGen) return;
+      if (destroyed || listIsMutable() || gen !== listGen) return;
       // Preserve in-progress pending rows (should be none when busy is null, but be safe)
       const pending = myList.filter(
         (r) =>
@@ -353,14 +379,14 @@
   }
 
   async function loadAllUsersSection() {
-    if (busyAction !== null) return;
+    if (listIsMutable()) return;
     const gen = listGen;
     try {
       const [routines, bm] = await Promise.all([
         db.getAllUsersAndRoutines(),
         db.getUserBookmarks(),
       ]);
-      if (destroyed || busyAction !== null || gen !== listGen) return;
+      if (destroyed || listIsMutable() || gen !== listGen) return;
       allRoutines = currentUserId
         ? routines.filter((r) => r.user_id !== currentUserId)
         : routines;
@@ -1054,7 +1080,7 @@
               index: ownedIdx,
               container: () => routineListBody,
               rowCount: () => ownedRoutines.length,
-              disabled: () => busyAction !== null || !isOwned || isPending || ownedIdx < 0,
+              disabled: () => busyAction !== null || reorderBusy || !isOwned || isPending || ownedIdx < 0,
               filterRow: (el) => el.getAttribute('data-routine-source') === 'owned',
               onStart: (i) => {
                 draggedOwnedIndex = i;
@@ -1064,7 +1090,7 @@
                 if (dragOverOwnedIndex !== i) dragOverOwnedIndex = i;
               },
               onDrop: (from, to) => {
-                void commitOwnedRoutineReorder(from, to);
+                void handleTouchDrop(from, to);
               },
               onCancel: () => {
                 draggedOwnedIndex = null;

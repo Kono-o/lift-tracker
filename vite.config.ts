@@ -6,7 +6,15 @@ import pkg from './package.json' with { type: 'json' };
 
 /** First private IPv4 (e.g. 192.168.x.x) for HMR when opening the app from a phone. */
 function lanIpv4(): string | undefined {
-	for (const nets of Object.values(networkInterfaces())) {
+	let interfaces: ReturnType<typeof networkInterfaces>;
+	try {
+		interfaces = networkInterfaces();
+	} catch {
+		// Some restricted/container runtimes cannot enumerate interfaces. The LAN
+		// HMR hint is optional, so keep config loading and builds usable there.
+		return undefined;
+	}
+	for (const nets of Object.values(interfaces)) {
 		if (!nets) continue;
 		for (const net of nets) {
 			if (net.family !== 'IPv4' || net.internal) continue;

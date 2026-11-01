@@ -9,7 +9,11 @@
  *
  * Scroll stays intact: the gesture only hijacks movement after the hold
  * engages; any movement before that is treated as a scroll/swipe and ignored.
+ * Once engaged, holding near the top/bottom edge auto-scrolls the surrounding
+ * panel so long lists can be reordered past the visible viewport.
  */
+
+import { hapticMedium } from '$lib/haptics';
 
 export type TouchReorderParams = {
 	/** Index of THIS row within the reorderable set. */
@@ -32,17 +36,22 @@ export type TouchReorderParams = {
 
 /** Elements that must never trigger row-drag (buttons living inside rows). */
 const INTERACTIVE = 'button, input, textarea, select, a, label, [data-no-drag]';
+const SCROLL_EDGE_PX = 56;
+const SCROLL_MAX_STEP = 18;
 
 export function touchReorder(node: HTMLElement, params: TouchReorderParams) {
 	let opts = params;
 
 	let startX = 0;
 	let startY = 0;
+	let lastY = 0;
 	let activeTouchId: number | null = null;
 	let holdTimer: ReturnType<typeof setTimeout> | null = null;
 	let engaged = false;
 	// Set when the gesture ends so the synthetic click doesn't activate the row.
 	let suppressClick = false;
+	let scrollParent: HTMLElement | null = null;
+	let scrollFrame = 0;
 
 	function holdMs() {
 		return opts.holdMs ?? 220;
@@ -55,12 +64,60 @@ export function touchReorder(node: HTMLElement, params: TouchReorderParams) {
 		}
 	}
 
+	function stopAutoScroll() {
+		if (scrollFrame) cancelAnimationFrame(scrollFrame);
+		scrollFrame = 0;
+	}
+
+	/** Nearest ancestor that can actually scroll vertically. */
+	function findScrollParent(): HTMLElement | null {
+		let el: HTMLElement | null = opts.container() ?? null;
+		while (el) {
+			const style = getComputedStyle(el);
+			if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1) {
+				return el;
+			}
+			el = el.parentElement;
+		}
+		return null;
+	}
+
+	function notifyOver() {
+		const body = opts.container();
+		const count = opts.rowCount();
+		if (!body || count <= 0) return;
+		opts.onOver(rowIndexAtY(body, count, lastY));
+	}
+
+	function autoScrollTick() {
+		scrollFrame = 0;
+		if (!engaged || !scrollParent) return;
+		const rect = scrollParent.getBoundingClientRect();
+		const edge = Math.min(SCROLL_EDGE_PX, rect.height * 0.22);
+		let delta = 0;
+		if (lastY < rect.top + edge) {
+			delta = -Math.min(SCROLL_MAX_STEP, Math.ceil((rect.top + edge - lastY) / 4));
+		} else if (lastY > rect.bottom - edge) {
+			delta = Math.min(SCROLL_MAX_STEP, Math.ceil((lastY - (rect.bottom - edge)) / 4));
+		}
+		if (delta !== 0) {
+			const before = scrollParent.scrollTop;
+			scrollParent.scrollTop = before + delta;
+			if (scrollParent.scrollTop !== before) notifyOver();
+		}
+		if (lastY < rect.top + edge || lastY > rect.bottom - edge) {
+			scrollFrame = requestAnimationFrame(autoScrollTick);
+		}
+	}
+
 	function disengage(callCancel: boolean) {
 		const wasEngaged = engaged;
 		engaged = false;
 		activeTouchId = null;
 		clearHoldTimer();
+		stopAutoScroll();
 		node.classList.remove('touch-reorder--engaged');
+		node.removeAttribute('data-touch-reorder-active');
 		if (wasEngaged && callCancel) opts.onCancel();
 	}
 
@@ -73,6 +130,7 @@ export function touchReorder(node: HTMLElement, params: TouchReorderParams) {
 		const touch = e.changedTouches[0];
 		startX = touch.clientX;
 		startY = touch.clientY;
+		lastY = touch.clientY;
 		activeTouchId = touch.identifier;
 
 		clearHoldTimer();
@@ -81,7 +139,12 @@ export function touchReorder(node: HTMLElement, params: TouchReorderParams) {
 			if (activeTouchId === null) return;
 			engaged = true;
 			suppressClick = true;
+			scrollParent = findScrollParent();
 			node.classList.add('touch-reorder--engaged');
+			// Lets row dragstart handlers ignore the native drag Android may start
+			// from the same long press after this gesture has already engaged.
+			node.setAttribute('data-touch-reorder-active', 'true');
+			void hapticMedium();
 			opts.onStart(opts.index);
 		}, holdMs());
 	}
@@ -90,6 +153,7 @@ export function touchReorder(node: HTMLElement, params: TouchReorderParams) {
 		if (activeTouchId === null) return;
 		const touch = findTouch(e.changedTouches);
 		if (!touch) return;
+		lastY = touch.clientY;
 
 		if (!engaged) {
 			const dx = touch.clientX - startX;
@@ -103,24 +167,25 @@ export function touchReorder(node: HTMLElement, params: TouchReorderParams) {
 
 		e.preventDefault();
 
-		const body = opts.container();
-		const count = opts.rowCount();
-		if (!body || count <= 0) return;
-		const idx = rowIndexAtY(body, count, touch.clientY);
-		opts.onOver(idx);
+		notifyOver();
+		if (!scrollFrame && scrollParent) scrollFrame = requestAnimationFrame(autoScrollTick);
 	}
 
 	function onTouchEnd(e: TouchEvent) {
 		if (activeTouchId === null || !findTouch(e.changedTouches)) return;
 		const wasEngaged = engaged;
 		const from = opts.index;
+		const last = e.changedTouches[e.changedTouches.length - 1];
+		lastY = last.clientY;
 		disengage(false);
 		if (wasEngaged) {
 			const body = opts.container();
 			const count = opts.rowCount();
-			const last = e.changedTouches[e.changedTouches.length - 1];
-			const target = body && count > 0 ? rowIndexAtY(body, count, last.clientY) : 0;
+			const target = body && count > 0 ? rowIndexAtY(body, count, lastY) : 0;
 			opts.onDrop(from, target);
+			// Release always ends the gesture: without this the parent keeps a stale
+			// dragged index and the dropped row stays ghosted/offset until the next drag.
+			opts.onCancel();
 		}
 	}
 
@@ -139,9 +204,9 @@ export function touchReorder(node: HTMLElement, params: TouchReorderParams) {
 	/** Midpoint scan over rendered row shells — mirrors computeRowIndex(). */
 	function rowIndexAtY(container: HTMLElement, count: number, y: number): number {
 		const maxIndex = Math.max(0, count - 1);
-		const rows = Array.from(
-			container.querySelectorAll<HTMLElement>('[data-list-row]'),
-		).filter((el) => opts.filterRow?.(el) ?? true);
+		const rows = Array.from(container.querySelectorAll<HTMLElement>('[data-list-row]'))
+			.filter((el) => opts.filterRow?.(el) ?? true)
+			.filter((el) => el.getClientRects().length > 0);
 		for (let i = 0; i < rows.length; i++) {
 			const r = rows[i].getBoundingClientRect();
 			if (y < r.top + r.height / 2) return Math.min(maxIndex, Math.max(0, i));

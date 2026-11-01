@@ -132,6 +132,8 @@ BEGIN
   DELETE FROM public.workout_history;
   DELETE FROM public.stat_logs;
   DELETE FROM public.tracked_stats;
+  DELETE FROM public.body_readings;
+  DELETE FROM public.profiles;
   DELETE FROM public.routine_bookmarks;
   DELETE FROM public.routines; -- cascades templates + routine_schedules
   DELETE FROM public.schedule;

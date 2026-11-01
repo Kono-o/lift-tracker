@@ -16,7 +16,7 @@ All notable changes to Lift Tracker are documented here.
 
 ### Core workout
 - Hold-to-log set bubbles (500 ms) with a short-press manual rep editor; rest timer with orange rest state, countdown, and one-tap stop.
-- PR / NEW PR and PERFECT DAY feedback, instant finish with undo toast, and full history writes.
+- PR / NEW PR and daily target-completion feedback, instant finish with undo toast, and full history writes.
 - Rest state no longer gets stuck after backgrounding, and switching days clears any stale rest/fade state.
 - Completing all target sets advances weight; per-day overrides advance their own stored weight, not the shared base.
 

@@ -148,16 +148,16 @@
       role="presentation"
       onclick={handlePlotTap}
     >
-      <rect x={PAD_L} y={PAD_T} width={plotW} height={plotH} fill="#0c0c0c" stroke="#161616" stroke-width="1" />
+      <rect x={PAD_L} y={PAD_T} width={plotW} height={plotH} fill="var(--app-surface-0)" stroke="var(--app-surface-1)" stroke-width="1" />
 
       {#each yTicks as tick}
-        <line x1={PAD_L} y1={tick.y} x2={PAD_L + plotW} y2={tick.y} stroke="#161616" stroke-width="1" />
-        <text x={PAD_L - 5} y={tick.y + 3.5} text-anchor="end" fill="#52525b" font-size="10" font-family="ui-monospace, monospace">{yLabel(tick.value)}</text>
+        <line x1={PAD_L} y1={tick.y} x2={PAD_L + plotW} y2={tick.y} stroke="var(--app-surface-1)" stroke-width="1" />
+        <text x={PAD_L - 5} y={tick.y + 3.5} text-anchor="end" fill="var(--app-surface-4)" font-size="10" font-family="ui-monospace, monospace">{yLabel(tick.value)}</text>
       {/each}
 
       {#each xTicks as tick}
-        <line x1={tick.x} y1={PAD_T} x2={tick.x} y2={PAD_T + plotH} stroke="#141414" stroke-width="1" />
-        <text x={tick.x} y={PAD_T + plotH + 16} text-anchor="middle" fill="#52525b" font-size="10" font-family="ui-monospace, monospace">{axisLabel(tick.at)}</text>
+        <line x1={tick.x} y1={PAD_T} x2={tick.x} y2={PAD_T + plotH} stroke="var(--app-surface-1)" stroke-width="1" />
+        <text x={tick.x} y={PAD_T + plotH + 16} text-anchor="middle" fill="var(--app-surface-4)" font-size="10" font-family="ui-monospace, monospace">{axisLabel(tick.at)}</text>
       {/each}
 
       {#each gaps as gap}
@@ -208,9 +208,9 @@
 <style>
   .metric-chart {
     position: relative;
-    border-radius: 0.375rem;
-    border: 1px solid #1e1e1e;
-    background: #080808;
+    border-radius: var(--app-radius-compact);
+    border: 1px solid var(--app-outline-subtle);
+    background: var(--app-canvas);
     overflow: hidden;
   }
 
@@ -219,8 +219,8 @@
     align-items: center;
     justify-content: center;
     text-align: center;
-    padding: 0 1rem;
-    font-size: 11px;
-    color: #71717a;
+    padding: 0 var(--space-4);
+    font-size: var(--type-micro);
+    color: var(--app-fg-muted);
   }
 </style>

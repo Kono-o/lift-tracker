@@ -300,7 +300,7 @@
     >
       <header class="catalog-header">
         <div class="catalog-header__title">
-          <span class="catalog-header__icon"><BookOpen class="size-4" /></span>
+          <span class="catalog-header__icon"><BookOpen class="app-icon-control" /></span>
           <div class="min-w-0">
             <h2>EXERCISE CATALOG</h2>
             <p>Built-in movements from the wger database. Tap one to inspect muscles and equipment.</p>
@@ -309,14 +309,14 @@
         <div class="catalog-header__side">
           <span class="catalog-count">
             {#if listLoading && results.length === 0}
-              <Loader2 class="size-3 animate-spin" />
+              <Loader2 class="app-icon-small animate-spin" />
             {:else}
               {total}
             {/if}
             <span>EXERCISES</span>
           </span>
           <button type="button" class="catalog-close" onclick={close} aria-label="Close exercise catalog">
-            <X class="size-4" />
+            <X class="app-icon-control" />
           </button>
         </div>
       </header>
@@ -337,7 +337,7 @@
           />
           {#if query}
             <button type="button" class="catalog-search__clear" onclick={clearSearch} aria-label="Clear search">
-              <X class="size-3.5" />
+              <X class="app-icon-small" />
             </button>
           {/if}
         </div>
@@ -378,7 +378,7 @@
 
           {#if activeFilterCount > 0 || query}
             <button type="button" class="catalog-reset" onclick={resetFilters} title="Clear search and filters">
-              <SlidersHorizontal class="size-3" />
+              <SlidersHorizontal class="app-icon-small" />
               RESET
             </button>
           {/if}
@@ -387,7 +387,7 @@
 
       {#if filtersError}
         <div class="catalog-banner catalog-banner--error">
-          <AlertCircle class="size-3.5 shrink-0" />
+          <AlertCircle class="app-icon-small shrink-0" />
           <span class="flex-1 min-w-0">{filtersError}</span>
           <button type="button" onclick={() => void loadFilters()}>Retry</button>
         </div>
@@ -410,13 +410,13 @@
               {/each}
             {:else if listError}
               <div class="catalog-empty">
-                <AlertCircle class="size-5 text-red-400" />
+                <AlertCircle class="app-icon-nav text-red-400" />
                 <p>{listError}</p>
                 <button type="button" class="catalog-retry" onclick={() => void fetchPage(true)}>TRY AGAIN</button>
               </div>
             {:else if results.length === 0}
               <div class="catalog-empty">
-                <Search class="size-5" />
+                <Search class="app-icon-nav" />
                 <p>
                   {hasFilters
                     ? 'No exercises match these filters.'
@@ -464,7 +464,7 @@
                   onclick={() => void fetchPage(false)}
                 >
                   {#if listLoadingMore}
-                    <Loader2 class="size-3 animate-spin" /> LOADING
+                    <Loader2 class="app-icon-small animate-spin" /> LOADING
                   {:else}
                     LOAD MORE · {results.length}/{total}
                   {/if}
@@ -484,7 +484,7 @@
             </div>
           {:else if detailError}
             <div class="catalog-empty catalog-empty--detail">
-              <AlertCircle class="size-5 text-red-400" />
+              <AlertCircle class="app-icon-nav text-red-400" />
               <p>{detailError}</p>
               <button type="button" class="catalog-retry" onclick={() => {
                 const summary = results.find((row) => row.id === detailId);
@@ -498,7 +498,7 @@
             {@const added = addedCatalogIds.has(row.id)}
             <div class="catalog-detail__head">
               <button type="button" class="catalog-back" onclick={closeDetail}>
-                <ArrowLeft class="size-3.5" />
+                <ArrowLeft class="app-icon-small" />
                 <span>BACK</span>
               </button>
               <div class="catalog-detail__heading">
@@ -587,13 +587,13 @@
                 onclick={() => void addToTemplate(row)}
               >
                 {#if addingId === row.id}
-                  <Loader2 class="size-4 animate-spin" />
+                  <Loader2 class="app-icon-control animate-spin" />
                   ADDING…
                 {:else if added}
-                  <Check class="size-4" />
+                  <Check class="app-icon-control" />
                   IN THIS TEMPLATE
                 {:else}
-                  <Plus class="size-4" strokeWidth={2.5} />
+                  <Plus class="app-icon-control" strokeWidth={2.5} />
                   ADD TO TEMPLATE
                 {/if}
               </button>
@@ -601,7 +601,7 @@
             </div>
           {:else}
             <div class="catalog-empty catalog-empty--detail">
-              <BookOpen class="size-6" />
+              <BookOpen class="app-icon-display" />
               <p>Select an exercise to see its muscles, equipment, and instructions.</p>
             </div>
           {/if}
@@ -633,11 +633,11 @@
     min-height: 0;
     flex-direction: column;
     overflow: hidden;
-    border: 1px solid #26262b;
+    border: 1px solid var(--app-outline);
     border-bottom: 0;
-    border-radius: 1rem 1rem 0 0;
-    background: #101012;
-    color: #e4e4e7;
+    border-radius: var(--app-radius-dialog) var(--app-radius-dialog) 0 0;
+    background: var(--app-surface-1);
+    color: var(--app-fg-primary);
     box-shadow: 0 -24px 70px rgb(0 0 0 / 0.65);
     outline: none;
   }
@@ -646,19 +646,19 @@
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.85rem 0.9rem 0.7rem;
-    border-bottom: 1px solid #1e1e22;
+    gap: var(--space-3);
+    padding: var(--space-3-5) var(--space-3-5) var(--space-3);
+    border-bottom: 1px solid var(--app-outline-subtle);
     background:
       radial-gradient(120% 150% at 0% 0%, rgb(251 191 36 / 0.07), transparent 60%),
-      #101012;
+      var(--app-surface-1);
   }
 
   .catalog-header__title {
     display: flex;
     min-width: 0;
     align-items: flex-start;
-    gap: 0.6rem;
+    gap: var(--space-2-5);
   }
 
   .catalog-header__icon {
@@ -668,53 +668,53 @@
     flex: none;
     align-items: center;
     justify-content: center;
-    border: 1px solid #2a2a30;
-    border-radius: 0.55rem;
-    background: #17171a;
+    border: 1px solid var(--app-outline);
+    border-radius: var(--app-radius-control);
+    background: var(--app-surface-2);
     color: #fbbf24;
   }
 
   .catalog-header h2 {
     margin: 0;
-    font-size: 0.72rem;
+    font-size: var(--type-caption);
     font-weight: 800;
     letter-spacing: 0.16em;
     line-height: 1.3;
-    color: #f4f4f5;
+    color: var(--app-fg-primary);
   }
 
   .catalog-header p {
     max-width: 36rem;
-    margin: 0.15rem 0 0;
-    font-size: 0.62rem;
+    margin: var(--space-0-5) 0 0;
+    font-size: var(--type-micro);
     line-height: 1.35;
-    color: #71717a;
+    color: var(--app-fg-muted);
   }
 
   .catalog-header__side {
     display: flex;
     flex: none;
     align-items: center;
-    gap: 0.45rem;
+    gap: var(--space-2);
   }
 
   .catalog-count {
     display: none;
     align-items: baseline;
-    gap: 0.3rem;
-    border: 1px solid #24242a;
+    gap: var(--space-1);
+    border: 1px solid var(--app-outline);
     border-radius: 999px;
-    padding: 0.3rem 0.55rem;
+    padding: var(--space-1) var(--space-2);
     font-family: var(--font-mono, monospace);
-    font-size: 0.65rem;
-    color: #e4e4e7;
-    background: #0b0b0d;
+    font-size: var(--type-micro);
+    color: var(--app-fg-primary);
+    background: var(--app-surface-0);
   }
 
   .catalog-count span {
-    font-size: 0.5rem;
+    font-size: var(--type-micro);
     letter-spacing: 0.14em;
-    color: #71717a;
+    color: var(--app-fg-muted);
   }
 
   .catalog-close {
@@ -723,26 +723,26 @@
     height: 2.25rem;
     align-items: center;
     justify-content: center;
-    border: 1px solid #26262b;
-    border-radius: 0.55rem;
-    background: #17171a;
-    color: #a1a1aa;
+    border: 1px solid var(--app-outline);
+    border-radius: var(--app-radius-control);
+    background: var(--app-surface-2);
+    color: var(--app-fg-secondary);
     transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
   }
 
   .catalog-close:hover {
-    border-color: #3f3f46;
-    background: #1f1f23;
+    border-color: var(--app-outline-strong);
+    background: var(--app-surface-3);
     color: #fff;
   }
 
   .catalog-filters {
     display: flex;
     flex-direction: column;
-    gap: 0.45rem;
-    padding: 0.65rem 0.9rem;
-    border-bottom: 1px solid #1e1e22;
-    background: #0d0d0f;
+    gap: var(--space-2);
+    padding: var(--space-2-5) var(--space-3-5);
+    border-bottom: 1px solid var(--app-outline-subtle);
+    background: var(--app-surface-0);
   }
 
   .catalog-search {
@@ -757,24 +757,24 @@
     z-index: 1;
     width: 0.85rem;
     height: 0.85rem;
-    color: #71717a;
+    color: var(--app-fg-muted);
     pointer-events: none;
   }
 
   .catalog-search :global(.catalog-search__input) {
     height: 2.25rem;
     padding-left: 2.05rem;
-    padding-right: 2rem;
-    border-color: #26262b;
-    border-radius: 0.55rem;
-    background: #141417;
-    font-size: 0.75rem;
-    color: #e4e4e7;
+    padding-right: var(--space-8);
+    border-color: var(--app-outline);
+    border-radius: var(--app-radius-control);
+    background: var(--app-surface-1);
+    font-size: var(--type-caption);
+    color: var(--app-fg-primary);
     box-shadow: none;
   }
 
   .catalog-search :global(.catalog-search__input:focus-visible) {
-    border-color: #52525b;
+    border-color: var(--app-outline-strong);
     --tw-ring-shadow: 0 0 #0000;
     box-shadow: none;
   }
@@ -787,19 +787,19 @@
     height: 1.6rem;
     align-items: center;
     justify-content: center;
-    border-radius: 0.35rem;
-    color: #71717a;
+    border-radius: var(--app-radius-compact);
+    color: var(--app-fg-muted);
   }
 
   .catalog-search__clear:hover {
-    background: #232327;
-    color: #e4e4e7;
+    background: var(--app-surface-4);
+    color: var(--app-fg-primary);
   }
 
   .catalog-filter-row {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--space-1-5);
     overflow-x: auto;
     scrollbar-width: none;
   }
@@ -820,18 +820,18 @@
     width: 100%;
     height: 2rem;
     appearance: none;
-    border: 1px solid #26262b;
-    border-radius: 0.45rem;
-    background: #141417;
-    padding: 0 1.6rem 0 0.55rem;
-    font-size: 0.64rem;
-    color: #d4d4d8;
+    border: 1px solid var(--app-outline);
+    border-radius: var(--app-radius-control);
+    background: var(--app-surface-1);
+    padding: 0 var(--space-6) 0 var(--space-2);
+    font-size: var(--type-micro);
+    color: var(--app-fg-secondary-strong);
     outline: none;
     text-overflow: ellipsis;
   }
 
   .catalog-select select:focus-visible {
-    border-color: #52525b;
+    border-color: var(--app-outline-strong);
   }
 
   .catalog-select :global(.catalog-select__chevron) {
@@ -839,7 +839,7 @@
     right: 0.45rem;
     width: 0.75rem;
     height: 0.75rem;
-    color: #71717a;
+    color: var(--app-fg-muted);
     pointer-events: none;
   }
 
@@ -848,40 +848,40 @@
     height: 2rem;
     flex: none;
     align-items: center;
-    gap: 0.25rem;
-    border: 1px solid #26262b;
-    border-radius: 0.45rem;
-    padding: 0 0.5rem;
-    font-size: 0.55rem;
+    gap: var(--space-1);
+    border: 1px solid var(--app-outline);
+    border-radius: var(--app-radius-control);
+    padding: 0 var(--space-2);
+    font-size: var(--type-micro);
     font-weight: 700;
     letter-spacing: 0.08em;
-    color: #a1a1aa;
+    color: var(--app-fg-secondary);
   }
 
   .catalog-reset:hover {
-    border-color: #3f3f46;
+    border-color: var(--app-outline-strong);
     color: #fff;
   }
 
   .catalog-banner {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    margin: 0.5rem 0.9rem 0;
+    gap: var(--space-1-5);
+    margin: var(--space-2) var(--space-3-5) 0;
     border: 1px solid rgb(248 113 113 / 0.35);
-    border-radius: 0.45rem;
+    border-radius: var(--app-radius-control);
     background: rgb(69 10 10 / 0.35);
-    padding: 0.45rem 0.55rem;
-    font-size: 0.64rem;
+    padding: var(--space-2) var(--space-2);
+    font-size: var(--type-micro);
     color: #fca5a5;
   }
 
   .catalog-banner button {
     flex: none;
     border: 1px solid rgb(248 113 113 / 0.4);
-    border-radius: 0.35rem;
-    padding: 0.2rem 0.45rem;
-    font-size: 0.55rem;
+    border-radius: var(--app-radius-compact);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--type-micro);
     font-weight: 700;
     letter-spacing: 0.06em;
   }
@@ -903,12 +903,12 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.45rem 0.9rem;
-    border-bottom: 1px solid #1a1a1e;
-    font-size: 0.5rem;
+    padding: var(--space-2) var(--space-3-5);
+    border-bottom: 1px solid var(--app-outline-subtle);
+    font-size: var(--type-micro);
     font-weight: 700;
     letter-spacing: 0.16em;
-    color: #52525b;
+    color: var(--app-fg-disabled);
   }
 
   .catalog-list {
@@ -922,19 +922,19 @@
     display: flex;
     width: 100%;
     align-items: center;
-    gap: 0.55rem;
-    border-bottom: 1px solid #18181b;
-    padding: 0.55rem 0.9rem;
+    gap: var(--space-2);
+    border-bottom: 1px solid var(--app-outline-subtle);
+    padding: var(--space-2) var(--space-3-5);
     text-align: left;
     transition: background 120ms ease;
   }
 
   .catalog-row:hover {
-    background: #161619;
+    background: var(--app-surface-1);
   }
 
   .catalog-row.is-active {
-    background: #191920;
+    background: var(--app-surface-2);
     box-shadow: inset 2px 0 0 #fbbf24;
   }
 
@@ -943,18 +943,18 @@
     min-width: 0;
     flex: 1;
     flex-direction: column;
-    gap: 0.2rem;
+    gap: var(--space-1);
   }
 
   .catalog-row__title {
     display: flex;
     min-width: 0;
     align-items: center;
-    gap: 0.35rem;
+    gap: var(--space-1-5);
     overflow: hidden;
-    font-size: 0.72rem;
+    font-size: var(--type-caption);
     font-weight: 600;
-    color: #e4e4e7;
+    color: var(--app-fg-primary);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -970,9 +970,9 @@
     display: flex;
     min-width: 0;
     align-items: center;
-    gap: 0.35rem;
-    font-size: 0.58rem;
-    color: #71717a;
+    gap: var(--space-1-5);
+    font-size: var(--type-micro);
+    color: var(--app-fg-muted);
   }
 
   .catalog-row__equipment {
@@ -986,8 +986,8 @@
     max-width: 13rem;
     flex: none;
     overflow: hidden;
-    font-size: 0.6rem;
-    color: #71717a;
+    font-size: var(--type-micro);
+    color: var(--app-fg-muted);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -996,27 +996,27 @@
     width: 0.9rem;
     height: 0.9rem;
     flex: none;
-    color: #52525b;
+    color: var(--app-fg-disabled);
   }
 
   .catalog-chip {
     display: inline-flex;
     align-items: center;
-    border: 1px solid #2f2f35;
+    border: 1px solid var(--app-outline);
     border-radius: 999px;
-    padding: 0.1rem 0.4rem;
-    font-size: 0.52rem;
+    padding: var(--space-0-5) var(--space-1-5);
+    font-size: var(--type-micro);
     font-weight: 600;
     letter-spacing: 0.04em;
-    color: #d4d4d8;
-    background: #1a1a1e;
+    color: var(--app-fg-secondary-strong);
+    background: var(--app-surface-2);
     white-space: nowrap;
   }
 
   .catalog-chip--quiet {
-    border-color: #232328;
+    border-color: var(--app-outline);
     background: transparent;
-    color: #8b8b93;
+    color: var(--app-fg-secondary);
   }
 
   .catalog-chip--primary {
@@ -1034,9 +1034,9 @@
   .catalog-skeleton {
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
-    border-bottom: 1px solid #18181b;
-    padding: 0.7rem 0.9rem;
+    gap: var(--space-1-5);
+    border-bottom: 1px solid var(--app-outline-subtle);
+    padding: var(--space-3) var(--space-3-5);
     animation: catalog-pulse 1.4s ease-in-out infinite;
   }
 
@@ -1045,7 +1045,7 @@
     display: block;
     height: 0.55rem;
     border-radius: 999px;
-    background: #232327;
+    background: var(--app-surface-4);
   }
 
   .catalog-skeleton__title {
@@ -1055,7 +1055,7 @@
   .catalog-skeleton__sub {
     width: 72%;
     height: 0.4rem;
-    background: #1c1c20;
+    background: var(--app-surface-3);
   }
 
   .catalog-empty {
@@ -1065,31 +1065,31 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 0.55rem;
-    padding: 1.5rem;
+    gap: var(--space-2);
+    padding: var(--space-6);
     text-align: center;
-    color: #71717a;
+    color: var(--app-fg-muted);
   }
 
   .catalog-empty p {
     margin: 0;
     max-width: 20rem;
-    font-size: 0.68rem;
+    font-size: var(--type-micro);
     line-height: 1.45;
   }
 
   .catalog-retry {
-    border: 1px solid #2f2f35;
-    border-radius: 0.4rem;
-    padding: 0.35rem 0.6rem;
-    font-size: 0.55rem;
+    border: 1px solid var(--app-outline);
+    border-radius: var(--app-radius-compact);
+    padding: var(--space-1-5) var(--space-2-5);
+    font-size: var(--type-micro);
     font-weight: 700;
     letter-spacing: 0.1em;
-    color: #d4d4d8;
+    color: var(--app-fg-secondary-strong);
   }
 
   .catalog-retry:hover {
-    border-color: #52525b;
+    border-color: var(--app-outline-strong);
     color: #fff;
   }
 
@@ -1097,20 +1097,20 @@
     display: flex;
     width: calc(100% - 1.8rem);
     height: 2.1rem;
-    margin: 0.7rem 0.9rem;
+    margin: var(--space-3) var(--space-3-5);
     align-items: center;
     justify-content: center;
-    gap: 0.35rem;
-    border: 1px dashed #2f2f35;
-    border-radius: 0.45rem;
-    font-size: 0.58rem;
+    gap: var(--space-1-5);
+    border: 1px dashed var(--app-outline);
+    border-radius: var(--app-radius-control);
+    font-size: var(--type-micro);
     font-weight: 700;
     letter-spacing: 0.12em;
-    color: #a1a1aa;
+    color: var(--app-fg-secondary);
   }
 
   .catalog-load-more:hover:not(:disabled) {
-    border-color: #52525b;
+    border-color: var(--app-outline-strong);
     color: #fff;
   }
 
@@ -1122,8 +1122,8 @@
     display: none;
     min-height: 0;
     flex-direction: column;
-    border-left: 1px solid #1e1e22;
-    background: #111114;
+    border-left: 1px solid var(--app-outline-subtle);
+    background: var(--app-surface-1);
   }
 
   .catalog-body.has-detail .catalog-list-pane {
@@ -1141,52 +1141,52 @@
   .catalog-detail__head {
     display: flex;
     flex-direction: column;
-    gap: 0.45rem;
-    padding: 0.7rem 0.9rem;
-    border-bottom: 1px solid #1e1e22;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-3-5);
+    border-bottom: 1px solid var(--app-outline-subtle);
     background:
       radial-gradient(100% 160% at 100% 0%, rgb(56 189 248 / 0.06), transparent 55%),
-      #131316;
+      var(--app-surface-1);
   }
 
   .catalog-back {
     display: flex;
     align-self: flex-start;
     align-items: center;
-    gap: 0.25rem;
-    border: 1px solid #2a2a30;
-    border-radius: 0.4rem;
-    padding: 0.3rem 0.45rem;
-    font-size: 0.55rem;
+    gap: var(--space-1);
+    border: 1px solid var(--app-outline);
+    border-radius: var(--app-radius-compact);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--type-micro);
     font-weight: 700;
     letter-spacing: 0.1em;
-    color: #a1a1aa;
+    color: var(--app-fg-secondary);
   }
 
   .catalog-back:hover {
-    border-color: #3f3f46;
+    border-color: var(--app-outline-strong);
     color: #fff;
   }
 
   .catalog-detail__heading {
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: var(--space-1-5);
   }
 
   .catalog-detail__badges {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.3rem;
+    gap: var(--space-1);
   }
 
   .catalog-detail h3 {
     margin: 0;
-    font-size: 1rem;
+    font-size: var(--type-subhead);
     font-weight: 800;
     line-height: 1.2;
     letter-spacing: 0.01em;
-    color: #fafafa;
+    color: var(--app-fg-primary);
   }
 
   .catalog-detail__scroll {
@@ -1194,13 +1194,13 @@
     flex: 1;
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: 0.8rem 0.9rem 1rem;
+    padding: var(--space-3) var(--space-3-5) var(--space-4);
   }
 
   .catalog-section {
-    padding-bottom: 0.85rem;
-    margin-bottom: 0.85rem;
-    border-bottom: 1px solid #1c1c20;
+    padding-bottom: var(--space-3-5);
+    margin-bottom: var(--space-3-5);
+    border-bottom: 1px solid var(--app-outline-subtle);
   }
 
   .catalog-section:last-child {
@@ -1210,34 +1210,34 @@
   }
 
   .catalog-section h4 {
-    margin: 0 0 0.5rem;
-    font-size: 0.52rem;
+    margin: 0 0 var(--space-2);
+    font-size: var(--type-micro);
     font-weight: 800;
     letter-spacing: 0.18em;
-    color: #71717a;
+    color: var(--app-fg-muted);
   }
 
   .catalog-muscle-groups {
     display: flex;
     flex-direction: column;
-    gap: 0.55rem;
-    margin-top: 0.6rem;
+    gap: var(--space-2);
+    margin-top: var(--space-2-5);
   }
 
   .catalog-muscle-group {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
+    gap: var(--space-1);
   }
 
   .catalog-muscle-group__label {
     display: flex;
     align-items: center;
-    gap: 0.3rem;
-    font-size: 0.5rem;
+    gap: var(--space-1);
+    font-size: var(--type-micro);
     font-weight: 700;
     letter-spacing: 0.14em;
-    color: #71717a;
+    color: var(--app-fg-muted);
   }
 
   .catalog-muscle-group__dot {
@@ -1257,33 +1257,33 @@
   .catalog-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.3rem;
+    gap: var(--space-1);
   }
 
   .catalog-description {
     margin: 0;
     white-space: pre-line;
-    font-size: 0.68rem;
+    font-size: var(--type-micro);
     line-height: 1.55;
-    color: #b4b4bc;
+    color: var(--app-fg-secondary);
   }
 
   .catalog-muted {
     margin: 0;
-    font-size: 0.65rem;
+    font-size: var(--type-micro);
     line-height: 1.45;
-    color: #71717a;
+    color: var(--app-fg-muted);
   }
 
   .catalog-section--attribution p {
-    margin: 0 0 0.35rem;
-    font-size: 0.58rem;
+    margin: 0 0 var(--space-1-5);
+    font-size: var(--type-micro);
     line-height: 1.5;
-    color: #71717a;
+    color: var(--app-fg-muted);
   }
 
   .catalog-section--attribution a {
-    color: #a1a1aa;
+    color: var(--app-fg-secondary);
     text-decoration: underline;
     text-underline-offset: 2px;
   }
@@ -1293,7 +1293,7 @@
   }
 
   .catalog-license-link {
-    font-size: 0.55rem;
+    font-size: var(--type-micro);
     font-weight: 600;
     letter-spacing: 0.04em;
   }
@@ -1301,10 +1301,10 @@
   .catalog-detail__actions {
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
-    padding: 0.65rem 0.9rem calc(0.7rem + env(safe-area-inset-bottom, 0px));
-    border-top: 1px solid #1e1e22;
-    background: #0e0e10;
+    gap: var(--space-1-5);
+    padding: var(--space-2-5) var(--space-3-5) calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--app-outline-subtle);
+    background: var(--app-surface-0);
   }
 
   .catalog-add {
@@ -1313,10 +1313,10 @@
     height: 2.6rem;
     align-items: center;
     justify-content: center;
-    gap: 0.35rem;
-    border-radius: 0.5rem;
+    gap: var(--space-1-5);
+    border-radius: var(--app-radius-control);
     background: #fbbf24;
-    font-size: 0.64rem;
+    font-size: var(--type-micro);
     font-weight: 800;
     letter-spacing: 0.12em;
     color: #000;
@@ -1343,22 +1343,22 @@
   .catalog-detail__actions p {
     margin: 0;
     text-align: center;
-    font-size: 0.52rem;
+    font-size: var(--type-micro);
     line-height: 1.4;
-    color: #52525b;
+    color: var(--app-fg-disabled);
   }
 
   .catalog-detail__loading {
     display: flex;
     flex-direction: column;
-    gap: 0.7rem;
-    padding: 1rem 0.9rem;
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-3-5);
   }
 
   .catalog-detail__skeleton {
     height: 1.4rem;
-    border-radius: 0.4rem;
-    background: #1c1c20;
+    border-radius: var(--app-radius-compact);
+    background: var(--app-surface-3);
     animation: catalog-pulse 1.4s ease-in-out infinite;
   }
 
@@ -1388,18 +1388,18 @@
   @media (min-width: 640px) {
     .catalog-overlay {
       align-items: center;
-      padding: 1.25rem;
+      padding: var(--space-5);
     }
 
     .catalog-dialog {
       height: min(86dvh, 46rem);
       max-width: 62rem;
-      border-bottom: 1px solid #26262b;
-      border-radius: 0.9rem;
+      border-bottom: 1px solid var(--app-outline);
+      border-radius: var(--app-radius-dialog);
     }
 
     .catalog-header {
-      padding: 0.95rem 1.1rem 0.8rem;
+      padding: var(--space-4) var(--space-4) var(--space-3);
     }
 
     .catalog-count {
@@ -1407,7 +1407,7 @@
     }
 
     .catalog-filters {
-      padding: 0.7rem 1.1rem;
+      padding: var(--space-3) var(--space-4);
     }
 
     .catalog-filter-row {
@@ -1419,15 +1419,15 @@
     }
 
     .catalog-list-head {
-      padding: 0.5rem 1.1rem;
+      padding: var(--space-2) var(--space-4);
     }
 
     .catalog-row {
-      padding: 0.55rem 1.1rem;
+      padding: var(--space-2) var(--space-4);
     }
 
     .catalog-row__title {
-      font-size: 0.75rem;
+      font-size: var(--type-caption);
     }
 
     .catalog-row__muscles {
@@ -1435,7 +1435,7 @@
     }
 
     .catalog-detail__head {
-      padding: 0.85rem 1.1rem;
+      padding: var(--space-3-5) var(--space-4);
     }
 
     .catalog-back {
@@ -1443,24 +1443,24 @@
     }
 
     .catalog-detail__scroll {
-      padding: 0.95rem 1.1rem 1.1rem;
+      padding: var(--space-4) var(--space-4) var(--space-4);
     }
 
     .catalog-detail__actions {
-      padding: 0.7rem 1.1rem;
+      padding: var(--space-3) var(--space-4);
     }
 
     .catalog-detail h3 {
-      font-size: 1.15rem;
+      font-size: var(--type-title);
     }
 
     .catalog-section {
-      padding-bottom: 1rem;
-      margin-bottom: 1rem;
+      padding-bottom: var(--space-4);
+      margin-bottom: var(--space-4);
     }
 
     .catalog-description {
-      font-size: 0.72rem;
+      font-size: var(--type-caption);
     }
   }
 

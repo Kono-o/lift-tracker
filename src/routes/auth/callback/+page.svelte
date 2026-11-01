@@ -30,12 +30,12 @@
 
 <main class="auth-recovery-screen">
   <section class="auth-recovery-card" aria-live="polite">
-    <div class="auth-recovery-brand"><span><Dumbbell class="size-5" aria-hidden="true" /></span><b>LIFT<small>TRACKER</small></b></div>
+    <div class="auth-recovery-brand"><span><Dumbbell class="app-icon-nav" aria-hidden="true" /></span><b>LIFT<small>TRACKER</small></b></div>
   {#if errorMessage}
-      <p class="auth-recovery-error" role="alert"><CircleAlert class="size-4 shrink-0" aria-hidden="true" />{errorMessage}</p>
+      <p class="auth-recovery-error" role="alert"><CircleAlert class="app-icon-control shrink-0" aria-hidden="true" />{errorMessage}</p>
       <a href="/" class="auth-recovery-back">Back to sign in</a>
   {:else}
-      <div class="auth-recovery-loading" role="status"><RefreshCw class="size-4 animate-spin" aria-hidden="true" />Verifying your secure sign-in…</div>
+      <div class="auth-recovery-loading" role="status"><RefreshCw class="app-icon-control animate-spin" aria-hidden="true" />Verifying your secure sign-in…</div>
   {/if}
   </section>
 </main>

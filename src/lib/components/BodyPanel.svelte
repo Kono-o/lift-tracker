@@ -166,14 +166,14 @@
 </script>
 
 <div class="body-panel flex flex-col gap-2 min-w-0">
-  <section class="rounded-lg border border-[#1e1e1e] bg-[#0d0d0d] overflow-hidden">
+  <section class="rounded-lg border border-app-outline-subtle bg-app-surface-0 overflow-hidden">
     <div class="flex items-start gap-3 px-3 pt-3 pb-2.5">
       <div class="min-w-0 flex-1">
         <div class="flex items-baseline gap-1.5">
-          <span class="font-7segment text-3xl leading-none text-white tabular-nums">{heroWeight}</span>
-          <span class="text-[10px] tracking-[0.12em] text-zinc-500">{massUnit(units)}</span>
+          <span class="font-7segment text-3xl leading-none text-app-fg-primary tabular-nums">{heroWeight}</span>
+          <span class="text-app-micro tracking-[0.12em] text-app-fg-muted">{massUnit(units)}</span>
         </div>
-        <div class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-zinc-500 leading-none tabular-nums">
+        <div class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-app-micro text-app-fg-muted leading-none tabular-nums">
           {#if latest}
             <span>{formatMeasuredAt(latest.reading.measured_at, now)}</span>
             {#if latest.reading.source === 'scale' && latest.reading.device_label}
@@ -188,28 +188,28 @@
 
       {#if heroBmi != null}
         <div class="shrink-0 text-right">
-          <div class="text-[9px] tracking-[0.14em] text-zinc-600 leading-none">BMI</div>
-          <div class="mt-1 text-lg font-medium text-white leading-none tabular-nums">{heroBmi.toFixed(1)}</div>
-          <div class="mt-1 text-[9px] tracking-[0.08em] text-zinc-500 leading-none">{latest?.metrics.bmiClass ?? ''}</div>
+          <div class="text-app-micro tracking-[0.14em] text-app-fg-disabled leading-none">BMI</div>
+          <div class="mt-1 text-lg font-medium text-app-fg-primary leading-none tabular-nums">{heroBmi.toFixed(1)}</div>
+          <div class="mt-1 text-app-micro tracking-[0.08em] text-app-fg-muted leading-none">{latest?.metrics.bmiClass ?? ''}</div>
         </div>
       {:else if latest && profileMissing}
         <button
           type="button"
-          class="shrink-0 flex items-center gap-1.5 rounded-md border border-dashed border-[#2a2a2a] px-2 py-1.5 text-[9px] tracking-[0.1em] text-zinc-400 hover:text-white hover:border-[#3a3a3a] transition-colors"
+          class="shrink-0 flex items-center gap-1.5 rounded-md border border-dashed border-app-outline px-2 py-1.5 text-app-micro tracking-[0.1em] text-app-fg-secondary hover:text-app-fg-primary hover:border-app-outline-strong transition-colors"
           onclick={onEditProfile}
         >
-          <User class="size-3.5" />
+          <User class="app-icon-small" />
           <span>ADD PROFILE</span>
         </button>
       {/if}
     </div>
 
     {#if allPoints.length > 1}
-      <div class="grid grid-cols-2 gap-px bg-[#1e1e1e] border-t border-[#1e1e1e]">
+      <div class="grid grid-cols-2 gap-px bg-app-surface-3 border-t border-app-outline-subtle">
         {#each deltaChips as [label, delta] (label)}
-          <div class="bg-[#0d0d0d] px-3 py-1.5 flex items-center justify-between">
-            <span class="text-[9px] tracking-[0.14em] text-zinc-600">{label}</span>
-            <span class="text-[11px] tabular-nums {delta == null ? 'text-zinc-600' : delta > 0 ? 'text-zinc-300' : 'text-emerald-400'}">
+          <div class="bg-app-surface-0 px-3 py-1.5 flex items-center justify-between">
+            <span class="text-app-micro tracking-[0.14em] text-app-fg-disabled">{label}</span>
+            <span class="text-app-caption tabular-nums {delta == null ? 'text-app-fg-disabled' : delta > 0 ? 'text-app-fg-secondary-strong' : 'text-emerald-400'}">
               {formatMetricDelta(activeKey, delta, units)}
             </span>
           </div>
@@ -218,7 +218,7 @@
     {/if}
 
     {#if stale}
-      <div class="border-t border-[#1e1e1e] bg-[#120d05] px-3 py-1.5 text-[10px] leading-snug text-amber-200/80">
+      <div class="border-t border-app-outline-subtle bg-surface-0 px-3 py-1.5 text-app-micro leading-snug text-amber-200/80">
         {daysSinceLatest} days since your last weigh-in — step on the scale to keep the trend honest.
       </div>
     {/if}
@@ -226,30 +226,30 @@
 
   <div class="flex gap-2">
     <button type="button" class="body-action body-action--go" onclick={onMeasure} disabled={!canMeasure}>
-      <Scale class="size-4" />
+      <Scale class="app-icon-control" />
       <span>{canMeasure ? 'MEASURE' : 'LOADING…'}</span>
     </button>
     <button type="button" class="body-action" onclick={onAddManual} title="Type in a weigh-in">
-      <Plus class="size-4" />
+      <Plus class="app-icon-control" />
       <span>MANUAL</span>
     </button>
   </div>
 
   {#if rows.length === 0}
-    <div class="flex flex-col items-center gap-2.5 rounded-lg border border-dashed border-[#1e1e1e] bg-[#0d0d0d] px-4 py-8 text-center">
-      <span class="w-9 h-9 rounded-lg border border-[#1e1e1e] bg-[#0a0a0a] flex items-center justify-center text-zinc-500">
-        <Bluetooth class="size-4" />
+    <div class="flex flex-col items-center gap-2.5 rounded-lg border border-dashed border-app-outline-subtle bg-app-surface-0 px-4 py-8 text-center">
+      <span class="w-9 h-9 rounded-lg border border-app-outline-subtle bg-app-canvas flex items-center justify-center text-app-fg-muted">
+        <Bluetooth class="app-icon-control" />
       </span>
-      <div class="text-xs leading-snug text-zinc-400">
+      <div class="text-xs leading-snug text-app-fg-secondary">
         Weigh in with your scale over Bluetooth.<br />Everything else — BMI, body fat, water, BMR — is worked out for you.
       </div>
-      <div class="max-w-[22rem] text-[10px] leading-snug text-zinc-600">
+      <div class="max-w-[22rem] text-app-micro leading-snug text-app-fg-disabled">
         No Bluetooth on this device? Use MANUAL and type in what the display shows.
       </div>
       {#if profileMissing}
         <button
           type="button"
-          class="mt-1 h-8 px-3 rounded-md border border-[#2a2a2a] bg-[#141414] text-[10px] font-medium tracking-wide text-zinc-300 hover:border-[#3a3a3a] hover:text-white"
+          class="mt-1 h-8 px-3 rounded-md border border-app-outline bg-app-surface-1 text-app-micro font-medium tracking-wide text-app-fg-secondary-strong hover:border-app-outline-strong hover:text-app-fg-primary"
           onclick={onEditProfile}
         >
           SET UP PROFILE
@@ -272,7 +272,7 @@
     </div>
 
     <div
-      class="relative grid h-8 shrink-0 grid-cols-5 rounded-md border border-[#1e1e1e] bg-[#060606] px-0.5"
+      class="relative grid h-8 shrink-0 grid-cols-5 rounded-md border border-app-outline-subtle bg-app-canvas px-0.5"
       role="group"
       aria-label="Chart range"
     >
@@ -283,7 +283,7 @@
       {#each RANGES as mode}
         <button
           type="button"
-          class="relative z-10 h-full flex items-center justify-center text-[9px] font-medium tracking-[0.1em] transition-colors {range === mode ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+          class="relative z-10 h-full flex items-center justify-center text-app-micro font-medium tracking-[0.1em] transition-colors {range === mode ? 'text-black' : 'text-app-fg-muted hover:text-app-fg-secondary-strong'}"
           onclick={() => {
             range = mode;
             void hapticLight();
@@ -292,7 +292,7 @@
       {/each}
     </div>
 
-    <div class="rounded-md border border-[#1e1e1e] bg-[#080808] overflow-hidden">
+    <div class="rounded-md border border-app-outline-subtle bg-app-canvas overflow-hidden">
       <MetricChart
         {points}
         {domainStart}
@@ -306,30 +306,30 @@
     </div>
 
     {#if points.length > 0}
-      <div class="grid grid-cols-4 gap-px rounded-md border border-[#1e1e1e] bg-[#1e1e1e] overflow-hidden">
+      <div class="grid grid-cols-4 gap-px rounded-md border border-app-outline-subtle bg-app-surface-3 overflow-hidden">
         {#each summaryChips as [label, value] (label)}
-          <div class="flex flex-col items-center gap-1 bg-[#0d0d0d] px-2 py-1.5">
-            <span class="text-[8px] tracking-[0.14em] text-zinc-600 leading-none">{label}</span>
-            <span class="text-[11px] text-zinc-200 leading-none tabular-nums">{formatMetric(activeKey, value, units)}</span>
+          <div class="flex flex-col items-center gap-1 bg-app-surface-0 px-2 py-1.5">
+            <span class="text-app-micro tracking-[0.14em] text-app-fg-disabled leading-none">{label}</span>
+            <span class="text-app-caption text-app-fg-secondary-strong leading-none tabular-nums">{formatMetric(activeKey, value, units)}</span>
           </div>
         {/each}
       </div>
-      <div class="flex items-center justify-between px-1 text-[9px] text-zinc-600 tabular-nums">
+      <div class="flex items-center justify-between px-1 text-app-micro text-app-fg-disabled tabular-nums">
         <span>{points.length} {activeMetric.label.toLowerCase()} values</span>
         <span>{RANGE_LABEL[range]} · {metricUnit(activeKey, units) || 'index'}</span>
       </div>
     {/if}
 
     {#if selected}
-      <div class="rounded-md border border-[#1e1e1e] bg-[#0a0a0a] px-2.5 py-2">
+      <div class="rounded-md border border-app-outline-subtle bg-app-canvas px-2.5 py-2">
         <div class="flex items-center justify-between gap-2">
-          <span class="text-[10px] text-zinc-400 tabular-nums">{formatMeasuredAt(selected.reading.measured_at, now)}</span>
+          <span class="text-app-micro text-app-fg-secondary tabular-nums">{formatMeasuredAt(selected.reading.measured_at, now)}</span>
           <button
             type="button"
-            class="flex items-center gap-1 text-[9px] tracking-[0.1em] text-zinc-500 hover:text-white transition-colors"
+            class="flex items-center gap-1 text-app-micro tracking-[0.1em] text-app-fg-muted hover:text-app-fg-primary transition-colors"
             onclick={() => onEditReading(selected.reading)}
           >
-            <Pencil class="size-3" />
+            <Pencil class="app-icon-small" />
             <span>EDIT</span>
           </button>
         </div>
@@ -338,8 +338,8 @@
             {#each metrics as metric (metric.key)}
               {#if metric.key !== activeKey}
                 <div class="flex flex-col gap-0.5">
-                  <span class="text-[8px] tracking-[0.12em] text-zinc-600 leading-none">{metric.label}</span>
-                  <span class="text-[10px] text-zinc-300 leading-none tabular-nums">
+                  <span class="text-app-micro tracking-[0.12em] text-app-fg-disabled leading-none">{metric.label}</span>
+                  <span class="text-app-micro text-app-fg-secondary-strong leading-none tabular-nums">
                     {formatMetric(metric.key, metricValueOf(selected, metric.key), units)}
                   </span>
                 </div>
@@ -347,7 +347,7 @@
             {/each}
           </div>
         {/if}
-        <div class="mt-2 text-[9px] leading-snug text-zinc-600">
+        <div class="mt-2 text-app-micro leading-snug text-app-fg-disabled">
           {activeMetric.hint} · {selected.canDerive
             ? 'derived from the profile saved with this reading'
             : 'profile incomplete, so only measured values are available'}
@@ -355,15 +355,15 @@
       </div>
     {/if}
 
-    <div class="rounded-lg border border-[#1e1e1e] bg-[#0d0d0d] overflow-hidden">
-      <div class="flex items-center justify-between border-b border-[#1e1e1e] px-2.5 py-1.5">
-        <span class="text-[9px] tracking-[0.14em] text-zinc-600">WEIGH-INS</span>
-        <span class="text-[9px] text-zinc-600 tabular-nums">{rows.length}</span>
+    <div class="rounded-lg border border-app-outline-subtle bg-app-surface-0 overflow-hidden">
+      <div class="flex items-center justify-between border-b border-app-outline-subtle px-2.5 py-1.5">
+        <span class="text-app-micro tracking-[0.14em] text-app-fg-disabled">WEIGH-INS</span>
+        <span class="text-app-micro text-app-fg-disabled tabular-nums">{rows.length}</span>
       </div>
       {#each visible as row (row.reading.id)}
         {@const isActiveRow = row.reading.id === selectedId}
         <div
-          class="body-row flex items-center gap-2 px-2.5 py-1.5 border-b border-[#141414] last:border-b-0"
+          class="body-row flex items-center gap-2 px-2.5 py-1.5 border-b border-outline-subtle last:border-b-0"
           class:body-row--on={isActiveRow}
           role="button"
           tabindex="0"
@@ -379,10 +379,10 @@
           }}
         >
           <div class="flex-1 min-w-0">
-            <div class="text-[11px] text-zinc-200 leading-none tabular-nums">
+            <div class="text-app-caption text-app-fg-secondary-strong leading-none tabular-nums">
               {formatMeasuredAt(row.reading.measured_at, now)}
             </div>
-            <div class="mt-1 flex items-center gap-1.5 text-[9px] text-zinc-600 leading-none tabular-nums">
+            <div class="mt-1 flex items-center gap-1.5 text-app-micro text-app-fg-disabled leading-none tabular-nums">
               <span>{row.reading.source}</span>
               {#if row.reading.heart_rate != null}
                 <span class="text-zinc-700">·</span>
@@ -399,14 +399,14 @@
             </div>
           </div>
           {#if row.metrics.bodyFatPct != null}
-            <span class="shrink-0 text-[10px] text-zinc-500 tabular-nums">{row.metrics.bodyFatPct}% fat</span>
+            <span class="shrink-0 text-app-micro text-app-fg-muted tabular-nums">{row.metrics.bodyFatPct}% fat</span>
           {/if}
-          <span class="w-16 shrink-0 text-right text-[12px] text-white tabular-nums">
+          <span class="w-16 shrink-0 text-right text-app-caption text-app-fg-primary tabular-nums">
             {formatBodyMass(row.reading.weight_kg, units)}
           </span>
           <button
             type="button"
-            class="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-zinc-600 hover:text-red-400 hover:bg-[#120808] transition-colors"
+            class="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-app-fg-disabled hover:text-red-400 hover:bg-canvas transition-colors"
             aria-label="Delete weigh-in"
             title="Delete"
             onclick={(e) => {
@@ -414,7 +414,7 @@
               openDelete(row.reading, e.currentTarget as HTMLElement);
             }}
           >
-            <Trash2 class="size-3.5" />
+            <Trash2 class="app-icon-small" />
           </button>
         </div>
       {/each}
@@ -422,13 +422,13 @@
       {#if rows.length > 8}
         <button
           type="button"
-          class="w-full h-8 flex items-center justify-center gap-1.5 text-[9px] tracking-[0.14em] text-zinc-500 hover:text-white transition-colors"
+          class="w-full h-8 flex items-center justify-center gap-1.5 text-app-micro tracking-[0.14em] text-app-fg-muted hover:text-app-fg-primary transition-colors"
           onclick={() => {
             listExpanded = !listExpanded;
             void hapticLight();
           }}
         >
-          <ChevronDown class="size-3.5 transition-transform duration-200 {listExpanded ? 'rotate-180' : ''}" />
+          <ChevronDown class="app-icon-small transition-transform duration-200 {listExpanded ? 'rotate-180' : ''}" />
           <span>{listExpanded ? 'SHOW LESS' : `SHOW ALL ${rows.length}`}</span>
         </button>
       {/if}
@@ -451,20 +451,20 @@
     flex: 1;
     align-items: center;
     justify-content: center;
-    gap: 0.4rem;
+    gap: var(--space-1-5);
     height: 2.25rem;
-    border-radius: 0.375rem;
-    border: 1px solid #1e1e1e;
-    background: #0d0d0d;
-    font-size: 11px;
+    border-radius: var(--app-radius-compact);
+    border: 1px solid var(--app-outline-subtle);
+    background: var(--app-surface-0);
+    font-size: var(--type-micro);
     font-weight: 500;
     letter-spacing: 0.08em;
-    color: #a1a1aa;
+    color: var(--app-fg-secondary);
     transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
   }
 
   .body-action:hover {
-    border-color: #3a3a3a;
+    border-color: var(--app-outline-strong);
     color: #fff;
   }
 
@@ -476,7 +476,7 @@
 
   .body-action--go:hover:not(:disabled) {
     background: #e4e4e7;
-    border-color: #e4e4e7;
+    border-color: var(--app-outline-strong);
     color: #000;
   }
 
@@ -488,21 +488,21 @@
   .body-pill {
     flex-shrink: 0;
     height: 1.75rem;
-    padding: 0 0.625rem;
+    padding: 0 var(--space-2-5);
     border-radius: 999px;
-    border: 1px solid #1e1e1e;
-    background: #0a0a0a;
-    font-size: 9px;
+    border: 1px solid var(--app-outline-subtle);
+    background: var(--app-canvas);
+    font-size: var(--type-micro);
     font-weight: 500;
     letter-spacing: 0.1em;
-    color: #71717a;
+    color: var(--app-fg-muted);
     white-space: nowrap;
     transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
   }
 
   .body-pill:hover {
-    color: #d4d4d8;
-    border-color: #2a2a2a;
+    color: var(--app-fg-secondary-strong);
+    border-color: var(--app-outline);
   }
 
   .body-pill--on {
@@ -521,10 +521,10 @@
   }
 
   .body-row:hover {
-    background: #121212;
+    background: var(--app-surface-1);
   }
 
   .body-row--on {
-    background: #141414;
+    background: var(--app-surface-1);
   }
 </style>

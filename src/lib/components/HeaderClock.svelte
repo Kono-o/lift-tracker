@@ -16,4 +16,4 @@
 	});
 </script>
 
-<span class="font-header-clock font-header-clock--fixed text-[10px] text-zinc-500 leading-none">{clockTimeStr}</span>
+<span class="font-header-clock font-header-clock--fixed text-app-micro text-app-fg-muted leading-none">{clockTimeStr}</span>

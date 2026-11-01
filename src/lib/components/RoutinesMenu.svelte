@@ -994,16 +994,16 @@
 </script>
 
 <div class="flex flex-col gap-3 min-h-0 flex-1">
-  <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
+  <div class="flex items-center gap-2 border-b border-app-outline-subtle pb-2 min-h-8">
     <button
       type="button"
-      class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
+      class="w-8 h-8 shrink-0 rounded-lg border border-app-outline-subtle bg-transparent text-app-fg-primary flex items-center justify-center"
       onclick={onBack}
       title="Go back"
     >
-      <ArrowLeft class="size-4" />
+      <ArrowLeft class="app-icon-control" />
     </button>
-    <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">ROUTINES</span>
+    <span class="text-xs font-bold tracking-wider text-app-fg-secondary leading-none shrink-0">ROUTINES</span>
     <div class="flex-1 min-w-0"></div>
     <input
       bind:this={importInputEl}
@@ -1015,45 +1015,45 @@
     {#if activeRoutineId}
       <button
         type="button"
-        class="h-8 max-w-[min(100%,12rem)] shrink min-w-0 rounded-lg border border-[#1e1e1e] bg-transparent text-zinc-400 hover:text-white hover:bg-[#1a1a1a] flex items-center justify-center gap-1.5 px-2 transition-colors"
+        class="h-8 max-w-[min(100%,12rem)] shrink min-w-0 rounded-lg border border-app-outline-subtle bg-transparent text-app-fg-secondary hover:text-app-fg-primary hover:bg-app-surface-2 flex items-center justify-center gap-1.5 px-2 transition-colors"
         title={activeDownloadLabel
           ? `Export ${activeDownloadLabel} (.lift.json)`
           : 'Export selected routine (.lift.json)'}
         onclick={() => { if (activeRoutineId) onDownload?.(activeRoutineId); }}
         disabled={busyAction !== null}
       >
-        <span class="text-[10px] font-bold tracking-wide truncate leading-none min-w-0 uppercase">
+        <span class="text-app-micro font-bold tracking-wide truncate leading-none min-w-0 uppercase">
           {activeDownloadLabel ?? 'ROUTINE'}
         </span>
-        <Upload class="size-4 shrink-0" />
+        <Upload class="app-icon-control shrink-0" />
       </button>
     {/if}
     <button
       type="button"
-      class="h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-zinc-400 hover:text-white hover:bg-[#1a1a1a] flex items-center justify-center gap-1.5 px-2 transition-colors disabled:opacity-50"
+      class="h-8 shrink-0 rounded-lg border border-app-outline-subtle bg-transparent text-app-fg-secondary hover:text-app-fg-primary hover:bg-app-surface-2 flex items-center justify-center gap-1.5 px-2 transition-colors disabled:opacity-50"
       title="Import routine (.lift.json or legacy CSV)"
       onclick={openImportPicker}
       disabled={busyAction !== null}
     >
-      <Download class="size-4 shrink-0" />
-      <span class="text-[10px] font-bold tracking-wide leading-none shrink-0">IMPORT</span>
+      <Download class="app-icon-control shrink-0" />
+      <span class="text-app-micro font-bold tracking-wide leading-none shrink-0">IMPORT</span>
     </button>
   </div>
 
   {#if errorMsg}
-    <div class="text-[9px] text-red-400 text-center">{errorMsg}</div>
+    <div class="text-app-micro text-red-400 text-center">{errorMsg}</div>
   {/if}
 
   <!-- YOUR ROUTINES (owned + bookmarked) -->
   <div class="min-w-0">
     <div class="flex items-center gap-2 mb-1.5">
-      <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">YOUR ROUTINES</span>
+      <span class="text-app-micro uppercase tracking-[2px] text-app-fg-muted leading-none">YOUR ROUTINES</span>
     </div>
 
     {#if loading && myList.length === 0}
-      <div class="text-[10px] text-zinc-600 text-center py-4">Loading…</div>
+      <div class="text-app-micro text-app-fg-disabled text-center py-4">Loading…</div>
     {:else if myList.length === 0}
-      <div class="text-[10px] text-zinc-600 text-center py-4">No routines yet</div>
+      <div class="text-app-micro text-app-fg-disabled text-center py-4">No routines yet</div>
     {:else}
       <div
         class="flex flex-col gap-1 min-w-0 overflow-x-hidden"
@@ -1108,21 +1108,21 @@
           >
             <button
               type="button"
-              class="w-6 h-9 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isActive ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
+              class="w-6 h-9 shrink-0 flex items-center justify-center border rounded-md text-app-micro font-medium leading-none transition-colors {isActive ? '' : 'bg-app-surface-1 border-app-outline-subtle text-app-fg-secondary hover:border-app-outline hover:text-app-fg-secondary-strong'}"
               style={isActive ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white` : ''}
               title={isActive ? 'Assigned' : undefined}
               aria-label={isActive ? `Assigned routine ${index + 1}` : `Routine ${index + 1}`}
               onclick={() => handleRowClick(routine)}
             >
               {#if isActive}
-                <Check class="size-3.5" strokeWidth={2.5} />
+                <Check class="app-icon-small" strokeWidth={2.5} />
               {:else}
                 {index + 1}
               {/if}
             </button>
 
             <div
-              class="flex-1 h-9 min-w-0 px-1.5 border rounded text-xs flex items-center transition-colors cursor-pointer {isActive ? '' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
+              class="flex-1 h-9 min-w-0 px-1.5 border rounded-md text-xs flex items-center transition-colors cursor-pointer {isActive ? '' : 'bg-app-surface-0 border-app-outline-subtle hover:bg-app-surface-1 hover:border-app-outline'}"
               style={isActive ? `background-color: color-mix(in srgb, white 8%, #0d0d0d); border-color: white; color: white` : ''}
               role="button"
               tabindex="0"
@@ -1132,7 +1132,7 @@
               <div class="flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
                 {#if isBookmarked}
                   <span class="shrink-0 inline-flex text-emerald-400" title="Bookmarked (live link)">
-                    <Bookmark class="size-3.5" fill="currentColor" strokeWidth={2} />
+                    <Bookmark class="app-icon-small" fill="currentColor" strokeWidth={2} />
                   </span>
                 {/if}
 
@@ -1169,17 +1169,17 @@
                   </div>
                 {:else if routine.id.startsWith('temp-copy-') || routine.name.startsWith('COPYING ')}
                   <span
-                    class="routine-copying-breathe font-medium text-xs flex-1 min-w-0 truncate leading-none uppercase {isActive ? 'text-white' : 'text-zinc-400'}"
+                    class="routine-copying-breathe font-medium text-xs flex-1 min-w-0 truncate leading-none uppercase {isActive ? 'text-app-fg-primary' : 'text-app-fg-secondary'}"
                     title={routine.name}
                   >{routine.name}</span>
                 {:else if routine.id.startsWith('temp-import-') || routine.name.startsWith('IMPORTING ')}
                   <span
-                    class="routine-copying-breathe font-medium text-xs flex-1 min-w-0 truncate leading-none uppercase {isActive ? 'text-white' : 'text-zinc-400'}"
+                    class="routine-copying-breathe font-medium text-xs flex-1 min-w-0 truncate leading-none uppercase {isActive ? 'text-app-fg-primary' : 'text-app-fg-secondary'}"
                     title={routine.name}
                   >{routine.name}</span>
                 {:else}
                   <span
-                    class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none uppercase {isActive ? 'text-white' : 'text-zinc-400'} {isOwned ? 'cursor-text' : ''}"
+                    class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none uppercase {isActive ? 'text-app-fg-primary' : 'text-app-fg-secondary'} {isOwned ? 'cursor-text' : ''}"
                     role="button"
                     tabindex="0"
                     aria-label="Rename routine {displayRoutineName(routine)}"
@@ -1206,7 +1206,7 @@
                 {/if}
 
                 <span
-                  class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none"
+                  class="text-app-micro shrink-0 px-1.5 py-0.5 rounded-md border leading-none"
                   style={isActive
                     ? `background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;`
                     : `background-color: #1e1e1e; border-color: #2a2a2a; color: #aaa;`}
@@ -1218,29 +1218,29 @@
                   {#if isOwned}
                     <button
                       type="button"
-                      class="w-7 h-7 shrink-0 flex items-center justify-center rounded border transition-colors"
+                      class="w-7 h-7 shrink-0 flex items-center justify-center rounded-md border transition-colors"
                       style="background-color: color-mix(in srgb, white 20%, #1e1e1e); color: white; border-color: white;"
                       title="Open routine editor"
                       onclick={(e) => { e.stopPropagation(); handleEdit(routine.id); }}
                       disabled={busyAction !== null}
                     >
-                      <Pencil class="size-3 pointer-events-none" />
+                      <Pencil class="app-icon-small pointer-events-none" />
                     </button>
                     <button
                       type="button"
-                      class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-blue-900/80 bg-blue-950/50 text-blue-400 hover:text-blue-300 hover:border-blue-800 transition-colors"
+                      class="w-7 h-7 shrink-0 flex items-center justify-center rounded-md border border-blue-900/80 bg-blue-950/50 text-blue-400 hover:text-blue-300 hover:border-blue-800 transition-colors"
                       title="Duplicate routine"
                       onclick={(e) => { e.stopPropagation(); copyRoutine(routine.id); }}
                       disabled={busyAction !== null || routine.id.startsWith('temp-')}
                     >
-                      <Copy class="size-3.5 pointer-events-none" />
+                      <Copy class="app-icon-small pointer-events-none" />
                     </button>
                     {#if canDeleteOwned}
                       <button
                         type="button"
                         data-no-drag
                         draggable="false"
-                        class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors disabled:opacity-50"
+                        class="w-7 h-7 shrink-0 flex items-center justify-center rounded-md border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors disabled:opacity-50"
                         title="Delete routine"
                         aria-label="Delete routine {displayRoutineName(routine)}"
                         disabled={busyAction !== null}
@@ -1248,37 +1248,37 @@
                         ontouchstart={(e) => e.stopPropagation()}
                         onclick={(e) => openDeleteConfirm(e, routine.id)}
                       >
-                        <Trash2 class="size-3.5 pointer-events-none" />
+                        <Trash2 class="app-icon-small pointer-events-none" />
                       </button>
                     {/if}
                   {:else if isBookmarked}
                     <button
                       type="button"
-                      class="w-7 h-7 shrink-0 flex items-center justify-center rounded border transition-colors"
+                      class="w-7 h-7 shrink-0 flex items-center justify-center rounded-md border transition-colors"
                       style="background-color: color-mix(in srgb, white 20%, #1e1e1e); color: white; border-color: white;"
                       title="View routine (read-only)"
                       onclick={(e) => { e.stopPropagation(); handleEdit(routine.id); }}
                       disabled={busyAction !== null}
                     >
-                      <Pencil class="size-3 pointer-events-none" />
+                      <Pencil class="app-icon-small pointer-events-none" />
                     </button>
                     <button
                       type="button"
-                      class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-emerald-900/80 bg-emerald-950/50 text-emerald-400 hover:text-emerald-300 hover:border-emerald-800 transition-colors"
+                      class="w-7 h-7 shrink-0 flex items-center justify-center rounded-md border border-emerald-900/80 bg-emerald-950/50 text-emerald-400 hover:text-emerald-300 hover:border-emerald-800 transition-colors"
                       title="Copy into your account (editable duplicate)"
                       onclick={(e) => { e.stopPropagation(); copyRoutine(routine.id); }}
                       disabled={busyAction !== null}
                     >
-                      <Plus class="size-3.5 pointer-events-none" strokeWidth={2.5} />
+                      <Plus class="app-icon-small pointer-events-none" strokeWidth={2.5} />
                     </button>
                     <button
                       type="button"
-                      class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-amber-900/80 bg-amber-950/40 text-amber-400 hover:text-amber-300 hover:border-amber-800 transition-colors"
+                      class="w-7 h-7 shrink-0 flex items-center justify-center rounded-md border border-amber-900/80 bg-amber-950/40 text-amber-400 hover:text-amber-300 hover:border-amber-800 transition-colors"
                       title="Remove from your list (does not delete the source)"
                       onclick={(e) => { e.stopPropagation(); removeBookmark(routine.id); }}
                       disabled={busyAction !== null}
                     >
-                      <BookmarkX class="size-3.5 pointer-events-none" />
+                      <BookmarkX class="app-icon-small pointer-events-none" />
                     </button>
                   {/if}
                 {/if}
@@ -1299,7 +1299,7 @@
         title="Create a new routine"
         aria-label="Create new routine"
       >
-        <Plus class="size-3.5" strokeWidth={3} />
+        <Plus class="app-icon-small" strokeWidth={3} />
         <span>NEW</span>
       </button>
     </div>
@@ -1308,11 +1308,11 @@
   <!-- ALL USERS: username line → nested routines (one avatar per user) -->
   <div class="min-w-0">
     <div class="flex items-center gap-2 mb-1.5">
-      <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">ALL USERS</span>
+      <span class="text-app-micro uppercase tracking-[2px] text-app-fg-muted leading-none">ALL USERS</span>
     </div>
 
     {#if allUsersGrouped.length === 0}
-      <div class="text-[10px] text-zinc-600 text-center py-4">No community routines found</div>
+      <div class="text-app-micro text-app-fg-disabled text-center py-4">No community routines found</div>
     {:else}
       <div class="flex flex-col gap-2.5 min-w-0">
         {#each allUsersGrouped as group (group.user_id)}
@@ -1326,16 +1326,16 @@
                 rounded={5}
                 className="rounded shrink-0"
               />
-              <span class="text-[11px] font-bold tracking-wide text-zinc-300 truncate leading-none">
+              <span class="text-app-caption font-bold tracking-wide text-app-fg-secondary-strong truncate leading-none">
                 @{group.username}
               </span>
-              <span class="text-[8px] shrink-0 px-1.5 py-0.5 rounded border border-[#2a2a2a] bg-[#141414] text-zinc-500 leading-none">
+              <span class="text-app-micro shrink-0 px-1.5 py-0.5 rounded-md border border-app-outline bg-app-surface-1 text-app-fg-muted leading-none">
                 {group.routines.length} ROUTINE{group.routines.length === 1 ? '' : 'S'}
               </span>
             </div>
 
             <!-- Nested routines -->
-            <div class="flex flex-col gap-1 min-w-0 ml-2.5 pl-2.5 border-l border-[#1e1e1e]">
+            <div class="flex flex-col gap-1 min-w-0 ml-2.5 pl-2.5 border-l border-app-outline-subtle">
               {#each group.routines as routine, index (routine.id)}
                 {@const isSelected = selectedAllId === routine.id}
                 {@const isBm = bookmarks.has(routine.id)}
@@ -1348,19 +1348,19 @@
                   onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectedAllId = selectedAllId === routine.id ? null : routine.id; } }}
                 >
                   <div
-                    class="w-6 h-9 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400'}"
+                    class="w-6 h-9 shrink-0 flex items-center justify-center border rounded-md text-app-micro font-medium leading-none transition-colors {isSelected ? '' : 'bg-app-surface-1 border-app-outline-subtle text-app-fg-secondary'}"
                     style={isSelected ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white` : ''}
                   >
                     {index + 1}
                   </div>
                   <div
-                    class="flex-1 h-9 min-w-0 px-1.5 border rounded text-xs flex items-center transition-colors {isSelected ? '' : 'bg-[#0d0d0d] border-[#1e1e1e]'}"
+                    class="flex-1 h-9 min-w-0 px-1.5 border rounded-md text-xs flex items-center transition-colors {isSelected ? '' : 'bg-app-surface-0 border-app-outline-subtle'}"
                     style={isSelected ? `background-color: color-mix(in srgb, white 8%, #0d0d0d); border-color: white; color: white` : ''}
                   >
                     <div class="flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
-                      <span class="font-medium text-xs truncate leading-none min-w-0 flex-1 uppercase {isSelected ? 'text-white' : 'text-zinc-400'}">[{routine.name}]</span>
+                      <span class="font-medium text-xs truncate leading-none min-w-0 flex-1 uppercase {isSelected ? 'text-app-fg-primary' : 'text-app-fg-secondary'}">[{routine.name}]</span>
                       <span
-                        class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none"
+                        class="text-app-micro shrink-0 px-1.5 py-0.5 rounded-md border leading-none"
                         style={isSelected
                           ? `background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;`
                           : `background-color: #1e1e1e; border-color: #2a2a2a; color: #aaa;`}
@@ -1369,13 +1369,13 @@
                       </span>
                       {#if isBm}
                         <span class="shrink-0 inline-flex text-emerald-400" title="In your list">
-                          <Bookmark class="size-4" fill="currentColor" strokeWidth={2} />
+                          <Bookmark class="app-icon-control" fill="currentColor" strokeWidth={2} />
                         </span>
                       {/if}
                       {#if isSelected}
                         <button
                           type="button"
-                          class="w-7 h-7 shrink-0 flex items-center justify-center rounded border transition-colors"
+                          class="w-7 h-7 shrink-0 flex items-center justify-center rounded-md border transition-colors"
                           style={isBm
                             ? `background-color: color-mix(in srgb, rgb(52 211 153) 18%, #1e1e1e); color: rgb(52 211 153); border-color: rgb(52 211 153);`
                             : `background-color: transparent; color: #888; border-color: #333;`}
@@ -1383,18 +1383,18 @@
                           onclick={(e) => { e.stopPropagation(); toggleBookmark(routine.id); }}
                         >
                           {#if isBm}
-                            <Bookmark class="size-4 pointer-events-none text-emerald-400" fill="currentColor" />
+                            <Bookmark class="app-icon-control pointer-events-none text-emerald-400" fill="currentColor" />
                           {:else}
-                            <Bookmark class="size-4 pointer-events-none" />
+                            <Bookmark class="app-icon-control pointer-events-none" />
                           {/if}
                         </button>
                         <button
                           type="button"
-                          class="w-7 h-7 shrink-0 flex items-center justify-center rounded border border-emerald-900/80 bg-emerald-950/50 text-emerald-400 hover:text-emerald-300 hover:border-emerald-800 transition-colors"
+                          class="w-7 h-7 shrink-0 flex items-center justify-center rounded-md border border-emerald-900/80 bg-emerald-950/50 text-emerald-400 hover:text-emerald-300 hover:border-emerald-800 transition-colors"
                           title="Copy routine into your account"
                           onclick={(e) => { e.stopPropagation(); copyRoutine(routine.id); }}
                         >
-                          <Plus class="size-3.5 pointer-events-none" strokeWidth={2.5} />
+                          <Plus class="app-icon-small pointer-events-none" strokeWidth={2.5} />
                         </button>
                       {/if}
                     </div>

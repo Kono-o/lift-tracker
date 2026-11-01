@@ -121,7 +121,7 @@
     --muscle-secondary-color: #38bdf8;
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 0.5rem;
+    gap: var(--space-2);
     width: 100%;
   }
 
@@ -130,7 +130,7 @@
     min-width: 0;
     flex-direction: column;
     align-items: center;
-    gap: 0.25rem;
+    gap: var(--space-1);
   }
 
   .muscle-diagram__canvas {
@@ -179,9 +179,9 @@
 
   .muscle-diagram__label {
     font-family: var(--font-mono, monospace);
-    font-size: 8px;
+    font-size: var(--type-micro);
     letter-spacing: 0.18em;
-    color: #52525b;
+    color: var(--app-fg-disabled);
   }
 
   .muscle-diagram__legend {
@@ -189,10 +189,10 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.9rem;
-    font-size: 8px;
+    gap: var(--space-3-5);
+    font-size: var(--type-micro);
     letter-spacing: 0.14em;
-    color: #71717a;
+    color: var(--app-fg-muted);
   }
 
   .muscle-diagram__error {
@@ -200,19 +200,19 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.6rem;
+    gap: var(--space-2-5);
     min-height: 3rem;
-    color: #a1a1aa;
-    font-size: 0.65rem;
+    color: var(--app-fg-secondary);
+    font-size: var(--type-micro);
   }
 
   .muscle-diagram__error button {
     min-height: 2.75rem;
-    padding: 0 0.7rem;
-    border: 1px solid #33343a;
-    border-radius: 0.5rem;
-    color: #d4d4d8;
-    font: 600 0.55rem var(--font-mono, monospace);
+    padding: 0 var(--space-3);
+    border: 1px solid var(--app-outline-strong);
+    border-radius: var(--app-radius-control);
+    color: var(--app-fg-secondary-strong);
+    font: 600 var(--type-micro) var(--font-mono, monospace);
     letter-spacing: 0.08em;
   }
 
@@ -222,14 +222,14 @@
     max-width: 11rem;
     aspect-ratio: 3 / 4;
     place-items: center;
-    color: #71717a;
-    font-size: 0.6rem;
+    color: var(--app-fg-muted);
+    font-size: var(--type-micro);
   }
 
   .muscle-diagram__legend span {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: var(--space-1);
   }
 
   .muscle-diagram__dot {

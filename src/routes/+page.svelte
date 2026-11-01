@@ -1728,7 +1728,7 @@ const getStatIcon = getItemIcon;
   const workoutSideBtnClass =
     'workout-cta-side font-sans col-span-1 rounded-xl flex items-center justify-center text-center relative overflow-hidden hover:brightness-110 group';
   const workoutCtaEmptyClass =
-    'workout-cta-empty bg-[#0d0d0d] pointer-events-none';
+    'workout-cta-empty bg-app-surface-0 pointer-events-none';
   const workoutCenterLabelClass =
     'workout-cta-label transition-[letter-spacing] group-hover:tracking-[0.2em]';
   const workoutSideLabelClass =
@@ -2196,9 +2196,9 @@ const getStatIcon = getItemIcon;
           ? (dayCompletion === 'green' ? 'w-cal-green' : dayCompletion === 'untouched' ? 'w-cal-skipped' : 'w-cal-yellow')
           : '',
         (daySkipped || dayCompletion === 'untouched') ? 'w-cal-skipped' : '',
-        (isSelected && !isRealToday && !dayDone && !daySkipped && dayCompletion === 'neutral') ? '!bg-[#1e1e1e] !text-white' : '',
+        (isSelected && !isRealToday && !dayDone && !daySkipped && dayCompletion === 'neutral') ? '!bg-app-surface-3 !text-app-fg-primary' : '',
         (isRealToday && !dayDone && !daySkipped) ? '!bg-white !text-black hover:!text-black' : '',
-        (isRest && !isSelected && !dayDone && !daySkipped) ? 'text-zinc-500' : '',
+        (isRest && !isSelected && !dayDone && !daySkipped) ? 'text-app-fg-muted' : '',
       ].filter(Boolean).join(' ');
 
       return {
@@ -4752,7 +4752,7 @@ const getStatIcon = getItemIcon;
     );
     const bits = [name, tag];
     if (dur) bits.push(dur);
-    if (log.is_perfect_day) bits.push('perfect');
+    if (log.is_perfect_day) bits.push('all targets met');
     return `${prefix} — ${bits.join(' · ')}`;
   }
 
@@ -4769,7 +4769,7 @@ const getStatIcon = getItemIcon;
     const inProgress = last14.filter((l) => isWorkoutInProgress(l)).length;
     const perfect = last14.filter((l) => l.is_perfect_day).length;
     lines.push(
-      `Last 14 days · ${workouts} done, ${skipped} skipped, ${inProgress} active, ${perfect} perfect`,
+      `Last 14 days · ${workouts} done, ${skipped} skipped, ${inProgress} active, ${perfect} days with all targets met`,
     );
     if (logs.length === 0) {
       lines.push('No rows in workout_history yet');
@@ -4959,7 +4959,7 @@ const getStatIcon = getItemIcon;
         todayLines.push(`${logged} of ${total} sets recorded`);
       }
       if (dur) todayLines.push(`Duration: ${dur}`);
-      if (log.is_perfect_day) todayLines.push('Perfect day recorded');
+      if (log.is_perfect_day) todayLines.push('All workout targets met');
     } else if (todayTpl) {
       todayLines.push('Status: ready to start');
     }
@@ -8560,18 +8560,18 @@ const getStatIcon = getItemIcon;
   }
 </script>
 
-<div class="app w-full h-dvh max-h-dvh overflow-hidden select-none text-white bg-black flex flex-col font-sans">
+<div class="app w-full h-dvh max-h-dvh overflow-hidden select-none text-app-fg-primary bg-app-canvas flex flex-col font-sans">
 
   {#snippet ctaEmptySlot()}
     <div class="{workoutSideBtnClass} {workoutCtaEmptyClass}" aria-hidden="true">
-      <X class="workout-cta-empty-icon size-3.5 shrink-0" strokeWidth={2.25} />
+      <X class="workout-cta-empty-icon app-icon-small shrink-0" strokeWidth={2.25} />
     </div>
   {/snippet}
 
   {#snippet ctaBar(editorDisabled = false)}
     <div class={editorDisabled ? 'opacity-40 pointer-events-none' : ''}>
       {#if workoutActionError}
-        <p class="text-[10px] text-red-300 leading-snug mb-2">{workoutActionError}</p>
+        <p class="text-app-micro text-red-300 leading-snug mb-2">{workoutActionError}</p>
       {/if}
       {#if workoutState === 'idle' || workoutState === 'active' || workoutState === 'done' || workoutState === 'skipped'}
         <div class="app-cta-grid">
@@ -8579,7 +8579,7 @@ const getStatIcon = getItemIcon;
             {#if statsCtaEnabled}
               <button
                 type="button"
-                class="{workoutSideBtnClass} border bg-[#0d0d0d] border-[#1e1e1e] text-white hover:border-white/40"
+                class="{workoutSideBtnClass} border bg-app-surface-0 border-app-outline-subtle text-app-fg-primary hover:border-white/40"
                 onclick={enterStatsView}
               >
                 <span class="workout-cta-side-content">
@@ -8594,7 +8594,7 @@ const getStatIcon = getItemIcon;
             {#if isViewingToday && isRestDayView}
               <button
                 type="button"
-                class="{workoutCenterBtnClass} cursor-default border-[#1e1e1e] bg-[#141414] text-zinc-500"
+                class="{workoutCenterBtnClass} cursor-default border-app-outline-subtle bg-app-surface-1 text-app-fg-muted"
                 disabled
                 tabindex={-1}
               >
@@ -8629,7 +8629,7 @@ const getStatIcon = getItemIcon;
           <!-- STATS (left, narrow) — opens stats menu. Shown for today and for past logged workouts (so erase is available alongside). -->
           <button
             type="button"
-            class="{workoutSideBtnClass} border bg-[#0d0d0d] border-[#1e1e1e] text-white hover:border-white/40"
+            class="{workoutSideBtnClass} border bg-app-surface-0 border-app-outline-subtle text-app-fg-primary hover:border-white/40"
             onclick={enterStatsView}
           >
             <span class="workout-cta-side-content">
@@ -8650,7 +8650,7 @@ const getStatIcon = getItemIcon;
               {#if isViewingPastDoneLog || isViewingPastSkippedLog}
                 <button
                   type="button"
-                  class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-white hover:border-white/40'}"
+                  class="{workoutSideBtnClass} group border bg-app-surface-0 transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-fg-secondary' : 'border-app-outline-subtle text-app-fg-primary hover:border-white/40'}"
                   onmousedown={startEraseHold}
                   onmouseup={stopEraseHold}
                   onmouseleave={stopEraseHold}
@@ -8683,7 +8683,7 @@ const getStatIcon = getItemIcon;
               </button>
               <button
                 type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {skipTapPulseActive ? 'hold-skip-tap-pulse' : skipProgress > 0 ? 'border-amber-500 text-[#fbbf24]' : 'border-[#1e1e1e] text-white hover:border-white/40'}"
+                class="{workoutSideBtnClass} group border bg-app-surface-0 transition-all duration-150 {skipTapPulseActive ? 'hold-skip-tap-pulse' : skipProgress > 0 ? 'border-amber-500 text-fg-secondary' : 'border-app-outline-subtle text-app-fg-primary hover:border-white/40'}"
                 onmousedown={startSkipHold}
                 onmouseup={stopSkipHold}
                 onmouseleave={stopSkipHold}
@@ -8715,7 +8715,7 @@ const getStatIcon = getItemIcon;
                 >{START_CTA_TARGET}</span>
               </button>
               <button
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {cancelTapPulseActive ? 'hold-cancel-tap-pulse' : cancelProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-white hover:border-white/40'}"
+                class="{workoutSideBtnClass} group border bg-app-surface-0 transition-all duration-150 {cancelTapPulseActive ? 'hold-cancel-tap-pulse' : cancelProgress > 0 ? 'border-red-500 text-fg-secondary' : 'border-app-outline-subtle text-app-fg-primary hover:border-white/40'}"
                 onmousedown={startCancelHold}
                 onmouseup={stopCancelHold}
                 onmouseleave={stopCancelHold}
@@ -8744,7 +8744,7 @@ const getStatIcon = getItemIcon;
               </button>
               <button
                 type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-white hover:border-white/40'}"
+                class="{workoutSideBtnClass} group border bg-app-surface-0 transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-fg-secondary' : 'border-app-outline-subtle text-app-fg-primary hover:border-white/40'}"
                 onmousedown={startEraseHold}
                 onmouseup={stopEraseHold}
                 onmouseleave={stopEraseHold}
@@ -8770,7 +8770,7 @@ const getStatIcon = getItemIcon;
               </button>
               <button
                 type="button"
-                class="{workoutSideBtnClass} group border bg-[#0d0d0d] transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-[#f87171]' : 'border-[#1e1e1e] text-white hover:border-white/40'}"
+                class="{workoutSideBtnClass} group border bg-app-surface-0 transition-all duration-150 {eraseTapPulseActive ? 'hold-cancel-tap-pulse' : eraseProgress > 0 ? 'border-red-500 text-fg-secondary' : 'border-app-outline-subtle text-app-fg-primary hover:border-white/40'}"
                 onmousedown={startEraseHold}
                 onmouseup={stopEraseHold}
                 onmouseleave={stopEraseHold}
@@ -8806,7 +8806,7 @@ const getStatIcon = getItemIcon;
       onkeydown={(e) => { if (e.key === 'Escape') closeSettingsPanel(); }}
     >
       <div
-        class="settings-panel-dialog settings-panel-dialog--user-menu rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left"
+        class="settings-panel-dialog settings-panel-dialog--user-menu rounded-xl border border-app-outline-subtle bg-app-surface-1 shadow-xl overflow-hidden text-left"
         in:userMenuIn
         out:userMenuOut
       >
@@ -8842,11 +8842,11 @@ const getStatIcon = getItemIcon;
               disabled={accountBusy}
               onclick={closeSettingsPanel}
             >
-              <X class="size-3.5" />
+              <X class="app-icon-small" />
             </button>
           </div>
         </div>
-        <div class="settings-panel-body text-[10px] leading-snug">
+        <div class="settings-panel-body text-app-micro leading-snug">
           {#if currentUser}
             <div class="flex justify-center py-1">
               <button
@@ -8906,39 +8906,39 @@ const getStatIcon = getItemIcon;
                   {:else}
                     <span class="settings-panel-header__name">{accountDisplayName}</span>
                   {/if}
-                  <span class="text-[10px] text-zinc-500">joined {accountMemberSince}</span>
-                  <span class="text-[10px] text-zinc-500">Session: {formatSessionExpiry(panel.expiresAt)}</span>
+                  <span class="text-app-micro text-app-fg-muted">joined {accountMemberSince}</span>
+                  <span class="text-app-micro text-app-fg-muted">Session: {formatSessionExpiry(panel.expiresAt)}</span>
                   <span class="settings-panel-header__user-id" title={currentUser.id}>{currentUser.id}</span>
                 </div>
               {:else}
-                <span class="settings-panel-header__name text-zinc-400">Backend</span>
+                <span class="settings-panel-header__name text-app-fg-secondary">Backend</span>
               {/if}
               {#if panel.usage}
                 <div class="mt-1 mb-2">
-                  <div class="text-[8px] uppercase tracking-[1px] text-zinc-500 text-center mb-1">Data usage</div>
-                  <div class="grid grid-cols-3 gap-1 text-[9px] text-zinc-400">
-                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                      <Repeat class="size-3 shrink-0" aria-hidden="true" />
+                  <div class="text-app-micro uppercase tracking-[1px] text-app-fg-muted text-center mb-1">Data usage</div>
+                  <div class="grid grid-cols-3 gap-1 text-app-micro text-app-fg-secondary">
+                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-app-surface-3 rounded-md border border-app-outline justify-center">
+                      <Repeat class="app-icon-small shrink-0" aria-hidden="true" />
                       <span class="leading-none">{panel.usage.routines ?? 0} rtn</span>
                     </span>
-                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                      <List class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-app-surface-3 rounded-md border border-app-outline justify-center">
+                      <List class="app-icon-small shrink-0" aria-hidden="true" />
                       <span class="leading-none">{panel.usage.templates} tpl</span>
                     </span>
-                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                      <Dumbbell class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-app-surface-3 rounded-md border border-app-outline justify-center">
+                      <Dumbbell class="app-icon-small shrink-0" aria-hidden="true" />
                       <span class="leading-none">{panel.usage.exercises} ex</span>
                     </span>
-                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                      <History class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-app-surface-3 rounded-md border border-app-outline justify-center">
+                      <History class="app-icon-small shrink-0" aria-hidden="true" />
                       <span class="leading-none">{panel.usage.workout_history} wrk logs</span>
                     </span>
-                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                      <Dna class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-app-surface-3 rounded-md border border-app-outline justify-center">
+                      <Dna class="app-icon-small shrink-0" aria-hidden="true" />
                       <span class="leading-none">{panel.usage.tracked_stats ?? 0} sts</span>
                     </span>
-                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center">
-                      <HardDrive class="size-3 shrink-0" aria-hidden="true" />
+                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-app-surface-3 rounded-md border border-app-outline justify-center">
+                      <HardDrive class="app-icon-small shrink-0" aria-hidden="true" />
                       <span class="leading-none">{panel.usage.exact ? '' : '~'}{formatBytes(panel.usage.estimated_bytes)}</span>
                     </span>
                   </div>
@@ -8955,13 +8955,13 @@ const getStatIcon = getItemIcon;
 
           <div class="settings-prefs">
             <div class="settings-prefs__head">
-              <Settings2 class="size-3" aria-hidden="true" />
+              <Settings2 class="app-icon-small" aria-hidden="true" />
               <span>APP SETTINGS</span>
             </div>
 
             <div class="settings-prefs__theme-row">
               <span class="settings-prefs__label">
-                <Moon class="size-3" aria-hidden="true" />
+                <Moon class="app-icon-small" aria-hidden="true" />
                 <span>Theme</span>
               </span>
               <div class="settings-prefs__segment" role="radiogroup" aria-label="Theme">
@@ -8992,7 +8992,7 @@ const getStatIcon = getItemIcon;
 
             <div class="settings-prefs__theme-row">
               <span class="settings-prefs__label">
-                <Scale class="size-3" aria-hidden="true" />
+                <Scale class="app-icon-small" aria-hidden="true" />
                 <span>Body weight</span>
               </span>
               <div class="settings-prefs__segment" role="radiogroup" aria-label="Body weight units">
@@ -9032,7 +9032,7 @@ const getStatIcon = getItemIcon;
               }}
             >
               <span class="settings-prefs__label">
-                <Vibrate class="size-3" aria-hidden="true" />
+                <Vibrate class="app-icon-small" aria-hidden="true" />
                 <span>Haptics</span>
               </span>
               <span class="settings-prefs__switch" class:settings-prefs__switch--on={preferences.haptics !== false} aria-hidden="true">
@@ -9051,7 +9051,7 @@ const getStatIcon = getItemIcon;
               }}
             >
               <span class="settings-prefs__label">
-                <Volume2 class="size-3" aria-hidden="true" />
+                <Volume2 class="app-icon-small" aria-hidden="true" />
                 <span>Sound effects</span>
               </span>
               <span class="settings-prefs__switch" class:settings-prefs__switch--on={preferences.sounds !== false} aria-hidden="true">
@@ -9070,7 +9070,7 @@ const getStatIcon = getItemIcon;
               }}
             >
               <span class="settings-prefs__label">
-                <ZapOff class="size-3" aria-hidden="true" />
+                <ZapOff class="app-icon-small" aria-hidden="true" />
                 <span>Reduce motion</span>
               </span>
               <span class="settings-prefs__switch" class:settings-prefs__switch--on={preferences.reduce_motion === true} aria-hidden="true">
@@ -9089,7 +9089,7 @@ const getStatIcon = getItemIcon;
               }}
             >
               <span class="settings-prefs__label">
-                <TimerReset class="size-3" aria-hidden="true" />
+                <TimerReset class="app-icon-small" aria-hidden="true" />
                 <span>Auto rest timer</span>
               </span>
               <span class="settings-prefs__switch" class:settings-prefs__switch--on={preferences.auto_rest_timer !== false} aria-hidden="true">
@@ -9105,7 +9105,7 @@ const getStatIcon = getItemIcon;
               onclick={() => void toggleNotificationPreference('rest_notifications', preferences.rest_notifications === false)}
             >
               <span class="settings-prefs__label">
-                <Bell class="size-3" aria-hidden="true" />
+                <Bell class="app-icon-small" aria-hidden="true" />
                 <span>Rest notifications</span>
               </span>
               <span class="settings-prefs__switch" class:settings-prefs__switch--on={preferences.rest_notifications !== false} aria-hidden="true">
@@ -9121,7 +9121,7 @@ const getStatIcon = getItemIcon;
               onclick={() => void toggleNotificationPreference('workout_reminders', preferences.workout_reminders !== true)}
             >
               <span class="settings-prefs__label">
-                <BellRing class="size-3" aria-hidden="true" />
+                <BellRing class="app-icon-small" aria-hidden="true" />
                 <span>Workout reminders</span>
               </span>
               <span class="settings-prefs__switch" class:settings-prefs__switch--on={preferences.workout_reminders === true} aria-hidden="true">
@@ -9133,7 +9133,7 @@ const getStatIcon = getItemIcon;
               <div class="settings-prefs__schedule">
                 <label class="settings-prefs__time">
                   <span class="settings-prefs__label">
-                    <Clock3 class="size-3" aria-hidden="true" />
+                    <Clock3 class="app-icon-small" aria-hidden="true" />
                     <span>Reminder time</span>
                   </span>
                   <input
@@ -9182,7 +9182,7 @@ const getStatIcon = getItemIcon;
                     onclick={toggleChangePasswordForm}
                   >
                     <span class="settings-panel-action-btn__label">
-                      <X class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                      <X class="app-icon-small shrink-0 pointer-events-none" aria-hidden="true" />
                       CANCEL
                     </span>
                   </button>
@@ -9206,7 +9206,7 @@ const getStatIcon = getItemIcon;
                       <span class="settings-panel-action-btn__caution-msg">{holdCautionMessage}</span>
                     {:else}
                       <span class="settings-panel-action-btn__label">
-                        <LockKeyhole class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                        <LockKeyhole class="app-icon-small shrink-0 pointer-events-none" aria-hidden="true" />
                         CHANGE PASSWORD
                       </span>
                     {/if}
@@ -9234,7 +9234,7 @@ const getStatIcon = getItemIcon;
                       }}
                     >
                       <div class="relative">
-                        <Lock class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-zinc-500 pointer-events-none" />
+                        <Lock class="absolute left-3 top-1/2 -translate-y-1/2 app-icon-small text-app-fg-muted pointer-events-none" />
                         <input
                           type="password"
                           autocomplete="new-password"
@@ -9251,7 +9251,7 @@ const getStatIcon = getItemIcon;
                         />
                       </div>
                       <div class="relative">
-                        <LockKeyhole class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-zinc-500 pointer-events-none z-10" />
+                        <LockKeyhole class="absolute left-3 top-1/2 -translate-y-1/2 app-icon-small text-app-fg-muted pointer-events-none z-10" />
                         <input
                           type="password"
                           autocomplete="new-password"
@@ -9268,7 +9268,7 @@ const getStatIcon = getItemIcon;
                         />
                         {#if !changePasswordConfirm}
                           <span
-                            class="absolute left-9 top-1/2 -translate-y-1/2 text-[0.6875rem] text-zinc-600 pointer-events-none select-none"
+                            class="absolute left-9 top-1/2 -translate-y-1/2 text-app-caption text-app-fg-disabled pointer-events-none select-none"
                             aria-hidden="true"
                           >••••••••</span>
                         {/if}
@@ -9286,7 +9286,7 @@ const getStatIcon = getItemIcon;
                           tabindex={changePasswordSubmitBtnLit ? 0 : -1}
                         >
                           {#if accountBusy}
-                            <RefreshCw class="size-3.5 shrink-0 animate-spin" aria-hidden="true" />
+                            <RefreshCw class="app-icon-small shrink-0 animate-spin" aria-hidden="true" />
                           {:else}
                             SAVE PASSWORD
                           {/if}
@@ -9304,9 +9304,9 @@ const getStatIcon = getItemIcon;
                           >
                             <span class="auth-submit-btn__feedback flex items-center gap-1.5 min-w-0 max-w-full">
                               {#if changePasswordError}
-                                <CircleAlert class="auth-submit-btn__icon size-3.5 shrink-0" aria-hidden="true" />
+                                <CircleAlert class="auth-submit-btn__icon app-icon-small shrink-0" aria-hidden="true" />
                               {:else}
-                                <CircleCheck class="auth-submit-btn__icon size-3.5 shrink-0" aria-hidden="true" />
+                                <CircleCheck class="auth-submit-btn__icon app-icon-small shrink-0" aria-hidden="true" />
                               {/if}
                               <span class="line-clamp-2 min-w-0">{changePasswordError ?? changePasswordSuccess}</span>
                             </span>
@@ -9341,7 +9341,7 @@ const getStatIcon = getItemIcon;
                     onanimationend={onSignOutTapPulseEnd}>
                     <div class="settings-panel-action-btn__fill settings-panel-action-btn__fill--signout" style="width: {signOutProgress}%;"></div>
                     <span class="settings-panel-action-btn__label">
-                      <LogOut class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                      <LogOut class="app-icon-small shrink-0 pointer-events-none" aria-hidden="true" />
                       {accountBusy ? '…' : 'SIGN OUT'}
                     </span>
                   </button>
@@ -9361,7 +9361,7 @@ const getStatIcon = getItemIcon;
                     onanimationend={onDeleteAccountTapPulseEnd}>
                     <div class="settings-panel-action-btn__fill settings-panel-action-btn__fill--delete" style="width: {deleteAccountProgress}%;"></div>
                     <span class="settings-panel-action-btn__label">
-                      <Trash2 class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                      <Trash2 class="app-icon-small shrink-0 pointer-events-none" aria-hidden="true" />
                       {accountBusy ? '…' : 'DELETE'}
                     </span>
                   </button>
@@ -9389,7 +9389,7 @@ const getStatIcon = getItemIcon;
       transition:fade={{ duration: OVERLAY_MS }}
     >
       <div
-        class="settings-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left"
+        class="settings-panel-dialog rounded-xl border border-app-outline-subtle bg-app-surface-1 shadow-xl overflow-hidden text-left"
         in:menuPanelIn
         out:menuPanelOut
       >
@@ -9409,15 +9409,15 @@ const getStatIcon = getItemIcon;
               disabled={updateInstalling}
               onclick={closeUpdatePrompt}
             >
-              <X class="size-3.5" />
+              <X class="app-icon-small" />
             </button>
           </div>
         </div>
 
-        <div class="settings-panel-body text-[10px] leading-snug">
+        <div class="settings-panel-body text-app-micro leading-snug">
           <!-- Version comparison -->
           <div class="flex flex-col items-center text-center">
-            <div class="inline-flex items-center gap-1.5 rounded-full bg-emerald-950/60 px-3 py-0.5 text-emerald-400 text-[10px] font-medium tracking-[1.5px]">
+            <div class="inline-flex items-center gap-1.5 rounded-full bg-emerald-950/60 px-3 py-0.5 text-emerald-400 text-app-micro font-medium tracking-[1.5px]">
               UPDATE AVAILABLE
               {#if updateInfo.size}
                 · {(updateInfo.size / 1024 / 1024).toFixed(1)} MB
@@ -9427,7 +9427,7 @@ const getStatIcon = getItemIcon;
             <div class="mt-2 flex items-center gap-3">
               <!-- Current version -->
               <div class="flex flex-col items-center">
-                <div class="font-mono text-base text-zinc-400 tabular-nums">v{APP_VERSION}</div>
+                <div class="font-mono text-base text-app-fg-secondary tabular-nums">v{APP_VERSION}</div>
               </div>
 
               <div class="text-emerald-500 text-2xl leading-none">→</div>
@@ -9441,13 +9441,13 @@ const getStatIcon = getItemIcon;
 
           {#if updateInfo.notes}
             <div class="mt-3">
-              <div class="mb-1 text-[9px] font-medium tracking-[1px] text-zinc-500">WHAT'S NEW</div>
-              <div class="max-h-40 overflow-auto overscroll-contain rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2.5 text-[10px] leading-snug text-zinc-300 markdown-content no-scrollbar">
-                {#if updateNotesHtml}{@html updateNotesHtml}{:else}<span class="text-zinc-500" role="status">Preparing release notes…</span>{/if}
+              <div class="mb-1 text-app-micro font-medium tracking-[1px] text-app-fg-muted">WHAT'S NEW</div>
+              <div class="max-h-40 overflow-auto overscroll-contain rounded-md border border-app-outline-subtle bg-app-surface-0 p-2.5 text-app-micro leading-snug text-app-fg-secondary-strong markdown-content no-scrollbar">
+                {#if updateNotesHtml}{@html updateNotesHtml}{:else}<span class="text-app-fg-muted" role="status">Preparing release notes…</span>{/if}
               </div>
             </div>
           {:else}
-            <p class="mt-3 text-center text-zinc-400">A new version of Lift Tracker is ready.</p>
+            <p class="mt-3 text-center text-app-fg-secondary">A new version of Lift Tracker is ready.</p>
           {/if}
 
           {#if updateError && !updateInstalling}
@@ -9456,21 +9456,21 @@ const getStatIcon = getItemIcon;
 
           <div class="mt-3 min-h-[1.75rem] flex items-center">
             {#if !updateInstalling}
-              <span class="block text-center text-[10px] text-zinc-400">Install to receive the latest features and fixes.</span>
+              <span class="block text-center text-app-micro text-app-fg-secondary">Install to receive the latest features and fixes.</span>
             {:else if updateInstalling}
               {#if !isWaitingForUpdatePermission}
                 <div class="flex items-center gap-2 w-full">
-                  <div class="flex-1 h-1.5 rounded bg-[#1e1e1e] overflow-hidden">
+                  <div class="flex-1 h-1.5 rounded-md bg-app-surface-3 overflow-hidden">
                     <div
                       class="h-1.5 bg-emerald-500 transition-[width] duration-75"
                       style="width: {updateDownloadProgress}%"
                     ></div>
                   </div>
-                  <span class="text-[10px] text-zinc-400 tabular-nums w-8 text-right">{updateDownloadProgress}%</span>
+                  <span class="text-app-micro text-app-fg-secondary tabular-nums w-8 text-right">{updateDownloadProgress}%</span>
                 </div>
               {/if}
               {#if updateError}
-                <p class="mt-1.5 text-[10px] text-amber-400">{updateError}</p>
+                <p class="mt-1.5 text-app-micro text-amber-400">{updateError}</p>
               {/if}
             {/if}
           </div>
@@ -9479,7 +9479,7 @@ const getStatIcon = getItemIcon;
             <button
               type="button"
               class={updateInstalling && !updateError 
-                ? "settings-panel-action-btn settings-panel-action-btn--full pointer-events-none opacity-70 border-[#1e1e1e] text-zinc-400"
+                ? "settings-panel-action-btn settings-panel-action-btn--full pointer-events-none opacity-70 border-app-outline-subtle text-app-fg-secondary"
                 : "settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--update-primary"}
               disabled={updateInstalling && !updateError}
               onclick={startUpdateInstall}
@@ -9517,7 +9517,7 @@ const getStatIcon = getItemIcon;
       transition:fade={{ duration: OVERLAY_MS }}
     >
       <div
-        class="settings-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left"
+        class="settings-panel-dialog rounded-xl border border-app-outline-subtle bg-app-surface-1 shadow-xl overflow-hidden text-left"
         in:menuPanelIn
         out:menuPanelOut
       >
@@ -9536,17 +9536,17 @@ const getStatIcon = getItemIcon;
               class="settings-panel-header__close"
               onclick={closePostUpdate}
             >
-              <X class="size-3.5" />
+              <X class="app-icon-small" />
             </button>
           </div>
         </div>
 
-        <div class="settings-panel-body text-[10px] leading-snug">
+        <div class="settings-panel-body text-app-micro leading-snug">
           <!-- Version / heading -->
           <div class="flex flex-col items-center text-center">
-            <div class="inline-flex items-center gap-1.5 rounded-full bg-emerald-950/60 px-3 py-0.5 text-emerald-400 text-[10px] font-medium tracking-[1.5px]">
+            <div class="inline-flex items-center gap-1.5 rounded-full bg-emerald-950/60 px-3 py-0.5 text-emerald-400 text-app-micro font-medium tracking-[1.5px]">
               UPDATED
-              <Check class="size-3.5" />
+              <Check class="app-icon-small" />
             </div>
 
             <div class="mt-2 flex items-center gap-3">
@@ -9559,14 +9559,14 @@ const getStatIcon = getItemIcon;
 
           {#if postUpdateNotes}
             <div class="mt-3">
-              <div class="mb-1 text-[9px] font-medium tracking-[1px] text-zinc-500">WHAT'S NEW</div>
-              <div class="max-h-44 overflow-auto rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2 text-[10px] leading-snug text-zinc-300 markdown-content no-scrollbar">
-                {#if postUpdateNotesHtml}{@html postUpdateNotesHtml}{:else}<span class="text-zinc-500" role="status">Preparing release notes…</span>{/if}
+              <div class="mb-1 text-app-micro font-medium tracking-[1px] text-app-fg-muted">WHAT'S NEW</div>
+              <div class="max-h-44 overflow-auto rounded-md border border-app-outline-subtle bg-app-surface-0 p-2 text-app-micro leading-snug text-app-fg-secondary-strong markdown-content no-scrollbar">
+                {#if postUpdateNotesHtml}{@html postUpdateNotesHtml}{:else}<span class="text-app-fg-muted" role="status">Preparing release notes…</span>{/if}
               </div>
-              <span class="mt-2 block text-center text-[10px] text-zinc-400">Thanks for staying up to date!</span>
+              <span class="mt-2 block text-center text-app-micro text-app-fg-secondary">Thanks for staying up to date!</span>
             </div>
           {:else}
-            <p class="mt-3 text-center text-zinc-400">You’re now running the latest version.</p>
+            <p class="mt-3 text-center text-app-fg-secondary">You’re now running the latest version.</p>
           {/if}
 
           <div class="mt-3 grid grid-cols-1 gap-2">
@@ -9604,7 +9604,7 @@ const getStatIcon = getItemIcon;
 
     ]}
     <div
-      class="settings-panel-dialog boot-panel-dialog rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left"
+      class="settings-panel-dialog boot-panel-dialog rounded-xl border border-app-outline-subtle bg-app-surface-1 shadow-xl overflow-hidden text-left"
       class:boot-panel--filled={filled}
       role="status"
       aria-live="polite"
@@ -9647,12 +9647,12 @@ const getStatIcon = getItemIcon;
             aria-hidden="true"
             tabindex="-1"
           >
-            <X class="size-3.5" />
+            <X class="app-icon-small" />
           </button>
         </div>
       </div>
 
-      <div class="settings-panel-body text-[10px] leading-snug">
+      <div class="settings-panel-body text-app-micro leading-snug">
         <!-- Single layout: chrome always present; values fade in (no unmount swap) -->
         <div class="boot-panel-avatar-slot flex justify-center py-1" aria-hidden="true">
           <div class="boot-panel-avatar-frame">
@@ -9680,10 +9680,10 @@ const getStatIcon = getItemIcon;
             <span class="settings-panel-header__name boot-panel-fade-text" class:boot-panel-fade-text--on={!!currentUser}>
               {currentUser ? accountDisplayName : '…'}
             </span>
-            <span class="text-[10px] text-zinc-500 boot-panel-fade-text" class:boot-panel-fade-text--on={!!currentUser && !!accountMemberSince}>
+            <span class="text-app-micro text-app-fg-muted boot-panel-fade-text" class:boot-panel-fade-text--on={!!currentUser && !!accountMemberSince}>
               {currentUser ? `joined ${accountMemberSince}` : '…'}
             </span>
-            <span class="text-[10px] text-zinc-500 boot-panel-fade-text" class:boot-panel-fade-text--on={filled}>
+            <span class="text-app-micro text-app-fg-muted boot-panel-fade-text" class:boot-panel-fade-text--on={filled}>
               {filled ? `Session: ${formatSessionExpiry(panel.expiresAt)}` : 'Session: …'}
             </span>
             <span
@@ -9697,26 +9697,26 @@ const getStatIcon = getItemIcon;
 
           <div class="mt-1 mb-2">
             <div
-              class="text-[8px] uppercase tracking-[1px] text-zinc-500 text-center mb-1 boot-panel-fade-text"
+              class="text-app-micro uppercase tracking-[1px] text-app-fg-muted text-center mb-1 boot-panel-fade-text"
               class:boot-panel-fade-text--on={true}
             >Data usage</div>
-            <div class="grid grid-cols-3 gap-1 text-[9px] text-zinc-400">
+            <div class="grid grid-cols-3 gap-1 text-app-micro text-app-fg-secondary">
               {#each chipDefs as chip (chip.key)}
-                <span class="boot-panel-chip inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-[#1e1e1e] rounded border border-[#2a2a2a] justify-center min-h-[1.5rem]">
+                <span class="boot-panel-chip inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-app-surface-3 rounded-md border border-app-outline justify-center min-h-[1.5rem]">
                   {#if chip.icon === 'repeat'}
-                    <Repeat class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                    <Repeat class="app-icon-small shrink-0 opacity-70" aria-hidden="true" />
                   {:else if chip.icon === 'list'}
-                    <List class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                    <List class="app-icon-small shrink-0 opacity-70" aria-hidden="true" />
                   {:else if chip.icon === 'dumbbell'}
-                    <Dumbbell class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                    <Dumbbell class="app-icon-small shrink-0 opacity-70" aria-hidden="true" />
                   {:else if chip.icon === 'history'}
-                    <History class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                    <History class="app-icon-small shrink-0 opacity-70" aria-hidden="true" />
                   {:else if chip.icon === 'dna'}
-                    <Dna class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                    <Dna class="app-icon-small shrink-0 opacity-70" aria-hidden="true" />
                   {:else if chip.icon === 'drive'}
-                    <HardDrive class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                    <HardDrive class="app-icon-small shrink-0 opacity-70" aria-hidden="true" />
                   {:else}
-                    <Pencil class="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                    <Pencil class="app-icon-small shrink-0 opacity-70" aria-hidden="true" />
                   {/if}
                   <span
                     class="leading-none boot-panel-chip-value"
@@ -9744,7 +9744,7 @@ const getStatIcon = getItemIcon;
             >
               <div class="settings-panel-action-btn settings-panel-action-btn--full settings-panel-action-btn--change-password">
                 <span class="settings-panel-action-btn__label">
-                  <LockKeyhole class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                  <LockKeyhole class="app-icon-small shrink-0 pointer-events-none" aria-hidden="true" />
                   CHANGE PASSWORD
                 </span>
               </div>
@@ -9760,7 +9760,7 @@ const getStatIcon = getItemIcon;
                   class:boot-panel-fade-text--dim={!filled}
                 >
                   <span class="settings-panel-action-btn__label">
-                    <LogOut class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                    <LogOut class="app-icon-small shrink-0 pointer-events-none" aria-hidden="true" />
                     SIGN OUT
                   </span>
                 </div>
@@ -9770,7 +9770,7 @@ const getStatIcon = getItemIcon;
                   class:boot-panel-fade-text--dim={!filled}
                 >
                   <span class="settings-panel-action-btn__label">
-                    <Trash2 class="size-3 shrink-0 pointer-events-none" aria-hidden="true" />
+                    <Trash2 class="app-icon-small shrink-0 pointer-events-none" aria-hidden="true" />
                     DELETE
                   </span>
                 </div>
@@ -9794,19 +9794,19 @@ const getStatIcon = getItemIcon;
   <div class="app-stage-sticky app-stack-gap shrink-0 flex flex-col">
   <!-- Week box: collapsible header + compact day strip -->
   <div
-    class="week-calendar-swipe rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden"
+    class="week-calendar-swipe rounded-xl border border-app-outline-subtle bg-app-surface-1 overflow-hidden"
     use:horizontalSwipe={{
       onSwipeLeft: goNextDay,
       onSwipeRight: goPrevDay,
       disabled: () => weekCalendarLocked,
     }}
   >
-    <div class="flex items-center gap-2 min-h-8 px-2 py-1.5 border-b border-[#1e1e1e] bg-[#111] text-[10px] tracking-[1px]">
+    <div class="flex items-center gap-2 min-h-8 px-2 py-1.5 border-b border-app-outline-subtle bg-app-surface-0 text-app-micro tracking-[1px]">
       <button
         type="button"
         title="Account and backend"
         aria-label="Account and backend"
-        class="w-8 h-8 shrink-0 rounded bg-emerald-950/40 flex items-center justify-center hover:bg-emerald-900/40 transition"
+        class="w-8 h-8 shrink-0 rounded-md bg-emerald-950/40 flex items-center justify-center hover:bg-emerald-900/40 transition"
         onclick={(e) => { e.stopPropagation(); openSettingsPanel(); }}
       >
         {#key avatarSeed}
@@ -9816,19 +9816,19 @@ const getStatIcon = getItemIcon;
       <div class="flex-1 flex items-center gap-2 min-w-0">
         <button
           type="button"
-          class="flex-1 flex items-center gap-2 min-w-0 py-0.5 -my-0.5 px-1 rounded-md transition-colors {weekCalendarLocked ? 'text-zinc-600 cursor-default' : 'text-zinc-500 hover:text-zinc-300 hover:bg-[#1a1a1a]'}"
+          class="flex-1 flex items-center gap-2 min-w-0 py-0.5 -my-0.5 px-1 rounded-md transition-colors {weekCalendarLocked ? 'text-app-fg-disabled cursor-default' : 'text-app-fg-muted hover:text-app-fg-secondary-strong hover:bg-app-surface-2'}"
           onclick={toggleWeekCalendar}
           disabled={weekCalendarLocked}
           aria-expanded={!weekCalendarDisplayCollapsed}
           aria-disabled={weekCalendarLocked}
           title={weekCalendarLocked ? 'Week calendar locked during workout' : weekCalendarCollapsed ? 'Expand week' : 'Collapse week'}
         >
-          <span class="min-w-0 flex-1 truncate text-left leading-none font-bold text-zinc-200 pointer-events-none">{weekBarLabel}</span>
+          <span class="min-w-0 flex-1 truncate text-left leading-none font-bold text-app-fg-secondary-strong pointer-events-none">{weekBarLabel}</span>
           {#if !weekCalendarLocked}
             {#if weekCalendarDisplayCollapsed}
-              <ChevronDown class="size-3.5 shrink-0 text-zinc-400 pointer-events-none" aria-hidden="true" />
+              <ChevronDown class="app-icon-small shrink-0 text-app-fg-secondary pointer-events-none" aria-hidden="true" />
             {:else}
-              <ChevronUp class="size-3.5 shrink-0 text-zinc-400 pointer-events-none" aria-hidden="true" />
+              <ChevronUp class="app-icon-small shrink-0 text-app-fg-secondary pointer-events-none" aria-hidden="true" />
             {/if}
           {/if}
         </button>
@@ -9859,15 +9859,15 @@ const getStatIcon = getItemIcon;
       <div class="overflow-hidden min-h-0 {weekCalendarDisplayCollapsed ? 'pointer-events-none' : ''}">
         <div class="flex items-stretch">
           <button 
-            class="w-8 shrink-0 flex items-center justify-center bg-[#141414] border-r border-[#1e1e1e] text-zinc-400 hover:text-white active:bg-[#0d0d0d] transition disabled:opacity-40"
+            class="w-8 shrink-0 flex items-center justify-center bg-app-surface-1 border-r border-app-outline-subtle text-app-fg-secondary hover:text-app-fg-primary active:bg-app-surface-0 transition disabled:opacity-40"
             onclick={goPrevWeek}
             title="Previous week"
             disabled={workoutState === 'active'}
           >
-            <ChevronLeft class="size-3.5" />
+            <ChevronLeft class="app-icon-small" />
           </button>
           <div
-            class="day-strip grid grid-cols-7 gap-0.5 flex-1 min-w-0 bg-[#141414] p-1 {weekCalendarClosing
+            class="day-strip grid grid-cols-7 gap-0.5 flex-1 min-w-0 bg-app-surface-1 p-1 {weekCalendarClosing
               ? 'week-calendar-closing'
               : !weekCalendarDisplayCollapsed
                 ? 'week-calendar-open'
@@ -9876,14 +9876,14 @@ const getStatIcon = getItemIcon;
             {#each weekDayData as data (data.dayInfo.key)}
               {@const d = data.dayInfo}
               <button 
-                class="day-btn aspect-square w-full flex flex-col items-center justify-center gap-0 rounded-md text-[10px] font-bold tracking-wide border-none bg-transparent text-zinc-600 hover:text-white relative origin-center {data.dynamicClasses}"
+                class="day-btn aspect-square w-full flex flex-col items-center justify-center gap-0 rounded-md text-app-micro font-bold tracking-wide border-none bg-transparent text-app-fg-disabled hover:text-app-fg-primary relative origin-center {data.dynamicClasses}"
                 onclick={() => selectDate(d.date)}
                 disabled={workoutState === 'active'}
                 title={DAY_NAMES[d.weekday] + ' ' + d.key}
               >
                 <div class="flex flex-col items-center justify-center leading-none">
-                  <span class="text-[8px] font-bold tracking-[1px] {data.isSelected ? 'opacity-100' : 'opacity-60'}">{d.letter}</span>
-                  <span class="text-[11px] font-black tabular-nums leading-none">{d.num}</span>
+                  <span class="text-app-micro font-bold tracking-[1px] {data.isSelected ? 'opacity-100' : 'opacity-60'}">{d.letter}</span>
+                  <span class="text-app-caption font-black tabular-nums leading-none">{d.num}</span>
                 </div>
                 {#if data.isSelected}
                   <span class="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-px bg-current rounded-full"></span>
@@ -9895,12 +9895,12 @@ const getStatIcon = getItemIcon;
             {/each}
           </div>
           <button 
-            class="w-8 shrink-0 flex items-center justify-center bg-[#141414] border-l border-[#1e1e1e] text-zinc-400 hover:text-white active:bg-[#0d0d0d] transition disabled:opacity-40"
+            class="w-8 shrink-0 flex items-center justify-center bg-app-surface-1 border-l border-app-outline-subtle text-app-fg-secondary hover:text-app-fg-primary active:bg-app-surface-0 transition disabled:opacity-40"
             onclick={goNextWeek}
             title="Next week"
             disabled={workoutState === 'active'}
           >
-            <ChevronRight class="size-3.5" />
+            <ChevronRight class="app-icon-small" />
           </button>
         </div>
       </div>
@@ -9932,17 +9932,17 @@ const getStatIcon = getItemIcon;
 
     <div class="track-view flex flex-col flex-1 min-h-0 overflow-hidden min-w-0">
     {#if isSelectedDayLogLoading}
-      <div class="flex flex-col items-center justify-center py-16 px-2 text-center text-zinc-500">
-        <RefreshCw class="size-5 animate-spin mb-3 opacity-70" aria-hidden="true" />
-        <div class="text-[10px] uppercase tracking-[2px]">Loading day…</div>
+      <div class="flex flex-col items-center justify-center py-16 px-2 text-center text-app-fg-muted">
+        <RefreshCw class="app-icon-nav animate-spin mb-3 opacity-70" aria-hidden="true" />
+        <div class="text-app-micro uppercase tracking-[2px]">Loading day…</div>
       </div>
     {:else if isSelectedDayLogError}
-      <div class="flex flex-col items-center justify-center py-16 px-2 text-center text-zinc-500 gap-3">
-        <CircleAlert class="size-5 opacity-70" aria-hidden="true" />
-        <div class="text-[10px] uppercase tracking-[2px]">Could not load this day</div>
+      <div class="flex flex-col items-center justify-center py-16 px-2 text-center text-app-fg-muted gap-3">
+        <CircleAlert class="app-icon-nav opacity-70" aria-hidden="true" />
+        <div class="text-app-micro uppercase tracking-[2px]">Could not load this day</div>
         <button
           type="button"
-          class="h-9 px-4 rounded-lg border border-[#2a2a2a] text-[10px] font-black tracking-[0.12em] text-zinc-300 hover:border-zinc-500 hover:text-white transition-colors"
+          class="h-9 px-4 rounded-lg border border-app-outline text-app-micro font-black tracking-[0.12em] text-app-fg-secondary-strong hover:border-zinc-500 hover:text-app-fg-primary transition-colors"
           onclick={retrySelectedDayLog}
         >
           RETRY
@@ -9952,46 +9952,42 @@ const getStatIcon = getItemIcon;
       <!-- UNLOGGED: past day with no saved log (incl. every day before account existed) -->
       <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
         <!-- Hero icon -->
-        <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
-          <FileX class="size-10 text-zinc-400" />
+        <div class="w-20 h-20 rounded-2xl bg-app-surface-1 border border-app-outline-subtle flex items-center justify-center transition-all duration-200 hover:border-app-outline">
+          <FileX class="size-10 text-app-fg-secondary" />
         </div>
 
         <div class="text-center">
-          <div class="text-3xl font-semibold tracking-[-0.02em] text-white">UNLOGGED</div>
-          <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">{unloggedHeroLine}</div>
-        </div>
-
-        <div class="app-hero-copy text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200">
-          Progress unlogged is progress lost.
+          <div class="text-3xl font-semibold tracking-[-0.02em] text-app-fg-primary">UNLOGGED</div>
+          <div class="text-app-micro uppercase tracking-[2px] text-app-fg-muted mt-1">{unloggedHeroLine}</div>
         </div>
 
         <!-- Week overview — tap to open routine editor -->
         <button
           type="button"
-          class="app-hero-panel rounded-xl border border-transparent p-1 -m-1 transition-all duration-150 hover:border-[#2a2a2a] hover:bg-[#141414]/50 cursor-pointer"
+          class="app-hero-panel rounded-xl border border-transparent p-1 -m-1 transition-all duration-150 hover:border-app-outline hover:bg-app-surface-1/50 cursor-pointer"
           onclick={() => enterRoutineBuilder({ fromWeeklyPlan: true })}
           title="Open routine editor"
         >
-          <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 mb-2 text-center pointer-events-none">{activeRoutineIsCycle ? 'CYCLE PLAN' : 'WEEKLY PLAN'}</div>
+          <div class="text-app-micro uppercase tracking-[1.5px] text-app-fg-muted mb-2 text-center pointer-events-none">{activeRoutineIsCycle ? 'CYCLE PLAN' : 'WEEKLY PLAN'}</div>
           <div class="grid grid-cols-7 gap-1 pointer-events-none">
             {#each weekPlan as d, i}
               {@const PlanIcon = getItemIcon(d.icon)}
               <div class="flex flex-col items-center gap-0.5 transition-all duration-150">
-                <div class="text-[10px] font-medium {i === TODAY_WEEKDAY ? 'text-white' : 'text-zinc-400'}">{d.day}</div>
+                <div class="text-app-micro font-medium {i === TODAY_WEEKDAY ? 'text-app-fg-primary' : 'text-app-fg-secondary'}">{d.day}</div>
                 <div
-                  class="w-full aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {d.color ? 'border' : 'bg-[#1e1e1e] border border-[#2a2a2a]'}"
+                  class="w-full aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {d.color ? 'border' : 'bg-app-surface-3 border border-app-outline'}"
                   style={d.color ? `background-color: color-mix(in srgb, ${d.color} 12%, #141414); border-color: ${d.color};` : ''}
                 >
                   {#if d.hasTemplate}
-                    <PlanIcon class="size-5" style={d.color ? `color: ${d.color}` : ''} strokeWidth={ITEM_ICON_STROKE} />
+                    <PlanIcon class="app-icon-nav" style={d.color ? `color: ${d.color}` : ''} strokeWidth={ITEM_ICON_STROKE} />
                   {:else}
-                    <Bed class="size-5 text-zinc-500" />
+                    <Bed class="app-icon-nav text-app-fg-muted" />
                   {/if}
                 </div>
               </div>
             {/each}
           </div>
-          <div class="text-center text-[10px] text-zinc-500 mt-2 pointer-events-none">
+          <div class="text-center text-app-micro text-app-fg-muted mt-2 pointer-events-none">
             {weekPlan.filter(d => d.hasTemplate).length} training • {weekPlan.filter(d => !d.hasTemplate).length} rest
           </div>
         </button>
@@ -10001,23 +9997,23 @@ const getStatIcon = getItemIcon;
       <div class="first-run-onboarding">
         <div class="first-run-onboarding__mark"><Dumbbell class="size-7" aria-hidden="true" /></div>
         <div class="first-run-onboarding__heading">
-          <p>START WHERE YOU ARE</p>
-          <h1>Build a routine that fits your life.</h1>
-          <span>Create a workout, choose your training days, and adjust anything later. No perfect plan required.</span>
+          <p>GETTING STARTED</p>
+          <h1>Create a routine</h1>
+          <span>Add workouts, choose training days, and edit the schedule at any time.</span>
         </div>
         <div class="first-run-steps" aria-label="Getting started">
-          <div class="first-run-step" style="--step-index: 0"><b>01</b><span><strong>Build a workout</strong><small>Choose movements and set targets.</small></span></div>
-          <div class="first-run-step" style="--step-index: 1"><b>02</b><span><strong>Choose your rhythm</strong><small>Set weekly days or a repeating cycle.</small></span></div>
-          <div class="first-run-step" style="--step-index: 2"><b>03</b><span><strong>Log as you go</strong><small>Change the plan whenever life does.</small></span></div>
+          <div class="first-run-step" style="--step-index: 0"><b>01</b><span><strong>Add a workout</strong><small>Choose exercises and set targets.</small></span></div>
+          <div class="first-run-step" style="--step-index: 1"><b>02</b><span><strong>Set a schedule</strong><small>Choose weekdays or a repeating cycle.</small></span></div>
+          <div class="first-run-step" style="--step-index: 2"><b>03</b><span><strong>Record sets</strong><small>Log reps or timed exercises.</small></span></div>
         </div>
 
         {#if templateError}
-          <p class="text-[11px] text-red-300 leading-snug" role="alert">{templateError}</p>
+          <p class="text-app-caption text-red-300 leading-snug" role="alert">{templateError}</p>
         {/if}
         {#if !activeRoutineId}
         <button 
           type="button"
-          class="first-run-onboarding__cta app-primary-cta rounded-xl font-sans font-black text-[11px] tracking-[0.12em] bg-white text-black border-2 border-transparent transition-all duration-150 hover:brightness-110 disabled:opacity-50 flex items-center justify-center"
+          class="first-run-onboarding__cta app-primary-cta rounded-xl font-sans font-black text-app-caption tracking-[0.12em] bg-white text-black border-2 border-transparent transition-all duration-150 hover:brightness-110 disabled:opacity-50 flex items-center justify-center"
           disabled={!currentUser}
           onclick={() => {
             if (workoutState === 'active') return;
@@ -10033,7 +10029,7 @@ const getStatIcon = getItemIcon;
             refreshRoutinesPreload();
             void ensureActiveRoutineId();
           }}>
-          SET UP MY ROUTINE
+          CREATE ROUTINE
         </button>
         {/if}
         <p class="first-run-onboarding__note">About 5 minutes · editable anytime</p>
@@ -10042,54 +10038,50 @@ const getStatIcon = getItemIcon;
       <!-- REST DAY: scheduled rest or logged rest — never when a real workout log exists -->
       <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
         <!-- Hero icon -->
-        <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a] {isFuture && !isRestLog ? 'opacity-80' : ''}">
-          <Bed class="size-10 text-zinc-500" />
+        <div class="w-20 h-20 rounded-2xl bg-app-surface-1 border border-app-outline-subtle flex items-center justify-center transition-all duration-200 hover:border-app-outline {isFuture && !isRestLog ? 'opacity-80' : ''}">
+          <Bed class="size-10 text-app-fg-muted" />
         </div>
 
         <div class="text-center {isFuture && !isRestLog ? 'opacity-80' : ''}">
-          <div class="text-3xl font-semibold tracking-[-0.02em] text-white">REST DAY</div>
-          <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">
+          <div class="text-3xl font-semibold tracking-[-0.02em] text-app-fg-primary">REST DAY</div>
+          <div class="text-app-micro uppercase tracking-[2px] text-app-fg-muted mt-1">
             {restSubText}
           </div>
-        </div>
-
-        <div class="app-hero-copy text-center text-sm text-zinc-400 leading-snug hover:text-zinc-300 transition-colors duration-200 {isFuture && !isRestLog ? 'opacity-80' : ''}">
-          Recovery is where the gains happen. 
         </div>
 
         <!-- Week overview — tap to open routine editor (shown on rest days too for schedule context) -->
         <button
           type="button"
-          class="app-hero-panel rounded-xl border border-transparent p-1 -m-1 transition-all duration-150 hover:border-[#2a2a2a] hover:bg-[#141414]/50 cursor-pointer"
+          class="app-hero-panel rounded-xl border border-transparent p-1 -m-1 transition-all duration-150 hover:border-app-outline hover:bg-app-surface-1/50 cursor-pointer"
           onclick={() => enterRoutineBuilder({ fromWeeklyPlan: true })}
           title="Open routine editor"
         >
-          <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 mb-2 text-center pointer-events-none">{activeRoutineIsCycle ? 'CYCLE PLAN' : 'WEEKLY PLAN'}</div>
+          <div class="text-app-micro uppercase tracking-[1.5px] text-app-fg-muted mb-2 text-center pointer-events-none">{activeRoutineIsCycle ? 'CYCLE PLAN' : 'WEEKLY PLAN'}</div>
           <div class="grid grid-cols-7 gap-1 pointer-events-none">
             {#each weekPlan as d, i}
               {@const PlanIcon = getItemIcon(d.icon)}
               <div class="flex flex-col items-center gap-0.5 transition-all duration-150">
-                <div class="text-[10px] font-medium {i === TODAY_WEEKDAY ? 'text-white' : 'text-zinc-400'}">{d.day}</div>
+                <div class="text-app-micro font-medium {i === TODAY_WEEKDAY ? 'text-app-fg-primary' : 'text-app-fg-secondary'}">{d.day}</div>
                 <div
-                  class="w-full aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {d.color ? 'border' : 'bg-[#1e1e1e] border border-[#2a2a2a]'}"
+                  class="w-full aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {d.color ? 'border' : 'bg-app-surface-3 border border-app-outline'}"
                   style={d.color ? `background-color: color-mix(in srgb, ${d.color} 12%, #141414); border-color: ${d.color};` : ''}
                 >
                   {#if d.hasTemplate}
-                    <PlanIcon class="size-5" style={d.color ? `color: ${d.color}` : ''} strokeWidth={ITEM_ICON_STROKE} />
+                    <PlanIcon class="app-icon-nav" style={d.color ? `color: ${d.color}` : ''} strokeWidth={ITEM_ICON_STROKE} />
                   {:else}
-                    <Bed class="size-5 text-zinc-500" />
+                    <Bed class="app-icon-nav text-app-fg-muted" />
                   {/if}
                 </div>
               </div>
             {/each}
           </div>
-          <div class="text-center text-[10px] text-zinc-500 mt-2 pointer-events-none">
+          <div class="text-center text-app-micro text-app-fg-muted mt-2 pointer-events-none">
             {weekPlan.filter(d => d.hasTemplate).length} training • {weekPlan.filter(d => !d.hasTemplate).length} rest
           </div>
         </button>
 
         {#if isLoggedRest}
-          <div class="text-[10px] text-center text-zinc-500">This day was logged as a rest day. <button class="text-red-400 hover:text-red-500 underline" onclick={() => undoRestLog(selectedDateStr)}>undo</button></div>
+          <div class="text-app-micro text-center text-app-fg-muted">This day was logged as a rest day. <button class="text-red-400 hover:text-red-500 underline" onclick={() => undoRestLog(selectedDateStr)}>undo</button></div>
         {/if}
       </div>
     {:else}
@@ -10136,7 +10128,7 @@ const getStatIcon = getItemIcon;
       <div class="track-workout-shell app-stack-gap flex flex-col flex-1 min-h-0 overflow-hidden">
       <div class="track-workout-header app-stack-gap shrink-0 flex flex-col">
       {#if templateSaveError}
-        <p class="text-[10px] text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{templateSaveError}</p>
+        <p class="text-app-micro text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{templateSaveError}</p>
       {/if}
       <div
         class="tpl-header status-surface status-surface--prompt rounded-lg px-3 py-1 flex flex-col gap-0.5 {headerSurfaceStatus === 'green'
@@ -10148,7 +10140,7 @@ const getStatIcon = getItemIcon;
               : 'status-surface--neutral'} {isFuture ? 'opacity-80' : ''}"
       >
         <div class="text-center leading-none">
-          <div class="workout-label-row text-xs uppercase tracking-[1.5px] {headerSkipped ? 'w-fg-skipped' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-zinc-500'}">
+          <div class="workout-label-row text-xs uppercase tracking-[1.5px] {headerSkipped ? 'w-fg-skipped' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-app-fg-muted'}">
             <span class="workout-label-text">{workoutLabel}</span>
             <span
               class="workout-tick-slot"
@@ -10172,10 +10164,10 @@ const getStatIcon = getItemIcon;
               {#if showHeaderEditActions}
                 <button
                   type="button"
-                  class="w-10 h-10 rounded-md shrink-0 flex items-center justify-center border bg-transparent self-center hover:bg-[#1a1a1a] hover:text-white {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'}"
+                  class="w-10 h-10 rounded-md shrink-0 flex items-center justify-center border bg-transparent self-center hover:bg-app-surface-2 hover:text-app-fg-primary {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-app-outline-subtle text-app-fg-muted'}"
                   onclick={() => enterRoutineBuilder()}
                   title="Routine editor"
-                ><CalendarDays class="size-5" /></button>
+                ><CalendarDays class="app-icon-nav" /></button>
               {/if}
               {#if showHeaderTimers}
                 <span
@@ -10185,7 +10177,7 @@ const getStatIcon = getItemIcon;
               {/if}
             </div>
             <div class="tpl-name-stack inline-flex flex-col items-stretch min-w-0 max-w-full gap-[3px]">
-              <span class="tpl-name min-w-0 text-xl font-semibold tracking-tight leading-none text-center {headerSkipped ? 'w-fg-skipped' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-white'}">[ {dispTemplate?.name || 'Workout'} ]</span>
+              <span class="tpl-name min-w-0 text-xl font-semibold tracking-tight leading-none text-center {headerSkipped ? 'w-fg-skipped' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-app-fg-primary'}">[ {dispTemplate?.name || 'Workout'} ]</span>
               {#if dispTemplate}
                 <div
                   class="tpl-name-color-segs flex gap-[1px] h-[3px] w-full shrink-0"
@@ -10211,10 +10203,10 @@ const getStatIcon = getItemIcon;
               {#if showHeaderEditActions}
                 <button
                   type="button"
-                  class="w-10 h-10 rounded-md shrink-0 flex items-center justify-center border bg-transparent self-center hover:bg-[#1a1a1a] hover:text-white {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-[#1e1e1e] text-zinc-500'}"
+                  class="w-10 h-10 rounded-md shrink-0 flex items-center justify-center border bg-transparent self-center hover:bg-app-surface-2 hover:text-app-fg-primary {headerSurfaceStatus === 'green' ? 'w-hdr-icon-green' : headerSurfaceStatus === 'yellow' ? 'w-hdr-icon-yellow' : headerSurfaceStatus === 'skipped' ? 'w-hdr-icon-skipped' : 'border-app-outline-subtle text-app-fg-muted'}"
                   onclick={() => openTemplateEditor()}
                   title="Edit Exercises"
-                ><Pencil class="size-5" /></button>
+                ><Pencil class="app-icon-nav" /></button>
               {/if}
             </div>
           </div>
@@ -10222,9 +10214,9 @@ const getStatIcon = getItemIcon;
             {#if !useHistorical && isUntouchedDay}
               <span class="untouched-badge">UNTOUCHED</span>
             {:else if !useHistorical && isPerfectDay}
-              <span class="perfect-day-badge">PERFECT DAY</span>
+              <span class="perfect-day-badge">TARGETS MET</span>
             {:else}
-              <div class="tpl-header-meta text-xs uppercase tracking-wide leading-none {headerSkipped ? 'w-fg-skipped-muted' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-zinc-500'}">
+              <div class="tpl-header-meta text-xs uppercase tracking-wide leading-none {headerSkipped ? 'w-fg-skipped-muted' : headerSurfaceStatus === 'green' ? 'w-fg-green' : headerSurfaceStatus === 'yellow' ? 'w-fg-yellow' : 'text-app-fg-muted'}">
                 {exCount} EXERCISES • {setCount} SETS{estTime ? ` • ~${estTime}` : ''}
               </div>
             {/if}
@@ -10286,11 +10278,11 @@ const getStatIcon = getItemIcon;
             Array.isArray((dispTemplate as any)?.superset_with_next) &&
             ((dispTemplate as any).superset_with_next as string[]).includes(exercise.id)}
           <div
-            class="track-ex-row p-3 flex gap-1 min-w-0 status-surface status-surface--row {exSurfaceClass} {(hasActiveRestThis || isFadingToRestThis) ? '!bg-orange-900 text-orange-200' : ''} {hasActiveRestElsewhere ? 'opacity-70' : ''} {isFadingToRestThis ? 'transition-colors duration-1000' : ''} {workoutExercisesEditable ? 'hover:brightness-110' : ''} {index > 0 ? (exRed ? 'border-t border-[color:var(--w-skipped-border)]' : 'border-t border-[#1e1e1e]') : ''}"
+            class="track-ex-row p-3 flex gap-1 min-w-0 status-surface status-surface--row {exSurfaceClass} {(hasActiveRestThis || isFadingToRestThis) ? '!bg-orange-900 text-orange-200' : ''} {hasActiveRestElsewhere ? 'opacity-70' : ''} {isFadingToRestThis ? 'transition-colors duration-1000' : ''} {workoutExercisesEditable ? 'hover:brightness-110' : ''} {index > 0 ? (exRed ? 'border-t border-[color:var(--w-skipped-border)]' : 'border-t border-app-outline-subtle') : ''}"
           >
             <!-- list number on left: boxed, vertically centered in strip, slightly larger -->
             <div
-              class={`exercise-index w-6 flex-shrink-0 flex items-center justify-center rounded-sm text-[10px] font-medium status-surface ${exSurfaceClass} ${(hasActiveRestThis || isFadingToRestThis) ? (isFadingToRestThis ? 'transition-colors duration-1000 ' : '') + '!bg-orange-800 text-orange-400' : ''} ${exRed ? 'text-current' : 'text-zinc-400'}`}
+              class={`exercise-index w-6 flex-shrink-0 flex items-center justify-center rounded-sm text-app-micro font-medium status-surface ${exSurfaceClass} ${(hasActiveRestThis || isFadingToRestThis) ? (isFadingToRestThis ? 'transition-colors duration-1000 ' : '') + '!bg-orange-800 text-orange-400' : ''} ${exRed ? 'text-current' : 'text-app-fg-secondary'}`}
             >
               {index + 1}
             </div>
@@ -10299,12 +10291,12 @@ const getStatIcon = getItemIcon;
               <div class="flex-1 pr-2 min-w-0">
                 <div class="ex-name-row {workoutExercisesEditable ? 'hover:brightness-110' : ''}">
                   {#if exercise.exercise_type === 'reps'}
-                    <Dumbbell class="size-3.5 shrink-0 transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-zinc-500'}" />
+                    <Dumbbell class="app-icon-small shrink-0 transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-app-fg-muted'}" />
                   {:else}
-                    <Timer class="size-3.5 shrink-0 transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-zinc-500'}" />
+                    <Timer class="app-icon-small shrink-0 transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-app-fg-muted'}" />
                   {/if}
                   <div class="flex items-center min-w-0 flex-1 gap-1">
-                    <span class="ex-name text-sm font-medium tracking-wide truncate transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-white'}">{exercise.name}</span>
+                    <span class="ex-name text-sm font-medium tracking-wide truncate transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'text-current' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-500' : 'text-app-fg-primary'}">{exercise.name}</span>
                     {#if showUntouchedBadge(exercise)}
                       <span class="untouched-badge">UNTOUCHED</span>
                     {:else if showPrBadge(exercise, loggedEx)}
@@ -10317,7 +10309,7 @@ const getStatIcon = getItemIcon;
                     {/if}
                   </div>
                 </div>
-                <div class="ex-meta text-xs mt-0.5 tracking-wide transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'w-fg-skipped-muted' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-400' : 'text-zinc-400'}">
+                <div class="ex-meta text-xs mt-0.5 tracking-wide transition-colors {isFadingToRestThis ? 'duration-1000' : ''} {exRed ? 'w-fg-skipped-muted' : (hasActiveRestThis || isFadingToRestThis) ? 'text-orange-400' : 'text-app-fg-secondary'}">
                   {#if exercise.exercise_type === 'reps'}
                     {exercise.target_sets}×{exercise.target_reps} @{displayCurrentWeight ?? '—'}kg +{displayIncrementKg}kg
                   {:else}
@@ -10332,11 +10324,11 @@ const getStatIcon = getItemIcon;
                 </div>
               {:else if !isTimeEx}
                 {#if displayCurrentWeight !== null}
-                  <div class="weight-num font-7segment text-2xl leading-none {exRed ? 'text-current' : 'text-white'}">{displayCurrentWeight}<span class="unit text-[10px] font-sans font-normal ml-1 tracking-[1px] {exRed ? 'w-fg-skipped-muted' : 'text-zinc-400'}">KG</span></div>
+                  <div class="weight-num font-7segment text-2xl leading-none {exRed ? 'text-current' : 'text-app-fg-primary'}">{displayCurrentWeight}<span class="unit text-app-micro font-sans font-normal ml-1 tracking-[1px] {exRed ? 'w-fg-skipped-muted' : 'text-app-fg-secondary'}">KG</span></div>
                 {:else}
                   <!-- Narrow baseline input (fits ~3 digits) in the KG position, right-aligned -->
                   <div class="flex items-baseline justify-end">
-                    <input type="text" inputmode="decimal" autocomplete="off" placeholder="80" class="prop-num-input font-7segment text-2xl leading-none text-white bg-transparent border-none outline-none w-12 text-right"
+                    <input type="text" inputmode="decimal" autocomplete="off" placeholder="80" class="prop-num-input font-7segment text-2xl leading-none text-app-fg-primary bg-transparent border-none outline-none w-12 text-right"
                       disabled={!workoutExercisesEditable || hasActiveRestElsewhere}
                       use:clampedNumericProp={{
                         kind: 'baseKg',
@@ -10348,7 +10340,7 @@ const getStatIcon = getItemIcon;
                         const { value } = clampBaseKgFieldInput(input.value);
                         saveExerciseBaselineOptimistic(exercise.id, value);
                       }} />
-                    <span class="unit text-[10px] text-zinc-400 font-normal ml-1 tracking-[1px]">KG</span>
+                    <span class="unit text-app-micro text-app-fg-secondary font-normal ml-1 tracking-[1px]">KG</span>
                   </div>
                 {/if}
               {:else if isTimeEx}
@@ -10360,7 +10352,7 @@ const getStatIcon = getItemIcon;
                       ? elapsed - timeTotal
                       : timeTotal - elapsed
                     : timeTotal}
-                <div class="time-readout font-7segment text-2xl {hasActiveTimerThis && isOvertime ? 'w-fg-green' : exRed ? 'text-current' : 'text-white'}">
+                <div class="time-readout font-7segment text-2xl {hasActiveTimerThis && isOvertime ? 'w-fg-green' : exRed ? 'text-current' : 'text-app-fg-primary'}">
                   {#if hasActiveTimerThis && isOvertime}
                     <Plus class="time-readout-plus fill-current" strokeWidth={2.5} />
                   {/if}
@@ -10423,7 +10415,7 @@ const getStatIcon = getItemIcon;
                         {@const isFutureLocked = isFutureSetLockedByOrder(exercise.id, s, false)}
                         {@const canLogThisSet = isSetUnlockedForLogging(exercise.id, s, false)}
                         <div
-                          class="set-bubble relative h-9 rounded-md flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
+                          class="set-bubble relative h-9 rounded-md flex flex-col items-center justify-center overflow-hidden text-app-micro status-surface
                             {setBubbleSkipped
                               ? 'set-bubble--empty status-surface--skipped'
                               : bubbleStatus === 'empty'
@@ -10443,19 +10435,19 @@ const getStatIcon = getItemIcon;
 
                           {#if isFutureLocked}
                             <div class="relative z-10 w-full h-full flex items-center justify-center" aria-label="Locked - log previous sets first">
-                              <Lock class="size-3.5 text-zinc-500" />
+                              <Lock class="app-icon-small text-app-fg-muted" />
                             </div>
                           {:else if hasActiveRestElsewhere}
                             <div class="relative z-10 w-full h-full flex items-center justify-center" aria-label="Locked during rest on another exercise">
-                              <Lock class="size-3.5 text-zinc-500" />
+                              <Lock class="app-icon-small text-app-fg-muted" />
                             </div>
                           {:else if setUnrecorded}
                             <div class="set-bubble-unrecorded relative z-10 w-full h-full flex items-center justify-center" aria-label="Set not recorded">
-                              <X class="size-3.5 shrink-0 opacity-90" strokeWidth={2.5} />
+                              <X class="app-icon-small shrink-0 opacity-90" strokeWidth={2.5} />
                             </div>
                           {:else if isEditingThisSet}
                             <input type="text" inputmode="numeric" autocomplete="off" id="input-{exercise.id}-{s}" placeholder={exercise.target_reps.toString()}
-                              class="prop-num-input absolute inset-0 z-10 w-full h-full bg-transparent border-none outline-none text-center font-sans text-[10px] font-medium text-white"
+                              class="prop-num-input absolute inset-0 z-10 w-full h-full bg-transparent border-none outline-none text-center font-sans text-app-micro font-medium text-app-fg-primary"
                               use:clampedNumericProp={{
                                 kind: 'trackedReps',
                                 getValue: () => repsValue ?? 0,
@@ -10466,7 +10458,7 @@ const getStatIcon = getItemIcon;
                           {:else}
                             <button
                               type="button"
-                              class="relative z-10 w-full h-full flex flex-col items-center justify-center bg-transparent border-none p-0 text-zinc-400 font-sans {hasActiveRestElsewhere || !canLogThisSet ? '' : 'hover:brightness-110'} select-none"
+                              class="relative z-10 w-full h-full flex flex-col items-center justify-center bg-transparent border-none p-0 text-app-fg-secondary font-sans {hasActiveRestElsewhere || !canLogThisSet ? '' : 'hover:brightness-110'} select-none"
                               aria-label={`Set ${s + 1}: ${repsValue ?? 'not logged'} reps. Hold to log ${exercise.target_reps}; release to edit.`}
                               onpointerdown={(e) => {
                                 if (e.pointerType === 'touch') {
@@ -10489,8 +10481,8 @@ const getStatIcon = getItemIcon;
                               onblur={cancelRepSetHold}
                               disabled={!workoutExercisesEditable || hasActiveRestElsewhere || !canLogThisSet}
                             >
-                              <span class="sl text-[8px] tracking-wider opacity-60 block leading-none text-zinc-400">S{s + 1}</span>
-                              <span class="sv text-[11px] font-medium block text-current leading-none tabular-nums">{repsValue !== undefined ? repsValue : '—'}</span>
+                              <span class="sl text-app-micro tracking-wider opacity-60 block leading-none text-app-fg-secondary">S{s + 1}</span>
+                              <span class="sv text-app-caption font-medium block text-current leading-none tabular-nums">{repsValue !== undefined ? repsValue : '—'}</span>
                             </button>
                           {/if}
                         </div>
@@ -10527,7 +10519,7 @@ const getStatIcon = getItemIcon;
                             onclick={toggleExerciseTimer}
                             aria-label={countdownRunning ? 'Pause timer' : 'Resume timer'}
                           >
-                            {#if countdownRunning}<Pause class="size-4 fill-current" />{:else}<Play class="size-4 fill-current" />{/if}
+                            {#if countdownRunning}<Pause class="app-icon-control fill-current" />{:else}<Play class="app-icon-control fill-current" />{/if}
                           </button>
                           <button
                             type="button"
@@ -10535,7 +10527,7 @@ const getStatIcon = getItemIcon;
                             aria-label="Stop and save set"
                             onclick={() => stopAndSaveTimedSet(exercise.id, s, timeTotal)}
                           >
-                            <Square class="size-4 fill-current" />
+                            <Square class="app-icon-control fill-current" />
                           </button>
                         </div>
                       </div>
@@ -10559,7 +10551,7 @@ const getStatIcon = getItemIcon;
                           {@const isFutureLocked = isFutureSetLockedByOrder(exercise.id, s, true)}
                           {@const canLogThisSet = isSetUnlockedForLogging(exercise.id, s, true)}
                           <div
-                            class="set-bubble relative h-9 rounded-md flex flex-col items-center justify-center overflow-hidden text-[10px] status-surface
+                            class="set-bubble relative h-9 rounded-md flex flex-col items-center justify-center overflow-hidden text-app-micro status-surface
                               {setBubbleSkipped
                                 ? 'set-bubble--empty status-surface--skipped'
                                 : bubbleStatus === 'empty'
@@ -10571,25 +10563,25 @@ const getStatIcon = getItemIcon;
                           >
                             {#if isFutureLocked}
                               <div class="relative z-10 w-full h-full flex items-center justify-center" aria-label="Locked - log previous sets first">
-                                <Lock class="size-3.5 text-zinc-500" />
+                                <Lock class="app-icon-small text-app-fg-muted" />
                               </div>
                             {:else if hasActiveRestElsewhere}
                               <div class="relative z-10 w-full h-full flex items-center justify-center" aria-label="Locked during rest on another exercise">
-                                <Lock class="size-3.5 text-zinc-500" />
+                                <Lock class="app-icon-small text-app-fg-muted" />
                               </div>
                             {:else if setUnrecorded}
                               <div class="set-bubble-unrecorded relative z-10 w-full h-full flex items-center justify-center" aria-label="Set not recorded">
-                                <X class="size-3.5 shrink-0 opacity-90" strokeWidth={2.5} />
+                                <X class="app-icon-small shrink-0 opacity-90" strokeWidth={2.5} />
                               </div>
                             {:else}
                               <button
                                 type="button"
-                                class="relative z-10 w-full h-full flex flex-col items-center justify-center bg-transparent border-none p-0 font-sans {workoutExercisesEditable && !hasActiveRestElsewhere && canLogThisSet ? 'hover:brightness-110' : ''} {exRed ? 'text-current' : 'text-white'}"
+                                class="relative z-10 w-full h-full flex flex-col items-center justify-center bg-transparent border-none p-0 font-sans {workoutExercisesEditable && !hasActiveRestElsewhere && canLogThisSet ? 'hover:brightness-110' : ''} {exRed ? 'text-current' : 'text-app-fg-primary'}"
                                 onclick={() => activateOrSwitchTimeSet(exercise.id, s)}
                                 disabled={!workoutExercisesEditable || hasActiveRestElsewhere || !canLogThisSet}
                               >
-                                <span class="sl text-[8px] tracking-wider opacity-60 block leading-none text-zinc-400">S{s + 1}</span>
-                                <span class="sv text-[11px] font-medium block text-current leading-none tabular-nums">{saved ? saved.result : '—'}</span>
+                                <span class="sl text-app-micro tracking-wider opacity-60 block leading-none text-app-fg-secondary">S{s + 1}</span>
+                                <span class="sv text-app-caption font-medium block text-current leading-none tabular-nums">{saved ? saved.result : '—'}</span>
                               </button>
                             {/if}
                           </div>
@@ -10635,7 +10627,7 @@ const getStatIcon = getItemIcon;
                           aria-label="Stop rest"
                           onclick={() => stopRestTimer()}
                         >
-                          <Square class="size-4 fill-current" />
+                          <Square class="app-icon-control fill-current" />
                         </button>
                       </div>
                     </div>
@@ -10655,29 +10647,29 @@ const getStatIcon = getItemIcon;
 
   {:else if currentView === 'swap_template'}
     <!-- Routine editor: assign templates to full SMTWTFS week -->
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
-      <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
+    <div class="bg-app-surface-1 border border-app-outline-subtle rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
+      <div class="flex items-center gap-2 border-b border-app-outline-subtle pb-2 min-h-8">
         <button
           type="button"
-          class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
+          class="w-8 h-8 shrink-0 rounded-lg border border-app-outline-subtle bg-transparent text-app-fg-primary flex items-center justify-center"
           title="Go back"
           onclick={() => void exitRoutineEditor()}
           disabled={editorExitSaving}
         >
-          <ArrowLeft class="size-4" />
+          <ArrowLeft class="app-icon-control" />
         </button>
         <div class="flex-1 min-w-0 flex items-center">
           <span
-            class="w-full h-8 flex items-center justify-center px-2 rounded border border-[#2a2a2a] bg-black text-xs font-medium truncate leading-none text-center text-white"
+            class="w-full h-8 flex items-center justify-center px-2 rounded-md border border-app-outline bg-app-canvas text-xs font-medium truncate leading-none text-center text-app-fg-primary"
           >{activeRoutineName}</span>
         </div>
         <button
           type="button"
-          class="h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-zinc-400 hover:text-white hover:bg-[#1a1a1a] flex items-center justify-center gap-1.5 px-2.5 transition-colors text-[10px] font-bold tracking-[1px]"
+          class="h-8 shrink-0 rounded-lg border border-app-outline-subtle bg-transparent text-app-fg-secondary hover:text-app-fg-primary hover:bg-app-surface-2 flex items-center justify-center gap-1.5 px-2.5 transition-colors text-app-micro font-bold tracking-[1px]"
           title="My Routines"
           onclick={() => openRoutinesMenu()}
         >
-          <List class="size-3.5 shrink-0" />
+          <List class="app-icon-small shrink-0" />
           <span class="shrink-0">MY ROUTINES</span>
         </button>
       </div>
@@ -10687,7 +10679,7 @@ const getStatIcon = getItemIcon;
           : 'justify-center'}"
       >
         <span
-          class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none shrink-0 {activeRoutineIsReadonly
+          class="text-app-micro uppercase tracking-[2px] text-app-fg-muted leading-none shrink-0 {activeRoutineIsReadonly
             ? 'text-left'
             : 'text-center'}"
         >
@@ -10698,9 +10690,9 @@ const getStatIcon = getItemIcon;
           {/if}
         </span>
         {#if activeRoutineIsReadonly}
-          <span class="min-w-0 max-w-[70%] truncate inline-flex items-center justify-end gap-1 text-[10px] font-normal uppercase tracking-wide leading-none px-2 py-1.5 rounded border border-emerald-900/50 bg-emerald-950/40 text-emerald-300/90">
+          <span class="min-w-0 max-w-[70%] truncate inline-flex items-center justify-end gap-1 text-app-micro font-normal uppercase tracking-wide leading-none px-2 py-1.5 rounded-md border border-emerald-900/50 bg-emerald-950/40 text-emerald-300/90">
             <span class="truncate">ROUTINE IS A BOOKMARK</span>
-            <Bookmark class="size-3.5 shrink-0 text-emerald-400" fill="currentColor" strokeWidth={2} />
+            <Bookmark class="app-icon-small shrink-0 text-emerald-400" fill="currentColor" strokeWidth={2} />
             <span class="shrink-0">(READ ONLY)</span>
             {#if activeBookmarkedOwner}
               <span class="font-normal normal-case tracking-normal text-emerald-400/75 truncate">from @{activeBookmarkedOwner}</span>
@@ -10711,27 +10703,27 @@ const getStatIcon = getItemIcon;
 
       {#if !activeRoutineIsReadonly}
         <div
-          class="relative grid grid-cols-2 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
+          class="relative grid grid-cols-2 rounded-md border border-app-outline-subtle bg-app-canvas p-0.5"
           role="group"
           aria-label="Routine schedule mode"
         >
           <div
-            class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+            class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded-md bg-white transition-transform duration-200 ease-out"
             style="transform: translateX({builderScheduleMode === 'cycle' ? 'calc(100% + 4px)' : '0'})"
           ></div>
           <button
             type="button"
-            class="relative z-10 h-7 flex items-center justify-center gap-1 text-[9px] font-black tracking-[0.12em] transition-colors {builderScheduleMode === 'weekly' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+            class="relative z-10 h-7 flex items-center justify-center gap-1 text-app-micro font-black tracking-[0.12em] transition-colors {builderScheduleMode === 'weekly' ? 'text-black' : 'text-app-fg-muted hover:text-app-fg-secondary-strong'}"
             onclick={() => setBuilderScheduleMode('weekly')}
           >
-            <CalendarDays class="size-3" /> WEEKLY
+            <CalendarDays class="app-icon-small" /> WEEKLY
           </button>
           <button
             type="button"
-            class="relative z-10 h-7 flex items-center justify-center gap-1 text-[9px] font-black tracking-[0.12em] transition-colors {builderScheduleMode === 'cycle' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+            class="relative z-10 h-7 flex items-center justify-center gap-1 text-app-micro font-black tracking-[0.12em] transition-colors {builderScheduleMode === 'cycle' ? 'text-black' : 'text-app-fg-muted hover:text-app-fg-secondary-strong'}"
             onclick={() => setBuilderScheduleMode('cycle')}
           >
-            <Repeat class="size-3" /> CYCLE
+            <Repeat class="app-icon-small" /> CYCLE
           </button>
         </div>
       {/if}
@@ -10752,17 +10744,17 @@ const getStatIcon = getItemIcon;
                 onclick={() => { builderEditingDay = i; }}
                 aria-label={`Cycle day ${i + 1}`}
               >
-                <div class="text-[9px] font-medium leading-none flex items-center gap-0.5 {isDaySelected ? 'text-white' : isCycleToday ? 'text-emerald-400' : 'text-zinc-500'}">
+                <div class="text-app-micro font-medium leading-none flex items-center gap-0.5 {isDaySelected ? 'text-app-fg-primary' : isCycleToday ? 'text-emerald-400' : 'text-app-fg-muted'}">
                   D{i + 1}{#if isCycleToday}<span class="size-1 rounded-full bg-emerald-400"></span>{/if}
                 </div>
                 <div
-                  class="w-10 aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {isDaySelected ? (dayColor ? '' : 'bg-white') : (dayColor ? '' : 'border border-[#2a2a2a] hover:border-[#3a3a3a]')} {isDaySelected ? '' : 'scale-90'}"
+                  class="w-10 aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {isDaySelected ? (dayColor ? '' : 'bg-white') : (dayColor ? '' : 'border border-app-outline hover:border-app-outline-strong')} {isDaySelected ? '' : 'scale-90'}"
                   style={dayColor ? `background-color: ${dayColor};` : isDaySelected ? 'background-color: white;' : ''}
                 >
                   {#if dayAssignedId}
-                    <DayIcon class={isDaySelected ? 'size-5' : 'size-4'} strokeWidth={ITEM_ICON_STROKE} style={isDaySelected && dayColor ? 'color: color-mix(in srgb, ' + dayColor + ' 20%, black)' : 'color: black'} />
+                    <DayIcon class={isDaySelected ? 'app-icon-nav' : 'app-icon-control'} strokeWidth={ITEM_ICON_STROKE} style={isDaySelected && dayColor ? 'color: color-mix(in srgb, ' + dayColor + ' 20%, black)' : 'color: black'} />
                   {:else}
-                    <Bed class={isDaySelected ? 'size-5 text-black' : 'size-4 text-zinc-500'} />
+                    <Bed class={isDaySelected ? 'app-icon-nav text-black' : 'app-icon-control text-app-fg-muted'} />
                   {/if}
                 </div>
               </button>
@@ -10770,32 +10762,32 @@ const getStatIcon = getItemIcon;
           </div>
           <div class="flex items-center justify-between gap-2">
             <div class="flex items-center gap-1">
-              <span class="text-[9px] uppercase tracking-[1.5px] text-zinc-500">Cycle</span>
+              <span class="text-app-micro uppercase tracking-[1.5px] text-app-fg-muted">Cycle</span>
               <button
                 type="button"
-                class="size-6 rounded border border-[#2a2a2a] text-zinc-300 flex items-center justify-center disabled:opacity-30"
+                class="app-icon-display rounded-md border border-app-outline text-app-fg-secondary-strong flex items-center justify-center disabled:opacity-30"
                 disabled={activeRoutineIsReadonly || builderCycleLength <= 1}
                 onclick={() => setBuilderCycleLength(builderCycleLength - 1)}
                 aria-label="Remove cycle day"
               >
-                <Minus class="size-3" />
+                <Minus class="app-icon-small" />
               </button>
-              <span class="min-w-12 text-center text-[10px] text-white tabular-nums">{builderCycleLength} days</span>
+              <span class="min-w-12 text-center text-app-micro text-app-fg-primary tabular-nums">{builderCycleLength} days</span>
               <button
                 type="button"
-                class="size-6 rounded border border-[#2a2a2a] text-zinc-300 flex items-center justify-center disabled:opacity-30"
+                class="app-icon-display rounded-md border border-app-outline text-app-fg-secondary-strong flex items-center justify-center disabled:opacity-30"
                 disabled={activeRoutineIsReadonly || builderCycleLength >= MAX_CYCLE_LENGTH}
                 onclick={() => setBuilderCycleLength(builderCycleLength + 1)}
                 aria-label="Add cycle day"
               >
-                <Plus class="size-3" />
+                <Plus class="app-icon-small" />
               </button>
             </div>
             <label class="flex items-center gap-1.5 min-w-0">
-              <span class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 shrink-0">Start</span>
+              <span class="text-app-micro uppercase tracking-[1.5px] text-app-fg-muted shrink-0">Start</span>
               <input
                 type="date"
-                class="h-7 min-w-0 rounded border border-[#2a2a2a] bg-black px-1.5 text-[10px] text-white outline-none focus:border-zinc-500"
+                class="h-7 min-w-0 rounded-md border border-app-outline bg-app-canvas px-1.5 text-app-micro text-app-fg-primary outline-none focus:border-zinc-500"
                 value={builderCycleAnchor}
                 disabled={activeRoutineIsReadonly}
                 onchange={(e) => setBuilderCycleAnchor((e.currentTarget as HTMLInputElement).value)}
@@ -10803,11 +10795,11 @@ const getStatIcon = getItemIcon;
             </label>
           </div>
           {#if builderCycleError}
-            <p class="text-[9px] text-red-400 leading-snug">{builderCycleError}</p>
+            <p class="text-app-micro text-red-400 leading-snug">{builderCycleError}</p>
           {:else if builderCycleSaving}
-            <p class="text-[9px] text-zinc-500 leading-snug">Saving cycle…</p>
+            <p class="text-app-micro text-app-fg-muted leading-snug">Saving cycle…</p>
           {:else}
-            <p class="text-[9px] text-zinc-600 leading-snug">Repeats forever from the start date; rest days included.</p>
+            <p class="text-app-micro text-app-fg-disabled leading-snug">Repeats forever from the start date; rest days included.</p>
           {/if}
         </div>
       {:else}
@@ -10825,15 +10817,15 @@ const getStatIcon = getItemIcon;
             class="flex flex-col items-center gap-0.5 transition-all duration-150"
             onclick={() => { builderEditingDay = i; }}
           >
-            <div class="text-[10px] font-medium leading-none {isDaySelected ? 'text-white' : 'text-zinc-400'}">{d}</div>
+            <div class="text-app-micro font-medium leading-none {isDaySelected ? 'text-app-fg-primary' : 'text-app-fg-secondary'}">{d}</div>
             <div
-              class="w-full aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {isDaySelected ? (dayColor ? '' : 'bg-white') : (dayColor ? '' : 'border border-[#2a2a2a] hover:border-[#3a3a3a]')} {isDaySelected ? '' : 'scale-90'}"
+              class="w-full aspect-square rounded-lg flex items-center justify-center transition-all duration-150 {isDaySelected ? (dayColor ? '' : 'bg-white') : (dayColor ? '' : 'border border-app-outline hover:border-app-outline-strong')} {isDaySelected ? '' : 'scale-90'}"
               style={dayColor ? `background-color: ${dayColor};` : isDaySelected ? 'background-color: white;' : ''}
             >
               {#if hasTemplate}
-                <DayIcon class={isDaySelected ? 'size-5' : 'size-4'} strokeWidth={ITEM_ICON_STROKE} style={iconStyle} />
+                <DayIcon class={isDaySelected ? 'app-icon-nav' : 'app-icon-control'} strokeWidth={ITEM_ICON_STROKE} style={iconStyle} />
               {:else}
-                <Bed class={isDaySelected ? 'size-5 text-black' : 'size-4 text-zinc-500'} />
+                <Bed class={isDaySelected ? 'app-icon-nav text-black' : 'app-icon-control text-app-fg-muted'} />
               {/if}
             </div>
           </button>
@@ -10843,26 +10835,26 @@ const getStatIcon = getItemIcon;
 
       <div class="space-y-1.5">
         <div class="flex items-baseline gap-1 min-h-[10px]">
-          <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">
+          <span class="text-app-micro uppercase tracking-[2px] text-app-fg-muted leading-none">
             TEMPLATES{#if templateError}<span class="ml-2 text-red-400 normal-case tracking-normal transition-opacity duration-200 {templateErrorFading ? 'opacity-0' : 'opacity-100'}">{templateError}</span>{/if}
           </span>
         </div>
         <div class="flex flex-col gap-1 min-w-0">
           <div class="flex items-stretch gap-1 h-8">
             <div
-              class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {builderAssignedTemplateId === null ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-300' : 'bg-[#141414] border-[#1e1e1e] text-zinc-500'}"
+              class="w-6 h-8 shrink-0 flex items-center justify-center border rounded-md text-app-micro font-medium leading-none transition-colors {builderAssignedTemplateId === null ? 'bg-app-surface-3 border-app-outline text-app-fg-secondary-strong' : 'bg-app-surface-1 border-app-outline-subtle text-app-fg-muted'}"
               title={builderAssignedTemplateId === null ? 'Assigned' : undefined}
               aria-label={builderAssignedTemplateId === null ? 'Assigned rest day' : 'Rest day'}
             >
               {#if builderAssignedTemplateId === null}
-                <Check class="size-3.5" strokeWidth={2.5} />
+                <Check class="app-icon-small" strokeWidth={2.5} />
               {:else}
                 0
               {/if}
             </div>
             <button
               type="button"
-              class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center gap-1 cursor-pointer transition-colors text-zinc-400 hover:border-[#2a2a2a] {builderAssignedTemplateId === null ? 'bg-[#1e1e1e] border-[#2a2a2a] hover:bg-[#141414]' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414]'}"
+              class="flex-1 h-8 min-w-0 px-1.5 border rounded-md text-xs flex items-center gap-1 cursor-pointer transition-colors text-app-fg-secondary hover:border-app-outline {builderAssignedTemplateId === null ? 'bg-app-surface-3 border-app-outline hover:bg-app-surface-1' : 'bg-app-surface-0 border-app-outline-subtle hover:bg-app-surface-1'}"
               onclick={() => assignTemplateToBuilderDay(null)}
             >
               <span
@@ -10919,7 +10911,7 @@ const getStatIcon = getItemIcon;
             >
               <button
                 type="button"
-                class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
+                class="w-6 h-8 shrink-0 flex items-center justify-center border rounded-md text-app-micro font-medium leading-none transition-colors {isSelected ? '' : 'bg-app-surface-1 border-app-outline-subtle text-app-fg-secondary hover:border-app-outline hover:text-app-fg-secondary-strong'}"
                 style={isSelected ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white;` : ''}
                 title={isRealAssigned ? 'Assigned' : undefined}
                 aria-label={isRealAssigned ? `Assigned template ${index + 1}` : `Template ${index + 1}`}
@@ -10929,13 +10921,13 @@ const getStatIcon = getItemIcon;
                 }}
               >
                 {#if isRealAssigned}
-                  <Check class="size-3.5" strokeWidth={2.5} />
+                  <Check class="app-icon-small" strokeWidth={2.5} />
                 {:else}
                   {index + 1}
                 {/if}
               </button>
               <div
-                class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center transition-colors cursor-pointer hover:bg-[#1a1a1a] {isSelected ? '' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
+                class="flex-1 h-8 min-w-0 px-1.5 border rounded-md text-xs flex items-center transition-colors cursor-pointer hover:bg-app-surface-2 {isSelected ? '' : 'bg-app-surface-0 border-app-outline-subtle hover:bg-app-surface-1 hover:border-app-outline'}"
                 style={isSelected ? `background-color: color-mix(in srgb, white 10%, #0d0d0d); border-color: white; color: white;` : ''}
                 role="button"
                 tabindex="0"
@@ -11006,15 +10998,15 @@ const getStatIcon = getItemIcon;
                   {/if}
                   {#if !isEmpty}
                     {@const exCount = template.exercises.length}
-                    <span class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none" style={isSelected ? `background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;` : `background-color: #1e1e1e; border-color: #2a2a2a; color: #aaa;`}>{exCount} EXERCISE{exCount === 1 ? '' : 'S'}</span>
+                    <span class="text-app-micro shrink-0 px-1.5 py-0.5 rounded-md border leading-none" style={isSelected ? `background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;` : `background-color: var(--app-surface-3); border-color: var(--app-outline); color: #aaa;`}>{exCount} EXERCISE{exCount === 1 ? '' : 'S'}</span>
                   {:else}
-                    <span class="text-[9px] shrink-0 px-1.5 py-0.5 rounded border leading-none" style={isSelected ? `background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;` : `background-color: #1e1e1e; border-color: #2a2a2a; color: #aaa;`}>EMPTY</span>
+                    <span class="text-app-micro shrink-0 px-1.5 py-0.5 rounded-md border leading-none" style={isSelected ? `background-color: color-mix(in srgb, white 20%, #1e1e1e); border-color: white; color: white;` : `background-color: var(--app-surface-3); border-color: var(--app-outline); color: #aaa;`}>EMPTY</span>
                   {/if}
                   {#if isSelected && !activeRoutineIsReadonly}
                     <button
                       type="button"
                       data-no-drag
-                      class="w-6 h-6 shrink-0 flex items-center justify-center rounded border transition-colors"
+                      class="w-6 h-6 shrink-0 flex items-center justify-center rounded-md border transition-colors"
                       style={`background-color: color-mix(in srgb, white 20%, #1e1e1e); color: white; border-color: white;`}
                       title="Edit template"
                       onmousedown={(e) => e.stopPropagation()}
@@ -11024,26 +11016,26 @@ const getStatIcon = getItemIcon;
                         openTemplateEditor(template.id);
                       }}
                     >
-                      <Pencil class="size-3 pointer-events-none" />
+                      <Pencil class="app-icon-small pointer-events-none" />
                     </button>
                     <button
                       type="button"
                       data-no-drag
                       draggable="false"
-                      class="w-8 h-8 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors disabled:opacity-50"
+                      class="w-8 h-8 shrink-0 flex items-center justify-center rounded-md border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors disabled:opacity-50"
                       title="Delete template"
                       aria-label="Delete template {template.name}"
                       onmousedown={(e) => e.stopPropagation()}
                       ontouchstart={(e) => e.stopPropagation()}
                       onclick={(e) => openTemplateDeleteConfirm(e, template.id)}
                     >
-                      <Trash2 class="size-3 pointer-events-none" />
+                      <Trash2 class="app-icon-small pointer-events-none" />
                     </button>
                   {:else if isSelected && activeRoutineIsReadonly}
                     <button
                       type="button"
                       data-no-drag
-                      class="w-6 h-6 shrink-0 flex items-center justify-center rounded border transition-colors"
+                      class="w-6 h-6 shrink-0 flex items-center justify-center rounded-md border transition-colors"
                       style={`background-color: color-mix(in srgb, white 20%, #1e1e1e); color: white; border-color: white;`}
                       title="View template (read-only)"
                       onmousedown={(e) => e.stopPropagation()}
@@ -11053,7 +11045,7 @@ const getStatIcon = getItemIcon;
                         openTemplateEditor(template.id);
                       }}
                     >
-                      <Pencil class="size-3 pointer-events-none" />
+                      <Pencil class="app-icon-small pointer-events-none" />
                     </button>
                   {/if}
                 </div>
@@ -11067,32 +11059,32 @@ const getStatIcon = getItemIcon;
         {#if !activeRoutineIsReadonly}
           <button
             type="button"
-            class="w-full h-9 shrink-0 mt-1.5 rounded border border-[#1e1e1e] bg-white flex items-center justify-center text-black hover:bg-zinc-100 hover:border-[#2a2a2a] transition disabled:opacity-50"
+            class="w-full h-9 shrink-0 mt-1.5 rounded-md border border-app-outline-subtle bg-white flex items-center justify-center text-black hover:bg-zinc-100 hover:border-app-outline transition disabled:opacity-50"
             onclick={createTemplateFromRoutineBuilder}
             disabled={!currentUser}
             title="Create template"
             aria-label="Create template"
           >
-            <Plus class="size-4" strokeWidth={2.5} />
+            <Plus class="app-icon-control" strokeWidth={2.5} />
           </button>
         {/if}
       </div>
     </div>
 
   {:else if currentView === 'stats'}
-    <div class="stats-screen flex flex-col flex-1 min-h-0 overflow-hidden rounded-lg border border-[#1e1e1e] bg-[#141414]">
-      <div class="stats-screen__header shrink-0 flex items-center gap-2 px-3 py-2 border-b border-[#1e1e1e]">
+    <div class="stats-screen flex flex-col flex-1 min-h-0 overflow-hidden rounded-lg border border-app-outline-subtle bg-app-surface-1">
+      <div class="stats-screen__header shrink-0 flex items-center gap-2 px-3 py-2 border-b border-app-outline-subtle">
         <button
           type="button"
-          class="w-8 h-8 shrink-0 rounded-md border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center hover:bg-[#1a1a1a]"
+          class="w-8 h-8 shrink-0 rounded-md border border-app-outline-subtle bg-transparent text-app-fg-primary flex items-center justify-center hover:bg-app-surface-2"
           title="Go back"
           onclick={() => { selectedStatsViewStatId = null; exitStatsView(); }}
         >
-          <ArrowLeft class="size-4" />
+          <ArrowLeft class="app-icon-control" />
         </button>
         <div class="flex-1 min-w-0">
-          <div class="text-[11px] font-medium tracking-[0.14em] text-zinc-400 leading-none">STATS</div>
-          <div class="text-[10px] text-zinc-600 leading-none mt-1 tabular-nums">
+          <div class="text-app-caption font-medium tracking-[0.14em] text-app-fg-secondary leading-none">STATS</div>
+          <div class="text-app-micro text-app-fg-disabled leading-none mt-1 tabular-nums">
             {#if statsTab === 'tracked'}
               {trackedStats.length} tracked
             {:else if statsTab === 'body'}
@@ -11105,17 +11097,17 @@ const getStatIcon = getItemIcon;
         {#if statsTab === 'tracked'}
           <button
             type="button"
-            class="h-8 px-2.5 gap-1.5 rounded-md shrink-0 flex items-center justify-center border border-[#1e1e1e] bg-transparent text-zinc-400 hover:bg-[#1a1a1a] hover:text-white text-[10px] font-medium tracking-wide"
+            class="h-8 px-2.5 gap-1.5 rounded-md shrink-0 flex items-center justify-center border border-app-outline-subtle bg-transparent text-app-fg-secondary hover:bg-app-surface-2 hover:text-app-fg-primary text-app-micro font-medium tracking-wide"
             onclick={openStatsEditor}
             title="Edit stats"
           >
-            <Pencil class="size-3.5 shrink-0" />
+            <Pencil class="app-icon-small shrink-0" />
             <span>EDIT</span>
           </button>
         {:else if statsTab === 'body'}
           <button
             type="button"
-            class="h-8 px-2.5 gap-1.5 rounded-md shrink-0 flex items-center justify-center border border-[#1e1e1e] bg-transparent text-zinc-400 hover:bg-[#1a1a1a] hover:text-white text-[10px] font-medium tracking-wide"
+            class="h-8 px-2.5 gap-1.5 rounded-md shrink-0 flex items-center justify-center border border-app-outline-subtle bg-transparent text-app-fg-secondary hover:bg-app-surface-2 hover:text-app-fg-primary text-app-micro font-medium tracking-wide"
             onclick={() => {
               profileSheetOnboarding = false;
               profileSheetOpen = true;
@@ -11123,7 +11115,7 @@ const getStatIcon = getItemIcon;
             }}
             title="Sex, birthday and height"
           >
-            <User class="size-3.5 shrink-0" />
+            <User class="app-icon-small shrink-0" />
             <span>PROFILE</span>
           </button>
         {/if}
@@ -11157,19 +11149,19 @@ const getStatIcon = getItemIcon;
       </div>
 
       {#if statSaveError}
-        <p class="shrink-0 mx-2.5 mt-2 text-[10px] text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{statSaveError}</p>
+        <p class="shrink-0 mx-2.5 mt-2 text-app-micro text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{statSaveError}</p>
       {:else if statsTab === 'body' && bodySaveError}
-        <p class="shrink-0 mx-2.5 mt-2 text-[10px] text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{bodySaveError}</p>
+        <p class="shrink-0 mx-2.5 mt-2 text-app-micro text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{bodySaveError}</p>
       {/if}
 
       {#if statsTab === 'tracked'}
       <div class="stats-screen__body flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar p-2.5 space-y-2">
       {#if trackedStats.length === 0}
-        <div class="stats-empty flex flex-col items-center justify-center gap-3 py-12 px-4 text-center border border-dashed border-[#1e1e1e] rounded-lg bg-[#0d0d0d]">
-          <div class="text-xs text-zinc-500 leading-snug">No stats yet.<br />Track weight, sleep, or anything you log often.</div>
+        <div class="stats-empty flex flex-col items-center justify-center gap-3 py-12 px-4 text-center border border-dashed border-app-outline-subtle rounded-lg bg-app-surface-0">
+          <div class="text-xs text-app-fg-muted leading-snug">No stats yet.<br />Track weight, sleep, or anything you log often.</div>
           <button
             type="button"
-            class="h-8 px-3 border border-[#2a2a2a] bg-[#141414] text-[10px] font-medium tracking-wide rounded-md text-zinc-300 hover:border-[#3a3a3a] hover:text-white"
+            class="h-8 px-3 border border-app-outline bg-app-surface-1 text-app-micro font-medium tracking-wide rounded-md text-app-fg-secondary-strong hover:border-app-outline-strong hover:text-app-fg-primary"
             onclick={openStatsEditor}
           >
             CREATE STAT
@@ -11188,12 +11180,12 @@ const getStatIcon = getItemIcon;
             {@const latest = getStatLatestEntry(stat.id)}
             {@const todayVal = getStatTodayInputValue(stat.id)}
             <div
-              class="stats-card rounded-lg border bg-[#0d0d0d] overflow-hidden transition-colors"
+              class="stats-card rounded-lg border bg-app-surface-0 overflow-hidden transition-colors"
               class:stats-card--open={isSelected}
               style="border-color: {isSelected ? statHex : '#1e1e1e'}; --stat-accent: {statHex};"
             >
               <div
-                class="stats-card__head w-full flex items-center gap-2.5 px-2.5 py-2 hover:bg-[#121212] transition-colors"
+                class="stats-card__head w-full flex items-center gap-2.5 px-2.5 py-2 hover:bg-app-surface-1 transition-colors"
               >
                   <button
                     type="button"
@@ -11207,11 +11199,11 @@ const getStatIcon = getItemIcon;
                       style="background-color: {statHex}"
                       aria-hidden="true"
                     >
-                      <IconComponent class="size-4 text-black/80" strokeWidth={ITEM_ICON_STROKE} />
+                      <IconComponent class="app-icon-control text-black/80" strokeWidth={ITEM_ICON_STROKE} />
                     </div>
                     <div class="flex-1 min-w-0">
-                      <div class="text-sm font-medium text-white truncate leading-none">{stat.name}</div>
-                      <div class="mt-1 flex items-center gap-1.5 text-[10px] text-zinc-500 leading-none tabular-nums">
+                      <div class="text-sm font-medium text-app-fg-primary truncate leading-none">{stat.name}</div>
+                      <div class="mt-1 flex items-center gap-1.5 text-app-micro text-app-fg-muted leading-none tabular-nums">
                         {#if latest}
                           <span>last {shortDateLabel(latest.date)}</span>
                           <span class="text-zinc-700">·</span>
@@ -11227,7 +11219,7 @@ const getStatIcon = getItemIcon;
                     </div>
                   </button>
                 <div
-                  class="stats-card__value-wrap shrink-0 flex items-stretch h-8 rounded-md border border-[#1e1e1e] bg-black overflow-hidden"
+                  class="stats-card__value-wrap shrink-0 flex items-stretch h-8 rounded-md border border-app-outline-subtle bg-app-canvas overflow-hidden"
                   style={todayVal > 0 ? `border-color: color-mix(in srgb, ${statHex} 55%, #1e1e1e);` : undefined}
                 >
                   <input
@@ -11235,7 +11227,7 @@ const getStatIcon = getItemIcon;
                     inputmode="decimal"
                     autocomplete="off"
                     placeholder={String(stat.start_value || 0)}
-                    class="prop-num-input stats-card__value w-14 h-full bg-transparent border-0 text-center text-sm font-medium text-white outline-none tabular-nums"
+                    class="prop-num-input stats-card__value w-14 h-full bg-transparent border-0 text-center text-sm font-medium text-app-fg-primary outline-none tabular-nums"
                     use:clampedNumericProp={{
                       kind: 'statLog',
                       getValue: () => {
@@ -11267,7 +11259,7 @@ const getStatIcon = getItemIcon;
                     aria-label={`Today value for ${stat.name}`}
                   />
                   <span
-                    class="stats-card__unit shrink-0 min-w-[1.75rem] max-w-[3.25rem] px-1 flex items-center justify-center border-l border-[#1e1e1e] text-[9px] font-medium uppercase tracking-wide text-zinc-500 leading-none truncate"
+                    class="stats-card__unit shrink-0 min-w-[1.75rem] max-w-[3.25rem] px-1 flex items-center justify-center border-l border-app-outline-subtle text-app-micro font-medium uppercase tracking-wide text-app-fg-muted leading-none truncate"
                     title={stat.unit?.trim() || 'No unit set — edit in STAT EDITOR'}
                   >{stat.unit?.trim() || '—'}</span>
                 </div>
@@ -11328,20 +11320,20 @@ const getStatIcon = getItemIcon;
                 {@const lineColor = statHex}
                 {@const rangeIdx = Math.max(0, rangeModes.indexOf(statRangeMode))}
                 <div
-                  class="stats-card__panel border-t border-[#1e1e1e] bg-[#0a0a0a] px-2.5 pt-2.5 pb-2.5 space-y-2"
+                  class="stats-card__panel border-t border-app-outline-subtle bg-app-canvas px-2.5 pt-2.5 pb-2.5 space-y-2"
                   transition:slide={{ duration: 220, easing: cubicOut }}
                 >
                   <!-- Entry editor + range -->
                   <div class="stats-toolbar flex flex-col gap-2 sm:flex-row sm:items-stretch">
-                    <div class="stats-entry flex items-center gap-0 h-8 flex-1 min-w-0 rounded-md border border-[#1e1e1e] bg-[#060606] overflow-hidden">
-                      <div class="w-[4.25rem] shrink-0 h-full flex items-center justify-center border-r border-[#1e1e1e] bg-[#0d0d0d]">
-                        <span class="text-[10px] font-mono text-zinc-400 tabular-nums leading-none">{shortDateLabel(editDate)}</span>
+                    <div class="stats-entry flex items-center gap-0 h-8 flex-1 min-w-0 rounded-md border border-app-outline-subtle bg-app-canvas overflow-hidden">
+                      <div class="w-[4.25rem] shrink-0 h-full flex items-center justify-center border-r border-app-outline-subtle bg-app-surface-0">
+                        <span class="text-app-micro font-mono text-app-fg-secondary tabular-nums leading-none">{shortDateLabel(editDate)}</span>
                       </div>
                       <input
                         type="text"
                         inputmode="decimal"
                         autocomplete="off"
-                        class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-none text-center text-sm font-medium text-white outline-none tabular-nums"
+                        class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-none text-center text-sm font-medium text-app-fg-primary outline-none tabular-nums"
                         use:clampedNumericProp={{
                           kind: 'statLog',
                           getValue: () => statLogs[sid]?.[editDate] ?? 0,
@@ -11362,12 +11354,12 @@ const getStatIcon = getItemIcon;
                         }}
                       />
                       <span
-                        class="shrink-0 min-w-[2rem] max-w-[3.5rem] px-1.5 flex items-center justify-center border-l border-[#1e1e1e] text-[9px] font-medium uppercase tracking-wide text-zinc-500 leading-none truncate"
+                        class="shrink-0 min-w-[2rem] max-w-[3.5rem] px-1.5 flex items-center justify-center border-l border-app-outline-subtle text-app-micro font-medium uppercase tracking-wide text-app-fg-muted leading-none truncate"
                         title={stat.unit?.trim() || 'No unit set'}
                       >{stat.unit?.trim() || '—'}</span>
                       <button
                         type="button"
-                        class="w-8 h-full shrink-0 flex items-center justify-center border-l border-[#1e1e1e] text-zinc-500 hover:text-red-400 hover:bg-[#120808] transition-colors"
+                        class="w-8 h-full shrink-0 flex items-center justify-center border-l border-app-outline-subtle text-app-fg-muted hover:text-red-400 hover:bg-canvas transition-colors"
                         onclick={() => {
                           deleteStatLogEntry(sid, editDate);
                           if (editDate !== REAL_TODAY_STR) statEditEntry = REAL_TODAY_STR;
@@ -11375,12 +11367,12 @@ const getStatIcon = getItemIcon;
                         aria-label="Delete entry"
                         title="Delete entry"
                       >
-                        <Trash2 class="size-3.5" />
+                        <Trash2 class="app-icon-small" />
                       </button>
                     </div>
 
                     <div
-                      class="stats-range relative grid grid-cols-5 h-8 shrink-0 rounded-md border border-[#1e1e1e] bg-[#060606] px-0.5"
+                      class="stats-range relative grid grid-cols-5 h-8 shrink-0 rounded-md border border-app-outline-subtle bg-app-canvas px-0.5"
                       style="min-width: min(100%, 13.5rem);"
                       role="group"
                       aria-label="Chart range"
@@ -11392,7 +11384,7 @@ const getStatIcon = getItemIcon;
                       {#each rangeModes as mode}
                         <button
                           type="button"
-                          class="relative z-10 h-full flex items-center justify-center text-[9px] font-medium tracking-[0.1em] transition-colors {statRangeMode === mode ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                          class="relative z-10 h-full flex items-center justify-center text-app-micro font-medium tracking-[0.1em] transition-colors {statRangeMode === mode ? 'text-black' : 'text-app-fg-muted hover:text-app-fg-secondary-strong'}"
                           onclick={(e) => { e.stopPropagation(); statRangeMode = mode; }}
                         >{rangeModeLabel(mode)}</button>
                       {/each}
@@ -11400,11 +11392,11 @@ const getStatIcon = getItemIcon;
                   </div>
 
                   <!-- Chart -->
-                  <div class="stats-chart relative rounded-md border border-[#1e1e1e] bg-[#080808] overflow-hidden">
+                  <div class="stats-chart relative rounded-md border border-app-outline-subtle bg-app-canvas overflow-hidden">
                     {#if !hasData}
                       <div class="h-[188px] flex flex-col items-center justify-center gap-1 text-center px-4">
-                        <div class="text-[11px] text-zinc-500">No data in this range</div>
-                        <div class="text-[10px] text-zinc-600">Log a value above, or pick another range.</div>
+                        <div class="text-app-caption text-app-fg-muted">No data in this range</div>
+                        <div class="text-app-micro text-app-fg-disabled">Log a value above, or pick another range.</div>
                       </div>
                     {:else}
                       <svg
@@ -11438,17 +11430,17 @@ const getStatIcon = getItemIcon;
                           statEditEntry = toDateStr(new Date(startDate.getTime() + Math.max(0, Math.min(totalDays - 1, nextDay)) * msDay));
                         }}
                       >
-                        <rect x="0" y="0" width={containerW} height={containerH} fill="#080808" />
+                        <rect x="0" y="0" width={containerW} height={containerH} fill="var(--app-canvas)" />
                         <!-- plot frame -->
-                        <rect x={padL} y={padT} width={plotW} height={plotH} fill="#0c0c0c" stroke="#161616" stroke-width="1" />
+                        <rect x={padL} y={padT} width={plotW} height={plotH} fill="var(--app-surface-0)" stroke="var(--app-surface-1)" stroke-width="1" />
 
                         {#each yTicks as tick}
-                          <line x1={padL} y1={tick.y} x2={padL + plotW} y2={tick.y} stroke="#161616" stroke-width="1" />
-                          <text x={padL - 5} y={tick.y + 3.5} text-anchor="end" fill="#52525b" font-size="10" font-family="ui-monospace, monospace">{tick.val % 1 === 0 ? tick.val.toFixed(0) : tick.val.toFixed(1)}</text>
+                          <line x1={padL} y1={tick.y} x2={padL + plotW} y2={tick.y} stroke="var(--app-surface-1)" stroke-width="1" />
+                          <text x={padL - 5} y={tick.y + 3.5} text-anchor="end" fill="var(--app-surface-4)" font-size="10" font-family="ui-monospace, monospace">{tick.val % 1 === 0 ? tick.val.toFixed(0) : tick.val.toFixed(1)}</text>
                         {/each}
                         {#each xTicks as tick}
-                          <line x1={tick.x} y1={padT} x2={tick.x} y2={padT + plotH} stroke="#141414" stroke-width="1" />
-                          <text x={tick.x} y={padT + plotH + 16} text-anchor="middle" fill="#52525b" font-size="10" font-family="ui-monospace, monospace">{shortDateLabel(tick.date)}</text>
+                          <line x1={tick.x} y1={padT} x2={tick.x} y2={padT + plotH} stroke="var(--app-surface-1)" stroke-width="1" />
+                          <text x={tick.x} y={padT + plotH + 16} text-anchor="middle" fill="var(--app-surface-4)" font-size="10" font-family="ui-monospace, monospace">{shortDateLabel(tick.date)}</text>
                         {/each}
 
                         {#if targetY !== null}
@@ -11583,7 +11575,7 @@ const getStatIcon = getItemIcon;
       <div class="stats-screen__body flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar p-2.5 space-y-2">
         {#if historyLoading && historyEntries.length === 0}
           <div class="history-state">
-            <RefreshCw class="size-4 animate-spin text-zinc-500" aria-hidden="true" />
+            <RefreshCw class="app-icon-control animate-spin text-app-fg-muted" aria-hidden="true" />
             <span>Loading workout history…</span>
           </div>
         {:else if historyError}
@@ -11593,7 +11585,7 @@ const getStatIcon = getItemIcon;
           </div>
         {:else if historyEntries.length === 0}
           <div class="history-state">
-            <History class="size-5 text-zinc-600" aria-hidden="true" />
+            <History class="app-icon-nav text-app-fg-disabled" aria-hidden="true" />
             <span>No finished workouts yet.<br />Finish a session and it will appear here.</span>
           </div>
         {:else}
@@ -11638,13 +11630,13 @@ const getStatIcon = getItemIcon;
                   </span>
                   <span class="history-card__side">
                     {#if entry.is_perfect_day}
-                      <span class="history-pill history-pill--perfect">PERFECT</span>
+                      <span class="history-pill history-pill--perfect">TARGETS MET</span>
                     {:else if isSkipped}
                       <span class="history-pill history-pill--skipped">SKIPPED</span>
                     {:else}
                       <span class="history-pill">DONE</span>
                     {/if}
-                    <ChevronDown class="size-3.5 history-card__chevron {isOpen ? 'history-card__chevron--open' : ''}" aria-hidden="true" />
+                    <ChevronDown class="app-icon-small history-card__chevron {isOpen ? 'history-card__chevron--open' : ''}" aria-hidden="true" />
                   </span>
                 </button>
 
@@ -11677,7 +11669,7 @@ const getStatIcon = getItemIcon;
                       type="button"
                       class="history-card__open-day"
                       onclick={() => openHistoryDate(entry.workout_date)}
-                    >OPEN THIS DAY <ChevronRight class="size-3" aria-hidden="true" /></button>
+                    >OPEN THIS DAY <ChevronRight class="app-icon-small" aria-hidden="true" /></button>
                   </div>
                 {/if}
               </div>
@@ -11691,7 +11683,7 @@ const getStatIcon = getItemIcon;
                 onclick={() => void loadWorkoutHistory(false)}
               >
                 {#if historyLoadingMore}
-                  <RefreshCw class="size-3.5 animate-spin" aria-hidden="true" /> LOADING…
+                  <RefreshCw class="app-icon-small animate-spin" aria-hidden="true" /> LOADING…
                 {:else}
                   LOAD OLDER
                 {/if}
@@ -11706,18 +11698,18 @@ const getStatIcon = getItemIcon;
     </div>
 
   {:else if currentView === 'edit_stats'}
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
-      <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
+    <div class="bg-app-surface-1 border border-app-outline-subtle rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
+      <div class="flex items-center gap-2 border-b border-app-outline-subtle pb-2 min-h-8">
         <button
           type="button"
-          class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
+          class="w-8 h-8 shrink-0 rounded-lg border border-app-outline-subtle bg-transparent text-app-fg-primary flex items-center justify-center"
           onclick={() => void exitStatsEditor()}
           disabled={editorExitSaving}
           title="Go back"
         >
-          <ArrowLeft class="size-4" />
+          <ArrowLeft class="app-icon-control" />
         </button>
-        <span class="text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">STAT EDITOR</span>
+        <span class="text-xs font-bold tracking-wider text-app-fg-secondary leading-none shrink-0">STAT EDITOR</span>
         {#if selectedDraftStatId}
           {@const selectedStat = draftStatById(selectedDraftStatId)}
           {@const statIconId = clampItemIcon(selectedStat?.icon ?? DEFAULT_ITEM_ICON)}
@@ -11729,7 +11721,7 @@ const getStatIcon = getItemIcon;
           <div class="flex-1 min-w-0 flex items-center">
             <input
               autocomplete="off"
-              class="w-full h-8 bg-black border text-xs font-medium uppercase text-center px-2 rounded outline-none placeholder:text-zinc-600"
+              class="w-full h-8 bg-app-canvas border text-xs font-medium uppercase text-center px-2 rounded-md outline-none placeholder:text-app-fg-disabled"
               style={`border-color: ${statColorHex}; color: ${statColorHex}; transition: none;`}
               placeholder="Stat name"
               value={selectedStat?.name ?? ''}
@@ -11744,7 +11736,7 @@ const getStatIcon = getItemIcon;
             <button
               type="button"
               bind:this={statIconBtnEl}
-              class="w-8 h-8 rounded bg-black border flex items-center justify-center"
+              class="w-8 h-8 rounded-md bg-app-canvas border flex items-center justify-center"
               style="border-color: {statColorHex}; color: {statColorHex}; transition: none;"
               onclick={() => {
                 showStatIconPicker = !showStatIconPicker;
@@ -11752,12 +11744,12 @@ const getStatIcon = getItemIcon;
               }}
               title="Pick stat icon"
             >
-              <StatIcon class="size-4" strokeWidth={ITEM_ICON_STROKE} />
+              <StatIcon class="app-icon-control" strokeWidth={ITEM_ICON_STROKE} />
             </button>
             <button
               type="button"
               bind:this={statColorBtnEl}
-              class="w-8 h-8 rounded bg-black border flex items-center justify-center relative"
+              class="w-8 h-8 rounded-md bg-app-canvas border flex items-center justify-center relative"
               style="border-color: {statColorHex}; transition: none;"
               onclick={() => {
                 showStatColorPicker = !showStatColorPicker;
@@ -11765,7 +11757,7 @@ const getStatIcon = getItemIcon;
               }}
               title="Pick stat color"
             >
-              <div class="w-5 h-5 rounded" style="background-color: {statColorHex}; transition: none;"></div>
+              <div class="w-5 h-5 rounded-md" style="background-color: {statColorHex}; transition: none;"></div>
             </button>
           </div>
           <ItemIconPicker
@@ -11791,7 +11783,7 @@ const getStatIcon = getItemIcon;
           <div class="flex-1 min-w-0 flex items-center">
             <input
               autocomplete="off"
-              class="w-full h-8 bg-black border border-[#1e1e1e] text-xs font-medium uppercase text-center px-2 rounded outline-none placeholder:text-zinc-600"
+              class="w-full h-8 bg-app-canvas border border-app-outline-subtle text-xs font-medium uppercase text-center px-2 rounded-md outline-none placeholder:text-app-fg-disabled"
               placeholder="Stat name"
               disabled
               value=""
@@ -11800,22 +11792,22 @@ const getStatIcon = getItemIcon;
         {/if}
       </div>
       {#if statSaveError}
-        <p class="text-[10px] text-red-300 leading-snug">{statSaveError}</p>
+        <p class="text-app-micro text-red-300 leading-snug">{statSaveError}</p>
       {/if}
 
       <div class="builder-editor-grid">
         <div class="col-start-1 row-start-1 h-5 flex items-center justify-between gap-1 min-w-0">
-          <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">STATS</span>
-          <span class="text-[9px] tabular-nums text-zinc-600 leading-none shrink-0">{draftStats.length}/{MAX_STATS}</span>
+          <span class="text-app-micro uppercase tracking-[2px] text-app-fg-muted leading-none">STATS</span>
+          <span class="text-app-micro tabular-nums text-app-fg-disabled leading-none shrink-0">{draftStats.length}/{MAX_STATS}</span>
         </div>
-        <div class="col-start-2 row-start-1 h-5 flex items-center border-l border-[#1e1e1e] pl-2">
-          <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">PROPERTIES</span>
+        <div class="col-start-2 row-start-1 h-5 flex items-center border-l border-app-outline-subtle pl-2">
+          <span class="text-app-micro uppercase tracking-[2px] text-app-fg-muted leading-none">PROPERTIES</span>
         </div>
 
         <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
           <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0 overflow-x-hidden" role="list" bind:this={statListBody} ondrop={handleStatDrop} ondragover={handleStatDragOver}>
             {#if draftStats.length === 0}
-              <div class="text-center py-4 border border-dashed border-[#1e1e1e] rounded-lg text-[10px] text-zinc-500 leading-snug">
+              <div class="text-center py-4 border border-dashed border-app-outline-subtle rounded-lg text-app-micro text-app-fg-muted leading-snug">
                 No stats yet.<br />
                 Tap NEW to create one.
               </div>
@@ -11858,7 +11850,7 @@ const getStatIcon = getItemIcon;
               >
                 <button
                   type="button"
-                  class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
+                  class="w-6 h-8 shrink-0 flex items-center justify-center border rounded-md text-app-micro font-medium leading-none transition-colors {isSelected ? '' : 'bg-app-surface-1 border-app-outline-subtle text-app-fg-secondary hover:border-app-outline hover:text-app-fg-secondary-strong'}"
                   style={isSelected ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white` : ''}
                   onclick={() => {
                     if (statRowDragged) return;
@@ -11868,7 +11860,7 @@ const getStatIcon = getItemIcon;
                   {index + 1}
                 </button>
                 <div
-                  class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center cursor-pointer transition-colors {isSelected ? '' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
+                  class="flex-1 h-8 min-w-0 px-1.5 border rounded-md text-xs flex items-center cursor-pointer transition-colors {isSelected ? '' : 'bg-app-surface-0 border-app-outline-subtle hover:bg-app-surface-1 hover:border-app-outline'}"
                   style={isSelected ? `background-color: color-mix(in srgb, white 8%, #0d0d0d); border-color: white; color: white` : ''}
                   role="button"
                   tabindex="0"
@@ -11903,12 +11895,12 @@ const getStatIcon = getItemIcon;
                             (e.currentTarget as HTMLInputElement).blur();
                           }
                         }}
-                        class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                        class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isSelected ? 'text-app-fg-primary' : 'text-app-fg-secondary'}"
                         placeholder="NAME"
                       />
                     {:else}
                       <span
-                        class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                        class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-app-fg-primary' : 'text-app-fg-secondary'}"
                         role="button"
                         tabindex="0"
                         aria-label="Rename stat {stat.name}"
@@ -11929,11 +11921,11 @@ const getStatIcon = getItemIcon;
                     {#if isSelected}
                       <button
                         type="button"
-                        class="w-8 h-8 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
+                        class="w-8 h-8 shrink-0 flex items-center justify-center rounded-md border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
                         title="Delete stat"
                         onclick={(e) => { e.stopPropagation(); deleteSelectedStat(); }}
                       >
-                        <Trash2 class="size-4 pointer-events-none" />
+                        <Trash2 class="app-icon-control pointer-events-none" />
                       </button>
                     {/if}
                   </div>
@@ -11952,13 +11944,13 @@ const getStatIcon = getItemIcon;
               title="Create a new stat"
               aria-label="Create new stat"
             >
-              <Plus class="size-3.5" strokeWidth={3} />
+              <Plus class="app-icon-small" strokeWidth={3} />
               <span>NEW</span>
             </button>
           </div>
         </div>
 
-        <div class="col-start-2 row-start-2 flex flex-col min-h-0 self-stretch border-l border-[#1e1e1e] pl-2">
+        <div class="col-start-2 row-start-2 flex flex-col min-h-0 self-stretch border-l border-app-outline-subtle pl-2">
           <div class="flex-1 flex flex-col min-h-0 h-full">
             {#if selectedDraftStatId}
               {#key selectedDraftStatId}
@@ -11968,16 +11960,16 @@ const getStatIcon = getItemIcon;
                   {@const hasTarget = !!live.has_target}
                   {@const prefersLower = live.target_prefers_lower ?? true}
                   <!-- Fixed compact card: same height with goal on/off -->
-                  <div class="rounded-lg border border-[#1e1e1e] bg-[#0d0d0d] p-2 flex flex-col gap-1.5">
+                  <div class="rounded-lg border border-app-outline-subtle bg-app-surface-0 p-2 flex flex-col gap-1.5">
                     <div class="grid grid-cols-2 gap-1.5">
                       <label class="block min-w-0">
-                        <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Start</span>
+                        <span class="text-app-micro text-app-fg-muted block mb-0.5 leading-none">Start</span>
                         <input
                           type="text"
                           inputmode="decimal"
                           autocomplete="off"
                           placeholder="0"
-                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none focus:border-[#2a2a2a]"
+                          class="prop-num-input w-full h-7 bg-app-canvas border border-app-outline-subtle text-center text-xs rounded-md text-app-fg-primary outline-none focus:border-app-outline"
                           use:clampedNumericProp={{
                             kind: 'statValue',
                             getValue: () => draftStatById(statId)?.start_value ?? 0,
@@ -11987,12 +11979,12 @@ const getStatIcon = getItemIcon;
                         />
                       </label>
                       <label class="block min-w-0">
-                        <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Unit</span>
+                        <span class="text-app-micro text-app-fg-muted block mb-0.5 leading-none">Unit</span>
                         <input
                           type="text"
                           autocomplete="off"
                           placeholder="KG"
-                          class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none uppercase focus:border-[#2a2a2a]"
+                          class="prop-num-input w-full h-7 bg-app-canvas border border-app-outline-subtle text-center text-xs rounded-md text-app-fg-primary outline-none uppercase focus:border-app-outline"
                           use:clampedStatUnitProp={{
                             getValue: () => draftStatById(statId)?.unit ?? '',
                             setValue: (v) => { patchDraftStat(statId, { unit: v }); },
@@ -12003,17 +11995,17 @@ const getStatIcon = getItemIcon;
                     </div>
 
                     <div
-                      class="relative grid grid-cols-2 w-full rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
+                      class="relative grid grid-cols-2 w-full rounded-md border border-app-outline-subtle bg-app-canvas p-0.5"
                       role="group"
                       aria-label="Target enabled"
                     >
                       <div
-                        class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+                        class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded-md bg-white transition-transform duration-200 ease-out"
                         style="transform: translateX({hasTarget ? 'calc(100% + 4px)' : '0'})"
                       ></div>
                       <button
                         type="button"
-                        class="relative z-10 h-6 flex items-center justify-center text-[8px] font-black tracking-[0.1em] transition-colors {!hasTarget ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                        class="relative z-10 h-6 flex items-center justify-center text-app-micro font-black tracking-[0.1em] transition-colors {!hasTarget ? 'text-black' : 'text-app-fg-muted hover:text-app-fg-secondary-strong'}"
                         onclick={() => {
                           patchDraftStat(statId, { has_target: false, target_value: null });
                           void persistTrackedStatsNow();
@@ -12021,7 +12013,7 @@ const getStatIcon = getItemIcon;
                       >OFF</button>
                       <button
                         type="button"
-                        class="relative z-10 h-6 flex items-center justify-center text-[8px] font-black tracking-[0.1em] transition-colors {hasTarget ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                        class="relative z-10 h-6 flex items-center justify-center text-app-micro font-black tracking-[0.1em] transition-colors {hasTarget ? 'text-black' : 'text-app-fg-muted hover:text-app-fg-secondary-strong'}"
                         onclick={() => {
                           const current = draftStatById(statId);
                           const nextTarget =
@@ -12040,11 +12032,11 @@ const getStatIcon = getItemIcon;
                     </div>
 
                     <div class="min-w-0">
-                      <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Target</span>
+                      <span class="text-app-micro text-app-fg-muted block mb-0.5 leading-none">Target</span>
                       <div
-                        class="flex items-stretch h-7 rounded border overflow-hidden transition-colors {hasTarget
-                          ? 'border-[#1e1e1e] bg-black'
-                          : 'border-[#1a1a1a] bg-[#0a0a0a] opacity-70'}"
+                        class="flex items-stretch h-7 rounded-md border overflow-hidden transition-colors {hasTarget
+                          ? 'border-app-outline-subtle bg-app-canvas'
+                          : 'border-[#1a1a1a] bg-app-canvas opacity-70'}"
                       >
                         <input
                           type="text"
@@ -12053,8 +12045,8 @@ const getStatIcon = getItemIcon;
                           placeholder="—"
                           disabled={!hasTarget}
                           class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none outline-none {hasTarget
-                            ? 'text-white'
-                            : 'text-zinc-600 cursor-not-allowed'}"
+                            ? 'text-app-fg-primary'
+                            : 'text-app-fg-disabled cursor-not-allowed'}"
                           use:clampedNumericProp={{
                             kind: 'statValue',
                             getValue: () => draftStatById(statId)?.target_value ?? 0,
@@ -12065,9 +12057,9 @@ const getStatIcon = getItemIcon;
                           onblur={() => void persistTrackedStatsNow()}
                         />
                         <span
-                          class="shrink-0 min-w-[2.25rem] max-w-[4rem] px-1.5 flex items-center justify-center border-l text-[10px] font-medium uppercase tabular-nums truncate {hasTarget
-                            ? 'border-[#1e1e1e] text-zinc-400'
-                            : 'border-[#1a1a1a] text-zinc-600'}"
+                          class="shrink-0 min-w-[2.25rem] max-w-[4rem] px-1.5 flex items-center justify-center border-l text-app-micro font-medium uppercase tabular-nums truncate {hasTarget
+                            ? 'border-app-outline-subtle text-app-fg-secondary'
+                            : 'border-[#1a1a1a] text-app-fg-disabled'}"
                           title={live.unit?.trim() || 'Unit from above'}
                           aria-hidden="true"
                         >{live.unit?.trim() || '—'}</span>
@@ -12076,18 +12068,18 @@ const getStatIcon = getItemIcon;
 
                     <div class="space-y-1 transition-opacity {hasTarget ? 'opacity-100' : 'opacity-40'}">
                       <div
-                        class="relative grid grid-cols-2 w-full rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
+                        class="relative grid grid-cols-2 w-full rounded-md border border-app-outline-subtle bg-app-canvas p-0.5"
                         role="group"
                         aria-label="Target goal preference"
                         style="pointer-events: {hasTarget ? 'auto' : 'none'}"
                       >
                         <div
-                          class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+                          class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded-md bg-white transition-transform duration-200 ease-out"
                           style="transform: translateX({prefersLower ? '0' : 'calc(100% + 4px)'})"
                         ></div>
                         <button
                           type="button"
-                          class="relative z-10 h-6 flex items-center justify-center gap-0.5 text-[8px] font-black tracking-[0.06em] transition-colors {prefersLower ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                          class="relative z-10 h-6 flex items-center justify-center gap-0.5 text-app-micro font-black tracking-[0.06em] transition-colors {prefersLower ? 'text-black' : 'text-app-fg-muted hover:text-app-fg-secondary-strong'}"
                           onclick={() => {
                             patchDraftStat(statId, { target_prefers_lower: true });
                             void persistTrackedStatsNow();
@@ -12097,7 +12089,7 @@ const getStatIcon = getItemIcon;
                         </button>
                         <button
                           type="button"
-                          class="relative z-10 h-6 flex items-center justify-center gap-0.5 text-[8px] font-black tracking-[0.06em] transition-colors {!prefersLower ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                          class="relative z-10 h-6 flex items-center justify-center gap-0.5 text-app-micro font-black tracking-[0.06em] transition-colors {!prefersLower ? 'text-black' : 'text-app-fg-muted hover:text-app-fg-secondary-strong'}"
                           onclick={() => {
                             patchDraftStat(statId, { target_prefers_lower: false });
                             void persistTrackedStatsNow();
@@ -12106,7 +12098,7 @@ const getStatIcon = getItemIcon;
                           <span class="opacity-70">≥</span> OVER
                         </button>
                       </div>
-                      <p class="text-[9px] text-zinc-600 leading-snug">
+                      <p class="text-app-micro text-app-fg-disabled leading-snug">
                         {#if prefersLower}
                           Counts as success at or below the target.
                         {:else}
@@ -12118,7 +12110,7 @@ const getStatIcon = getItemIcon;
                 {/if}
               {/key}
             {:else}
-              <div class="flex-1 min-h-0 flex items-center justify-center text-center px-2 py-4 text-[10px] leading-snug text-zinc-500 border border-dashed border-[#1e1e1e] rounded-lg">
+              <div class="flex-1 min-h-0 flex items-center justify-center text-center px-2 py-4 text-app-micro leading-snug text-app-fg-muted border border-dashed border-app-outline-subtle rounded-lg">
                 Select a stat to edit.
               </div>
             {/if}
@@ -12130,22 +12122,22 @@ const getStatIcon = getItemIcon;
   {:else if currentView === 'edit_template'}
     {@const templateEditorColor = getTemplateColor(draftTemplateColor)}
     {@const TemplateEditorIcon = getItemIcon(draftTemplateIcon)}
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
-      <div class="flex items-center gap-2 border-b border-[#1e1e1e] pb-2 min-h-8">
+    <div class="bg-app-surface-1 border border-app-outline-subtle rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
+      <div class="flex items-center gap-2 border-b border-app-outline-subtle pb-2 min-h-8">
         <button
           type="button"
-          class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-transparent text-white flex items-center justify-center"
+          class="w-8 h-8 shrink-0 rounded-lg border border-app-outline-subtle bg-transparent text-app-fg-primary flex items-center justify-center"
           onclick={() => void exitEditTemplate()}
           disabled={editorExitSaving}
           title="Go back"
         >
-          <ArrowLeft class="size-4" />
+          <ArrowLeft class="app-icon-control" />
         </button>
-        <span class="template-editor-label text-xs font-bold tracking-wider text-zinc-400 leading-none shrink-0">TEMPLATE EDITOR</span>
+        <span class="template-editor-label text-xs font-bold tracking-wider text-app-fg-secondary leading-none shrink-0">TEMPLATE EDITOR</span>
         <div class="flex-1 min-w-0 flex items-center">
           <input
             autocomplete="off"
-            class="w-full h-8 bg-black border text-xs font-medium uppercase text-center px-2 rounded outline-none placeholder:text-zinc-600"
+            class="w-full h-8 bg-app-canvas border text-xs font-medium uppercase text-center px-2 rounded-md outline-none placeholder:text-app-fg-disabled"
             style={`border-color: ${templateEditorColor}; color: ${templateEditorColor}; transition: none;`}
             placeholder="Template name"
             disabled={!editingTemplate}
@@ -12161,7 +12153,7 @@ const getStatIcon = getItemIcon;
           <button
             type="button"
             bind:this={templateIconBtnEl}
-            class="w-8 h-8 rounded bg-black border flex items-center justify-center"
+            class="w-8 h-8 rounded-md bg-app-canvas border flex items-center justify-center"
             style="border-color: {templateEditorColor}; color: {templateEditorColor}; transition: none;"
             onclick={() => {
               showTemplateIconPicker = !showTemplateIconPicker;
@@ -12169,12 +12161,12 @@ const getStatIcon = getItemIcon;
             }}
             title="Pick template icon"
           >
-            <TemplateEditorIcon class="size-4" strokeWidth={ITEM_ICON_STROKE} />
+            <TemplateEditorIcon class="app-icon-control" strokeWidth={ITEM_ICON_STROKE} />
           </button>
           <button
             type="button"
             bind:this={templateColorBtnEl}
-            class="w-8 h-8 rounded bg-black border flex items-center justify-center relative"
+            class="w-8 h-8 rounded-md bg-app-canvas border flex items-center justify-center relative"
             style="border-color: {templateEditorColor}; transition: none;"
             onclick={() => {
               showTemplateColorPicker = !showTemplateColorPicker;
@@ -12182,7 +12174,7 @@ const getStatIcon = getItemIcon;
             }}
             title="Pick template color"
           >
-            <div class="w-5 h-5 rounded" style="background-color: {templateEditorColor}; transition: none;"></div>
+            <div class="w-5 h-5 rounded-md" style="background-color: {templateEditorColor}; transition: none;"></div>
           </button>
         </div>
         <ItemIconPicker
@@ -12214,28 +12206,28 @@ const getStatIcon = getItemIcon;
         {/if}
       </div>
       {#if templateSaveError && currentView === 'edit_template'}
-        <p class="text-[10px] text-red-300 leading-snug">{templateSaveError}</p>
+        <p class="text-app-micro text-red-300 leading-snug">{templateSaveError}</p>
       {/if}
 
       {#if !editingTemplate}
         <div class="text-center py-6">
-          <p class="text-xs text-zinc-500 mb-2">No template loaded for this weekday.</p>
-          <button type="button" class="h-8 px-3 bg-[#141414] border border-[#1e1e1e] text-xs font-bold rounded" onclick={() => enterRoutineBuilder()}>Assign or Create</button>
+          <p class="text-xs text-app-fg-muted mb-2">No template loaded for this weekday.</p>
+          <button type="button" class="h-8 px-3 bg-app-surface-1 border border-app-outline-subtle text-xs font-bold rounded-md" onclick={() => enterRoutineBuilder()}>Assign or Create</button>
         </div>
       {:else}
         <div class="builder-editor-grid">
           <div class="col-start-1 row-start-1 h-5 flex items-center justify-between gap-1 min-w-0">
-            <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">EXERCISES</span>
-            <span class="text-[9px] tabular-nums text-zinc-600 leading-none shrink-0">{draftExercises.length}</span>
+            <span class="text-app-micro uppercase tracking-[2px] text-app-fg-muted leading-none">EXERCISES</span>
+            <span class="text-app-micro tabular-nums text-app-fg-disabled leading-none shrink-0">{draftExercises.length}</span>
           </div>
-          <div class="col-start-2 row-start-1 h-5 flex items-center border-l border-[#1e1e1e] pl-2">
-            <span class="text-[9px] uppercase tracking-[2px] text-zinc-500 leading-none">PROPERTIES</span>
+          <div class="col-start-2 row-start-1 h-5 flex items-center border-l border-app-outline-subtle pl-2">
+            <span class="text-app-micro uppercase tracking-[2px] text-app-fg-muted leading-none">PROPERTIES</span>
           </div>
 
           <div class="col-start-1 row-start-2 flex flex-col min-h-0 min-w-0 self-stretch">
             <div class="flex flex-col gap-1 min-w-0 flex-1 min-h-0 overflow-x-hidden" role="list" bind:this={exerciseListBody} ondrop={handleExerciseDrop} ondragover={handleExerciseDragOver}>
               {#if draftExercises.length === 0}
-                <div class="text-center py-4 border border-dashed border-[#1e1e1e] rounded-lg text-[10px] text-zinc-500 leading-snug">
+                <div class="text-center py-4 border border-dashed border-app-outline-subtle rounded-lg text-app-micro text-app-fg-muted leading-snug">
                   No exercises yet.<br />
                   {#if libraryExercisesAvailable.length > 0}
                     Tap NEW to create one, LIBRARY to pick from exercises you've already made, or EXERCISE CATALOG to browse built-ins.
@@ -12277,7 +12269,7 @@ const getStatIcon = getItemIcon;
                 >
                   <button
                     type="button"
-                    class="w-6 h-8 shrink-0 flex items-center justify-center border rounded text-[10px] font-medium leading-none transition-colors {isSelected ? '' : 'bg-[#141414] border-[#1e1e1e] text-zinc-400 hover:border-[#2a2a2a] hover:text-zinc-200'}"
+                    class="w-6 h-8 shrink-0 flex items-center justify-center border rounded-md text-app-micro font-medium leading-none transition-colors {isSelected ? '' : 'bg-app-surface-1 border-app-outline-subtle text-app-fg-secondary hover:border-app-outline hover:text-app-fg-secondary-strong'}"
                     style={isSelected ? `background-color: color-mix(in srgb, white 15%, #141414); border-color: white; color: white` : ''}
                     onclick={() => {
                       if (exerciseRowDragged) return;
@@ -12287,7 +12279,7 @@ const getStatIcon = getItemIcon;
                     {index + 1}
                   </button>
                   <div 
-                    class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center cursor-pointer transition-colors {isSelected ? '' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
+                    class="flex-1 h-8 min-w-0 px-1.5 border rounded-md text-xs flex items-center cursor-pointer transition-colors {isSelected ? '' : 'bg-app-surface-0 border-app-outline-subtle hover:bg-app-surface-1 hover:border-app-outline'}"
                     style={isSelected ? `background-color: color-mix(in srgb, white 8%, #0d0d0d); border-color: white; color: white` : ''}
                     role="button"
                     tabindex="0"
@@ -12298,9 +12290,9 @@ const getStatIcon = getItemIcon;
                   >
                     <div class="flex items-center gap-1 min-w-0 flex-1">
                       {#if exercise.exercise_type === 'reps'}
-                        <Dumbbell class="size-3 shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
+                        <Dumbbell class="app-icon-small shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
                       {:else}
-                        <Timer class="size-3 shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
+                        <Timer class="app-icon-small shrink-0" style={isSelected ? 'color: white' : 'color: #aaa'} />
                       {/if}
                       {#if editingExerciseNameId === exercise.id}
                         <input
@@ -12319,12 +12311,12 @@ const getStatIcon = getItemIcon;
                               (e.currentTarget as HTMLInputElement).blur();
                             }
                           }}
-                          class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                          class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none {isSelected ? 'text-app-fg-primary' : 'text-app-fg-secondary'}"
                           placeholder="NAME"
                         />
                       {:else}
                         <span
-                          class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                          class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-app-fg-primary' : 'text-app-fg-secondary'}"
                           role="button"
                           tabindex="0"
                           aria-label="Rename exercise {exercise.name}"
@@ -12345,11 +12337,11 @@ const getStatIcon = getItemIcon;
                       {#if isSelected}
                         <button
                           type="button"
-                          class="w-8 h-8 shrink-0 flex items-center justify-center rounded border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
+                          class="w-8 h-8 shrink-0 flex items-center justify-center rounded-md border border-red-900/80 bg-red-950/50 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
                           title="Remove from template"
                           onclick={(e) => { e.stopPropagation(); deleteSelectedExercise(); }}
                         >
-                          <Minus class="size-4 pointer-events-none" />
+                          <Minus class="app-icon-control pointer-events-none" />
                         </button>
                       {/if}
                     </div>
@@ -12370,7 +12362,7 @@ const getStatIcon = getItemIcon;
                 title="Create a brand new exercise definition"
                 aria-label="Create new exercise"
               >
-                <Plus class="size-3.5" strokeWidth={3} />
+                <Plus class="app-icon-small" strokeWidth={3} />
                 <span>NEW</span>
               </button>
               <div class="library-action-slot min-w-0 overflow-hidden">
@@ -12385,7 +12377,7 @@ const getStatIcon = getItemIcon;
                   aria-hidden={!showLibraryButton}
                   tabindex={showLibraryButton ? 0 : -1}
                 >
-                  <List class="size-3.5" strokeWidth={2.5} />
+                  <List class="app-icon-small" strokeWidth={2.5} />
                   <span>LIBRARY</span>
                 </button>
               </div>
@@ -12397,10 +12389,10 @@ const getStatIcon = getItemIcon;
               onclick={openExerciseCatalog}
               title="Browse the built-in wger exercise catalog"
             >
-              <BookOpen class="size-3.5 shrink-0" />
+              <BookOpen class="app-icon-small shrink-0" />
               <span class="catalog-launch__label">EXERCISE CATALOG</span>
               <span class="catalog-launch__meta">WGER</span>
-              <ChevronRight class="size-3.5 shrink-0" />
+              <ChevronRight class="app-icon-small shrink-0" />
             </button>
 
             <div
@@ -12409,10 +12401,10 @@ const getStatIcon = getItemIcon;
               aria-hidden={!(showExerciseLibraryPicker && !libraryPickerClosing)}
             >
               <div class="library-picker-panel__inner {(showExerciseLibraryPicker && !libraryPickerClosing) ? '' : 'pointer-events-none'}">
-                <div class="mt-1.5 rounded border border-[#1e1e1e] bg-[#0d0d0d] p-1.5 space-y-1.5 max-h-52 flex flex-col min-h-0">
+                <div class="mt-1.5 rounded-md border border-app-outline-subtle bg-app-surface-0 p-1.5 space-y-1.5 max-h-52 flex flex-col min-h-0">
                   <div class="flex gap-1 shrink-0">
                     <div class="relative shrink-0 flex-1">
-                      <Search class="size-3 absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+                      <Search class="app-icon-small absolute left-2 top-1/2 -translate-y-1/2 text-app-fg-muted pointer-events-none" />
                       <input
                         type="text"
                         inputmode="search"
@@ -12420,7 +12412,7 @@ const getStatIcon = getItemIcon;
                         spellcheck="false"
                         placeholder=""
                         enterkeyhint="search"
-                        class="library-search-input w-full h-7 pl-7 pr-2 rounded border border-[#1e1e1e] bg-[#141414] text-xs text-zinc-200 outline-none focus:border-[#2a2a2a] caret-zinc-200"
+                        class="library-search-input w-full h-7 pl-7 pr-2 rounded-md border border-app-outline-subtle bg-app-surface-1 text-xs text-app-fg-secondary-strong outline-none focus:border-app-outline caret-zinc-200"
                         bind:value={librarySearchQuery}
                         onclick={(e) => e.stopPropagation()}
                         tabindex={showExerciseLibraryPicker && !libraryPickerClosing ? 0 : -1}
@@ -12435,7 +12427,7 @@ const getStatIcon = getItemIcon;
                     {#if exerciseLibrary.length > 0}
                       <button
                         type="button"
-                        class="relative overflow-hidden h-9 px-2.5 shrink-0 flex items-center gap-1 rounded border transition-colors {deleteAllExHolding
+                        class="relative overflow-hidden h-9 px-2.5 shrink-0 flex items-center gap-1 rounded-md border transition-colors {deleteAllExHolding
                           ? 'border-red-500 text-red-300'
                           : 'border-red-900/50 bg-red-950/30 text-red-400 hover:text-red-300 hover:border-red-800 hover:bg-red-950/50'}"
                         title="Hold to delete all exercises"
@@ -12453,20 +12445,20 @@ const getStatIcon = getItemIcon;
                             style="width: {deleteAllExProgress}%;"
                           ></div>
                         {/if}
-                        <Trash2 class="size-3 pointer-events-none relative z-10" />
-                        <span class="relative z-10 text-[10px] leading-none font-medium">DELETE ALL</span>
+                        <Trash2 class="app-icon-small pointer-events-none relative z-10" />
+                        <span class="relative z-10 text-app-micro leading-none font-medium">DELETE ALL</span>
                       </button>
                     {/if}
                   </div>
                   <div class="space-y-1 max-h-40 overflow-y-auto overscroll-contain no-scrollbar min-h-0">
                     {#if availableLibraryForPicker.length === 0}
-                      <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
+                      <p class="text-app-micro text-app-fg-muted px-0.5 py-1 leading-snug">
                         {exerciseLibrary.length === 0
                           ? 'No saved exercises yet. Create one with NEW.'
                           : 'All your exercises are already in this template.'}
                       </p>
                     {:else if filteredLibraryForPicker.length === 0}
-                      <p class="text-[10px] text-zinc-500 px-0.5 py-1 leading-snug">
+                      <p class="text-app-micro text-app-fg-muted px-0.5 py-1 leading-snug">
                         No exercises match “{librarySearchQuery.trim()}”.
                       </p>
                     {:else}
@@ -12478,9 +12470,9 @@ const getStatIcon = getItemIcon;
                           : `${libraryEx.target_sets || 0}× ${libraryEx.target_minutes || 0}m${String(libraryEx.target_seconds || 0).padStart(2, '0')}s`}
                         {@const weight = isReps && libraryEx.current_weight != null ? ` · ${libraryEx.current_weight}kg` : ''}
                         <div
-                          class="w-full h-7 min-w-0 px-1.5 rounded border text-xs transition flex items-center gap-1.5 cursor-pointer {isSelectedLib 
-                            ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-200' 
-                            : 'bg-[#141414] border-[#1e1e1e] text-zinc-500 hover:bg-[#1a1a1a] hover:border-[#2a2a2a] hover:text-zinc-400'}"
+                          class="w-full h-7 min-w-0 px-1.5 rounded-md border text-xs transition flex items-center gap-1.5 cursor-pointer {isSelectedLib
+                            ? 'bg-app-surface-3 border-app-outline text-app-fg-secondary-strong'
+                            : 'bg-app-surface-1 border-app-outline-subtle text-app-fg-muted hover:bg-app-surface-2 hover:border-app-outline hover:text-app-fg-secondary'}"
                           role="button"
                           tabindex="0"
                           aria-pressed={isSelectedLib}
@@ -12490,31 +12482,31 @@ const getStatIcon = getItemIcon;
                           title={isSelectedLib ? '' : 'Select to move or delete'}
                         >
                           <div class="flex items-center gap-1.5 flex-1 min-w-0">
-                            <span class="text-[10px] text-zinc-600 tabular-nums w-3 text-right shrink-0">{libIdx + 1}</span>
+                            <span class="text-app-micro text-app-fg-disabled tabular-nums w-3 text-right shrink-0">{libIdx + 1}</span>
                             {#if isReps}
-                              <Dumbbell class="size-3 shrink-0 text-zinc-400" />
+                              <Dumbbell class="app-icon-small shrink-0 text-app-fg-secondary" />
                             {:else}
-                              <Timer class="size-3 shrink-0 text-zinc-400" />
+                              <Timer class="app-icon-small shrink-0 text-app-fg-secondary" />
                             {/if}
                             <span class="truncate leading-none text-left font-medium">{libraryEx.name}</span>
-                            <span class="ml-auto text-[10px] text-zinc-500 tabular-nums shrink-0">{summary}{weight}</span>
+                            <span class="ml-auto text-app-micro text-app-fg-muted tabular-nums shrink-0">{summary}{weight}</span>
                           </div>
                           {#if isSelectedLib}
                             <button
                               type="button"
-                              class="w-8 h-8 shrink-0 flex items-center justify-center rounded border border-[#2a2a2a] bg-[#1e1e1e] text-zinc-300 hover:text-white hover:border-[#3a3a3a] transition-colors"
+                              class="w-8 h-8 shrink-0 flex items-center justify-center rounded-md border border-app-outline bg-app-surface-3 text-app-fg-secondary-strong hover:text-app-fg-primary hover:border-app-outline-strong transition-colors"
                               onclick={(e) => { e.stopPropagation(); moveLibraryExerciseToTemplate(libraryEx); }}
                               title="Move into this template"
                             >
-                              <ChevronUp class="size-4 pointer-events-none" />
+                              <ChevronUp class="app-icon-control pointer-events-none" />
                             </button>
                             <button
                               type="button"
-                              class="w-8 h-8 shrink-0 flex items-center justify-center rounded border border-red-900/70 bg-red-950/40 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
+                              class="w-8 h-8 shrink-0 flex items-center justify-center rounded-md border border-red-900/70 bg-red-950/40 text-red-400 hover:text-red-300 hover:border-red-800 transition-colors"
                               onclick={(e) => { e.stopPropagation(); deleteLibraryExercise(libraryEx); }}
                               title="Delete from library (removes from all templates)"
                             >
-                              <Trash2 class="size-4 pointer-events-none" />
+                              <Trash2 class="app-icon-control pointer-events-none" />
                             </button>
                           {/if}
                         </div>
@@ -12526,7 +12518,7 @@ const getStatIcon = getItemIcon;
             </div>
           </div>
 
-          <div class="col-start-2 row-start-2 flex flex-col min-h-0 self-stretch border-l border-[#1e1e1e] pl-2">
+          <div class="col-start-2 row-start-2 flex flex-col min-h-0 self-stretch border-l border-app-outline-subtle pl-2">
             <div class="flex-1 flex flex-col min-h-0 h-full">
               {#if selectedExerciseId}
                 {@const ex = draftExercises.find((e: any) => e.id === selectedExerciseId)}
@@ -12537,45 +12529,45 @@ const getStatIcon = getItemIcon;
                   {@const isSuperset = draftSupersetIds.has(ex.id)}
                   {@const baseValues = overrideBaseById[ex.id] ?? baseSnapshotForExercise(ex)}
                   <!-- Fixed structure both modes: type + work + load/progress + rest -->
-                  <div class="rounded-lg border border-[#1e1e1e] bg-[#0d0d0d] p-2 flex flex-col gap-2">
+                  <div class="rounded-lg border border-app-outline-subtle bg-app-surface-0 p-2 flex flex-col gap-2">
                     <div
-                      class="relative grid grid-cols-2 w-full rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
+                      class="relative grid grid-cols-2 w-full rounded-md border border-app-outline-subtle bg-app-canvas p-0.5"
                       role="group"
                       aria-label="Exercise type"
                     >
                       <div
-                        class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+                        class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded-md bg-white transition-transform duration-200 ease-out"
                         style="transform: translateX({isReps ? '0' : 'calc(100% + 4px)'})"
                       ></div>
                       <button
                         type="button"
-                        class="relative z-10 h-7 flex items-center justify-center gap-1 text-[8px] font-black tracking-[0.1em] transition-colors {isReps ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                        class="relative z-10 h-7 flex items-center justify-center gap-1 text-app-micro font-black tracking-[0.1em] transition-colors {isReps ? 'text-black' : 'text-app-fg-muted hover:text-app-fg-secondary-strong'}"
                         onclick={() => switchDraftExerciseType(ex, 'reps')}
                       >
-                        <Dumbbell class="size-3" strokeWidth={ITEM_ICON_STROKE} />
+                        <Dumbbell class="app-icon-small" strokeWidth={ITEM_ICON_STROKE} />
                         REPS
                       </button>
                       <button
                         type="button"
-                        class="relative z-10 h-7 flex items-center justify-center gap-1 text-[8px] font-black tracking-[0.1em] transition-colors {!isReps ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+                        class="relative z-10 h-7 flex items-center justify-center gap-1 text-app-micro font-black tracking-[0.1em] transition-colors {!isReps ? 'text-black' : 'text-app-fg-muted hover:text-app-fg-secondary-strong'}"
                         onclick={() => switchDraftExerciseType(ex, 'time')}
                       >
-                        <Timer class="size-3" strokeWidth={ITEM_ICON_STROKE} />
+                        <Timer class="app-icon-small" strokeWidth={ITEM_ICON_STROKE} />
                         TIME
                       </button>
                     </div>
 
                     <!-- Work -->
                     <div class="space-y-1">
-                      <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 font-semibold leading-none">Work</div>
+                      <div class="text-app-micro uppercase tracking-[1.5px] text-app-fg-muted font-semibold leading-none">Work</div>
                       <div class="grid grid-cols-2 gap-1.5">
                         <label class="block min-w-0">
-                          <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Sets</span>
+                          <span class="text-app-micro text-app-fg-muted block mb-0.5 leading-none">Sets</span>
                           <input
                             type="text"
                             inputmode="numeric"
                             autocomplete="off"
-                            class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none focus:border-[#2a2a2a]"
+                            class="prop-num-input w-full h-7 bg-app-canvas border border-app-outline-subtle text-center text-xs rounded-md text-app-fg-primary outline-none focus:border-app-outline"
                             value={ex.target_sets > 0 ? ex.target_sets : ''}
                             oninput={(e) => {
                               const raw = (e.currentTarget as HTMLInputElement).value;
@@ -12589,12 +12581,12 @@ const getStatIcon = getItemIcon;
                         </label>
                         {#if isReps}
                           <label class="block min-w-0">
-                            <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Reps</span>
+                            <span class="text-app-micro text-app-fg-muted block mb-0.5 leading-none">Reps</span>
                             <input
                               type="text"
                               inputmode="numeric"
                               autocomplete="off"
-                              class="prop-num-input w-full h-7 bg-black border border-[#1e1e1e] text-center text-xs rounded text-white outline-none focus:border-[#2a2a2a]"
+                              class="prop-num-input w-full h-7 bg-app-canvas border border-app-outline-subtle text-center text-xs rounded-md text-app-fg-primary outline-none focus:border-app-outline"
                               value={ex.target_reps > 0 ? ex.target_reps : ''}
                               oninput={(e) => {
                                 const raw = (e.currentTarget as HTMLInputElement).value;
@@ -12608,13 +12600,13 @@ const getStatIcon = getItemIcon;
                           </label>
                         {:else}
                           <div class="min-w-0">
-                            <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Min</span>
-                            <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                            <span class="text-app-micro text-app-fg-muted block mb-0.5 leading-none">Min</span>
+                            <div class="flex items-stretch h-7 rounded-md border border-app-outline-subtle bg-app-canvas overflow-hidden">
                               <input
                                 type="text"
                                 inputmode="numeric"
                                 autocomplete="off"
-                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-app-fg-primary outline-none"
                                 value={ex.target_minutes ?? 0}
                                 oninput={(e) => {
                                   const raw = (e.currentTarget as HTMLInputElement).value;
@@ -12625,7 +12617,7 @@ const getStatIcon = getItemIcon;
                                 }}
                                 onblur={() => void persistTemplateExercisesNow()}
                               />
-                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">m</span>
+                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-app-outline-subtle text-app-micro font-medium text-app-fg-muted" aria-hidden="true">m</span>
                             </div>
                           </div>
                         {/if}
@@ -12634,17 +12626,17 @@ const getStatIcon = getItemIcon;
 
                     <!-- Load / duration progress — fixed 2 fields both modes -->
                     <div class="space-y-1">
-                      <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 font-semibold leading-none">{isReps ? 'Load' : 'Duration'}</div>
+                      <div class="text-app-micro uppercase tracking-[1.5px] text-app-fg-muted font-semibold leading-none">{isReps ? 'Load' : 'Duration'}</div>
                       <div class="grid grid-cols-2 gap-1.5">
                         {#if isReps}
                           <div class="min-w-0">
-                            <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Base</span>
-                            <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                            <span class="text-app-micro text-app-fg-muted block mb-0.5 leading-none">Base</span>
+                            <div class="flex items-stretch h-7 rounded-md border border-app-outline-subtle bg-app-canvas overflow-hidden">
                               <input
                                 type="text"
                                 inputmode="decimal"
                                 autocomplete="off"
-                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-app-fg-primary outline-none"
                                 value={ex.current_weight ?? 0}
                                 oninput={(e) => {
                                   const raw = (e.currentTarget as HTMLInputElement).value;
@@ -12655,17 +12647,17 @@ const getStatIcon = getItemIcon;
                                 }}
                                 onblur={() => void persistTemplateExercisesNow()}
                               />
-                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">kg</span>
+                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-app-outline-subtle text-app-micro font-medium text-app-fg-muted" aria-hidden="true">kg</span>
                             </div>
                           </div>
                           <div class="min-w-0">
-                            <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Progress</span>
-                            <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                            <span class="text-app-micro text-app-fg-muted block mb-0.5 leading-none">Progress</span>
+                            <div class="flex items-stretch h-7 rounded-md border border-app-outline-subtle bg-app-canvas overflow-hidden">
                               <input
                                 type="text"
                                 inputmode="decimal"
                                 autocomplete="off"
-                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-app-fg-primary outline-none"
                                 value={ex.increment ?? 0}
                                 oninput={(e) => {
                                   const raw = (e.currentTarget as HTMLInputElement).value;
@@ -12676,18 +12668,18 @@ const getStatIcon = getItemIcon;
                                 }}
                                 onblur={() => void persistTemplateExercisesNow()}
                               />
-                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">kg</span>
+                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-app-outline-subtle text-app-micro font-medium text-app-fg-muted" aria-hidden="true">kg</span>
                             </div>
                           </div>
                         {:else}
                           <div class="min-w-0">
-                            <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Sec</span>
-                            <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                            <span class="text-app-micro text-app-fg-muted block mb-0.5 leading-none">Sec</span>
+                            <div class="flex items-stretch h-7 rounded-md border border-app-outline-subtle bg-app-canvas overflow-hidden">
                               <input
                                 type="text"
                                 inputmode="numeric"
                                 autocomplete="off"
-                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-app-fg-primary outline-none"
                                 value={ex.target_seconds ?? 0}
                                 oninput={(e) => {
                                   const raw = (e.currentTarget as HTMLInputElement).value;
@@ -12698,17 +12690,17 @@ const getStatIcon = getItemIcon;
                                 }}
                                 onblur={() => void persistTemplateExercisesNow()}
                               />
-                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">s</span>
+                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-app-outline-subtle text-app-micro font-medium text-app-fg-muted" aria-hidden="true">s</span>
                             </div>
                           </div>
                           <div class="min-w-0">
-                            <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Progress</span>
-                            <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                            <span class="text-app-micro text-app-fg-muted block mb-0.5 leading-none">Progress</span>
+                            <div class="flex items-stretch h-7 rounded-md border border-app-outline-subtle bg-app-canvas overflow-hidden">
                               <input
                                 type="text"
                                 inputmode="numeric"
                                 autocomplete="off"
-                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                                class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-app-fg-primary outline-none"
                                 value={ex.increment ?? 0}
                                 oninput={(e) => {
                                   const raw = (e.currentTarget as HTMLInputElement).value;
@@ -12719,7 +12711,7 @@ const getStatIcon = getItemIcon;
                                 }}
                                 onblur={() => void persistTemplateExercisesNow()}
                               />
-                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">s</span>
+                              <span class="shrink-0 w-7 flex items-center justify-center border-l border-app-outline-subtle text-app-micro font-medium text-app-fg-muted" aria-hidden="true">s</span>
                             </div>
                           </div>
                         {/if}
@@ -12727,17 +12719,17 @@ const getStatIcon = getItemIcon;
                     </div>
 
                     <!-- Rest -->
-                    <div class="space-y-1 pt-0.5 border-t border-[#1e1e1e]">
-                      <div class="text-[9px] uppercase tracking-[1.5px] text-zinc-500 font-semibold leading-none">Rest</div>
+                    <div class="space-y-1 pt-0.5 border-t border-app-outline-subtle">
+                      <div class="text-app-micro uppercase tracking-[1.5px] text-app-fg-muted font-semibold leading-none">Rest</div>
                       <div class="grid grid-cols-2 gap-1.5">
                         <div class="min-w-0">
-                          <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Min</span>
-                          <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                          <span class="text-app-micro text-app-fg-muted block mb-0.5 leading-none">Min</span>
+                          <div class="flex items-stretch h-7 rounded-md border border-app-outline-subtle bg-app-canvas overflow-hidden">
                             <input
                               type="text"
                               inputmode="numeric"
                               autocomplete="off"
-                              class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                              class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-app-fg-primary outline-none"
                               value={ex.rest_minutes ?? 0}
                               oninput={(e) => {
                                 const raw = (e.currentTarget as HTMLInputElement).value;
@@ -12748,17 +12740,17 @@ const getStatIcon = getItemIcon;
                               }}
                               onblur={() => void persistTemplateExercisesNow()}
                             />
-                            <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">m</span>
+                            <span class="shrink-0 w-7 flex items-center justify-center border-l border-app-outline-subtle text-app-micro font-medium text-app-fg-muted" aria-hidden="true">m</span>
                           </div>
                         </div>
                         <div class="min-w-0">
-                          <span class="text-[9px] text-zinc-500 block mb-0.5 leading-none">Sec</span>
-                          <div class="flex items-stretch h-7 rounded border border-[#1e1e1e] bg-black overflow-hidden">
+                          <span class="text-app-micro text-app-fg-muted block mb-0.5 leading-none">Sec</span>
+                          <div class="flex items-stretch h-7 rounded-md border border-app-outline-subtle bg-app-canvas overflow-hidden">
                             <input
                               type="text"
                               inputmode="numeric"
                               autocomplete="off"
-                              class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-white outline-none"
+                              class="prop-num-input flex-1 min-w-0 h-full bg-transparent border-0 text-center text-xs rounded-none text-app-fg-primary outline-none"
                               value={ex.rest_seconds ?? 0}
                               oninput={(e) => {
                                 const raw = (e.currentTarget as HTMLInputElement).value;
@@ -12769,46 +12761,46 @@ const getStatIcon = getItemIcon;
                               }}
                               onblur={() => void persistTemplateExercisesNow()}
                             />
-                            <span class="shrink-0 w-7 flex items-center justify-center border-l border-[#1e1e1e] text-[10px] font-medium text-zinc-500" aria-hidden="true">s</span>
+                            <span class="shrink-0 w-7 flex items-center justify-center border-l border-app-outline-subtle text-app-micro font-medium text-app-fg-muted" aria-hidden="true">s</span>
                           </div>
                         </div>
                       </div>
-                      <p class="text-[9px] text-zinc-600 leading-snug">Between sets during the workout.</p>
+                      <p class="text-app-micro text-app-fg-disabled leading-snug">Between sets during the workout.</p>
                     </div>
 
                     <!-- Supersets & day-specific overrides -->
-                    <div class="space-y-1.5 pt-1.5 border-t border-[#1e1e1e]">
+                    <div class="space-y-1.5 pt-1.5 border-t border-app-outline-subtle">
                       <button
                         type="button"
-                        class="w-full h-8 flex items-center justify-between gap-2 rounded border px-2 transition-colors {isSuperset ? 'border-emerald-700/60 bg-emerald-950/30' : 'border-[#1e1e1e] bg-black hover:border-[#2a2a2a]'} disabled:opacity-40"
+                        class="w-full h-8 flex items-center justify-between gap-2 rounded-md border px-2 transition-colors {isSuperset ? 'border-emerald-700/60 bg-emerald-950/30' : 'border-app-outline-subtle bg-app-canvas hover:border-app-outline'} disabled:opacity-40"
                         disabled={isLastExercise}
                         title={isLastExercise ? 'Add another exercise after this one to make a superset' : 'Run straight into the next exercise without a rest timer'}
                         onclick={() => toggleExerciseSuperset(ex.id)}
                       >
-                        <span class="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[1.2px] {isSuperset ? 'text-emerald-300' : 'text-zinc-400'}">
-                          <Link2 class="size-3.5" />
+                        <span class="flex items-center gap-1.5 text-app-micro font-bold uppercase tracking-[1.2px] {isSuperset ? 'text-emerald-300' : 'text-app-fg-secondary'}">
+                          <Link2 class="app-icon-small" />
                           Superset with next
                         </span>
-                        <span class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors {isSuperset ? 'bg-emerald-500' : 'bg-[#2a2a2a]'}">
-                          <span class="absolute size-3 rounded-full bg-white transition-transform duration-150 {isSuperset ? 'translate-x-3.5' : 'translate-x-0.5'}"></span>
+                        <span class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors {isSuperset ? 'bg-emerald-500' : 'bg-app-surface-4'}">
+                          <span class="absolute app-icon-small rounded-full bg-white transition-transform duration-150 {isSuperset ? 'translate-x-3.5' : 'translate-x-0.5'}"></span>
                         </span>
                       </button>
                       <button
                         type="button"
-                        class="w-full h-8 flex items-center justify-between gap-2 rounded border px-2 transition-colors {hasOverride ? 'border-amber-700/60 bg-amber-950/30' : 'border-[#1e1e1e] bg-black hover:border-[#2a2a2a]'}"
+                        class="w-full h-8 flex items-center justify-between gap-2 rounded-md border px-2 transition-colors {hasOverride ? 'border-amber-700/60 bg-amber-950/30' : 'border-app-outline-subtle bg-app-canvas hover:border-app-outline'}"
                         title="Keep values for this day separate from the shared exercise"
                         onclick={() => toggleExerciseDayOverride(ex.id)}
                       >
-                        <span class="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[1.2px] {hasOverride ? 'text-amber-300' : 'text-zinc-400'}">
-                          <SlidersHorizontal class="size-3.5" />
+                        <span class="flex items-center gap-1.5 text-app-micro font-bold uppercase tracking-[1.2px] {hasOverride ? 'text-amber-300' : 'text-app-fg-secondary'}">
+                          <SlidersHorizontal class="app-icon-small" />
                           Override for this day
                         </span>
-                        <span class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors {hasOverride ? 'bg-amber-500' : 'bg-[#2a2a2a]'}">
-                          <span class="absolute size-3 rounded-full bg-white transition-transform duration-150 {hasOverride ? 'translate-x-3.5' : 'translate-x-0.5'}"></span>
+                        <span class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors {hasOverride ? 'bg-amber-500' : 'bg-app-surface-4'}">
+                          <span class="absolute app-icon-small rounded-full bg-white transition-transform duration-150 {hasOverride ? 'translate-x-3.5' : 'translate-x-0.5'}"></span>
                         </span>
                       </button>
                       {#if hasOverride}
-                        <p class="text-[9px] leading-snug text-amber-300/80">
+                        <p class="text-app-micro leading-snug text-amber-300/80">
                           This day only. Base stays {baseValues.target_sets ?? 0} × {isReps ? `${baseValues.target_reps ?? 0} reps` : `${baseValues.target_minutes ?? 0}m ${baseValues.target_seconds ?? 0}s`}{isReps ? ` @ ${formatOneDecimal(Number(baseValues.current_weight ?? 0))}kg` : ''}.
                         </p>
                       {/if}
@@ -12816,7 +12808,7 @@ const getStatIcon = getItemIcon;
                   </div>
                 {/if}
               {:else}
-                <div class="flex-1 min-h-0 flex items-center justify-center text-center px-2 py-4 text-[10px] leading-snug text-zinc-500 border border-dashed border-[#1e1e1e] rounded-lg">
+                <div class="flex-1 min-h-0 flex items-center justify-center text-center px-2 py-4 text-app-micro leading-snug text-app-fg-muted border border-dashed border-app-outline-subtle rounded-lg">
                   Select an exercise to edit.
                 </div>
               {/if}
@@ -12826,7 +12818,7 @@ const getStatIcon = getItemIcon;
       {/if}
     </div>
   {:else if currentView === 'routines_menu'}
-    <div class="bg-[#141414] border border-[#1e1e1e] rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
+    <div class="bg-app-surface-1 border border-app-outline-subtle rounded-xl p-3 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain no-scrollbar">
       <RoutinesMenu
         onBack={closeRoutinesMenu}
         onEditRoutine={handleEditRoutineFromMenu}
@@ -12850,19 +12842,19 @@ const getStatIcon = getItemIcon;
     <div class="auth-screen">
       <section class="auth-story" aria-label="Lift Tracker overview">
         <div class="auth-story__brand">
-          <span class="auth-story__mark"><Dumbbell class="size-4" aria-hidden="true" /></span>
+          <span class="auth-story__mark"><Dumbbell class="app-icon-control" aria-hidden="true" /></span>
           <span>LIFT<span class="auth-story__brand-light">TRACKER</span></span>
           <span class="auth-story__version">v{APP_VERSION}</span>
         </div>
         <div class="auth-story__copy">
-          <p class="auth-story__eyebrow"><span></span> YOUR TRAINING, IN FOCUS</p>
-          <h1>Show up.<br /><em>Get stronger.</em></h1>
+          <p class="auth-story__eyebrow"><span></span> WORKOUT TRACKING</p>
+          <h1>Workouts and<br /><em>training history.</em></h1>
           <p class="auth-story__description">
-            A calm, precise place to plan your training, log every set, and see the work add up.
+            Create routines, record sets, and review past workouts.
           </p>
         </div>
         <div class="auth-preview" aria-hidden="true">
-          <div class="auth-preview__top"><span>THIS WEEK</span><span>CONSISTENCY <b>04 / 05</b></span></div>
+          <div class="auth-preview__top"><span>SAMPLE WEEK</span><span>WORKOUT LOG</span></div>
           <div class="auth-preview__days">
             <span class="auth-preview__day auth-preview__day--done">M</span>
             <span class="auth-preview__day">T</span>
@@ -12873,38 +12865,38 @@ const getStatIcon = getItemIcon;
             <span class="auth-preview__day auth-preview__day--rest">S</span>
           </div>
           <div class="auth-preview__rule"></div>
-          <div class="auth-preview__lift"><span>BACK SQUAT</span><span>+2.5 <small>KG</small></span></div>
+          <div class="auth-preview__lift"><span>BACK SQUAT</span><span>3 <small>SETS</small></span></div>
           <div class="auth-preview__chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><svg viewBox="0 0 320 46" preserveAspectRatio="none"><path d="M0 38 C24 35 28 29 50 32 S78 33 96 25 S128 32 145 22 S171 25 191 18 S226 24 243 12 S276 20 294 8 S312 12 320 3" /></svg></div>
-          <div class="auth-preview__bottom"><span>LAST 8 WEEKS</span><strong>PROGRESS, NOT PRESSURE</strong></div>
+          <div class="auth-preview__bottom"><span>SAMPLE DATA</span><strong>TRAINING HISTORY</strong></div>
         </div>
-        <div class="auth-story__foot"><span>PLAN WITH INTENT</span><span>·</span><span>TRACK WHAT MATTERS</span><span>·</span><span>KEEP YOUR DATA YOURS</span></div>
+        <div class="auth-story__foot"><span>ROUTINES</span><span>·</span><span>WORKOUT LOG</span><span>·</span><span>METRICS</span></div>
       </section>
 
       <section class="auth-form-column" aria-label="Sign in or create an account">
       <div class="auth-mobile-brand">
-        <div class="auth-mobile-brand__icon"><Dumbbell class="size-7 text-zinc-200" aria-hidden="true" /></div>
+        <div class="auth-mobile-brand__icon"><Dumbbell class="size-7 text-app-fg-secondary-strong" aria-hidden="true" /></div>
         <div class="auth-mobile-brand__wordmark"><b>LIFT</b><span>TRACKER</span></div>
       </div>
       <div class="auth-form-heading">
-        <p class="auth-form-heading__eyebrow">{authMode === 'signup' ? 'YOUR NEXT REP STARTS HERE' : 'GOOD TO HAVE YOU BACK'}</p>
-        <h2>{authMode === 'signup' ? 'Create your account' : 'Welcome back'}</h2>
-        <p>{authMode === 'signup' ? 'Save your routines and progress across devices.' : 'Sign in to pick up where you left off.'}</p>
+        <p class="auth-form-heading__eyebrow">{authMode === 'signup' ? 'CREATE ACCOUNT' : 'SIGN IN'}</p>
+        <h2>{authMode === 'signup' ? 'Create your account' : 'Sign in to your account'}</h2>
+        <p>{authMode === 'signup' ? 'Sync routines and workout history across devices.' : 'Enter your account details to view your workouts and routines.'}</p>
       </div>
 
-      <div class="auth-panel-card rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden">
-        <div class="p-1 border-b border-[#1e1e1e] bg-[#111]">
+      <div class="auth-panel-card rounded-xl border border-app-outline-subtle bg-app-surface-1 overflow-hidden">
+        <div class="p-1 border-b border-app-outline-subtle bg-app-surface-0">
           <div
-            class="relative grid grid-cols-2 rounded border border-[#1e1e1e] bg-[#0a0a0a] p-0.5"
+            class="relative grid grid-cols-2 rounded-md border border-app-outline-subtle bg-app-canvas p-0.5"
             role="group"
             aria-label="Authentication mode"
           >
             <div
-              class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded bg-white transition-transform duration-200 ease-out"
+              class="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded-md bg-white transition-transform duration-200 ease-out"
               style="transform: translateX({authMode === 'signup' ? '0' : 'calc(100% + 4px)'})"
             ></div>
             <button
               type="button"
-              class="auth-mode-switch relative z-10 h-9 flex items-center justify-center text-[10px] font-black tracking-[0.12em] transition-colors {authMode === 'signup' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+              class="auth-mode-switch relative z-10 h-9 flex items-center justify-center text-app-micro font-black tracking-[0.12em] transition-colors {authMode === 'signup' ? 'text-black' : 'text-app-fg-muted hover:text-app-fg-secondary-strong'}"
               disabled={signingIn}
               onclick={() => setAuthMode('signup')}
             >
@@ -12912,7 +12904,7 @@ const getStatIcon = getItemIcon;
             </button>
             <button
               type="button"
-              class="auth-mode-switch relative z-10 h-9 flex items-center justify-center text-[10px] font-black tracking-[0.12em] transition-colors {authMode === 'signin' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+              class="auth-mode-switch relative z-10 h-9 flex items-center justify-center text-app-micro font-black tracking-[0.12em] transition-colors {authMode === 'signin' ? 'text-black' : 'text-app-fg-muted hover:text-app-fg-secondary-strong'}"
               disabled={signingIn}
               onclick={() => setAuthMode('signin')}
             >
@@ -12923,7 +12915,7 @@ const getStatIcon = getItemIcon;
 
         <div class="p-3 text-left">
           <button type="button" class="auth-google-button" onclick={handleGoogleSignIn} disabled={signingIn}>
-            <AuthBrandIcon brand="google" class="size-4" />
+            <AuthBrandIcon brand="google" class="app-icon-control" />
             <span>{signingIn ? 'CONNECTING…' : 'CONTINUE WITH GOOGLE'}</span>
           </button>
           <div class="auth-divider"><span>OR CONTINUE WITH {authCredentialMethod === 'email' ? 'EMAIL' : 'USERNAME'}</span></div>
@@ -12938,7 +12930,7 @@ const getStatIcon = getItemIcon;
             }}>
             {#if authCredentialMethod === 'email'}
               <div class="relative">
-                <Mail class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-zinc-500 pointer-events-none" />
+                <Mail class="absolute left-3 top-1/2 -translate-y-1/2 app-icon-control text-app-fg-muted pointer-events-none" />
                 <input
                   type="email"
                   autocomplete="email"
@@ -12946,13 +12938,13 @@ const getStatIcon = getItemIcon;
                   disabled={signingIn}
                   aria-label="Email address"
                   placeholder="you@example.com"
-                  class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white placeholder:text-zinc-600 outline-none focus:border-zinc-500 disabled:opacity-60"
+                  class="h-11 w-full pl-10 pr-3 rounded-xl bg-app-canvas border border-app-outline-subtle text-sm text-app-fg-primary placeholder:text-app-fg-disabled outline-none focus:border-zinc-500 disabled:opacity-60"
                   oninput={clearAuthFeedback}
                 />
               </div>
             {:else}
               <div class="relative">
-                <User class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-zinc-500 pointer-events-none" />
+                <User class="absolute left-3 top-1/2 -translate-y-1/2 app-icon-control text-app-fg-muted pointer-events-none" />
                 <input
                   type="text"
                   autocomplete="username"
@@ -12962,7 +12954,7 @@ const getStatIcon = getItemIcon;
                   disabled={signingIn}
                   aria-label="Username"
                   placeholder="username"
-                  class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white placeholder:text-zinc-600 outline-none focus:border-zinc-500 disabled:opacity-60"
+                  class="h-11 w-full pl-10 pr-3 rounded-xl bg-app-canvas border border-app-outline-subtle text-sm text-app-fg-primary placeholder:text-app-fg-disabled outline-none focus:border-zinc-500 disabled:opacity-60"
                   oninput={(e) => {
                     clearAuthFeedback();
                     authUsername = sanitizeUsernameInput((e.currentTarget as HTMLInputElement).value);
@@ -12972,7 +12964,7 @@ const getStatIcon = getItemIcon;
             {/if}
             <div>
               <div class="relative">
-                <Lock class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-zinc-500 pointer-events-none" />
+                <Lock class="absolute left-3 top-1/2 -translate-y-1/2 app-icon-control text-app-fg-muted pointer-events-none" />
                 <input
                   type="password"
                   autocomplete={authMode === 'signup' ? 'new-password' : 'current-password'}
@@ -12981,7 +12973,7 @@ const getStatIcon = getItemIcon;
                   disabled={signingIn}
                   placeholder="••••••••"
                   aria-label="Password"
-                  class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white placeholder:text-zinc-600 outline-none focus:border-zinc-500 disabled:opacity-60"
+                  class="h-11 w-full pl-10 pr-3 rounded-xl bg-app-canvas border border-app-outline-subtle text-sm text-app-fg-primary placeholder:text-app-fg-disabled outline-none focus:border-zinc-500 disabled:opacity-60"
                   oninput={(e) => {
                     clearAuthFeedback();
                     authPassword = sanitizePasswordInput((e.currentTarget as HTMLInputElement).value);
@@ -12995,7 +12987,7 @@ const getStatIcon = getItemIcon;
               >
                 <div class="auth-confirm-reveal__inner">
                   <div class="relative">
-                    <LockKeyhole class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-zinc-500 pointer-events-none z-10" />
+                    <LockKeyhole class="absolute left-3 top-1/2 -translate-y-1/2 app-icon-control text-app-fg-muted pointer-events-none z-10" />
                     <input
                       type="password"
                       autocomplete="new-password"
@@ -13005,7 +12997,7 @@ const getStatIcon = getItemIcon;
                       placeholder=""
                       tabindex={authMode === 'signup' ? 0 : -1}
                       aria-label="Confirm password"
-                      class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white outline-none focus:border-zinc-500 disabled:opacity-60"
+                      class="h-11 w-full pl-10 pr-3 rounded-xl bg-app-canvas border border-app-outline-subtle text-sm text-app-fg-primary outline-none focus:border-zinc-500 disabled:opacity-60"
                       oninput={(e) => {
                         clearAuthFeedback();
                         authConfirmPassword = sanitizePasswordInput((e.currentTarget as HTMLInputElement).value);
@@ -13013,7 +13005,7 @@ const getStatIcon = getItemIcon;
                     />
                     {#if authMode === 'signup' && !authConfirmPassword}
                       <span
-                        class="absolute left-10 top-1/2 -translate-y-1/2 text-sm text-zinc-600 pointer-events-none select-none"
+                        class="absolute left-10 top-1/2 -translate-y-1/2 text-sm text-app-fg-disabled pointer-events-none select-none"
                         aria-hidden="true"
                       >••••••••</span>
                     {/if}
@@ -13024,7 +13016,7 @@ const getStatIcon = getItemIcon;
             <div class="auth-submit-crossfade h-11 min-h-11">
               <button
                 type="submit"
-                class="auth-submit-crossfade__layer auth-submit-btn auth-submit-btn--default h-11 min-h-11 rounded-xl font-black text-[11px] tracking-[0.15em] flex items-center justify-center px-3 text-center leading-snug
+                class="auth-submit-crossfade__layer auth-submit-btn auth-submit-btn--default h-11 min-h-11 rounded-xl font-black text-app-caption tracking-[0.15em] flex items-center justify-center px-3 text-center leading-snug
                   {authSubmitBtnLit ? 'auth-submit-crossfade__layer--lit auth-submit-crossfade__layer--interactive' : ''}
                   {authFeedbackExiting ? 'auth-submit-crossfade__layer--top' : ''}"
                 disabled={signingIn || authFeedbackLit || (!authSubmitReady && !authFeedbackExiting)}
@@ -13034,7 +13026,7 @@ const getStatIcon = getItemIcon;
                 tabindex={authSubmitBtnLit ? 0 : -1}
               >
                 {#if signingIn}
-                  <RefreshCw class="size-4 shrink-0 animate-spin" aria-hidden="true" />
+                  <RefreshCw class="app-icon-control shrink-0 animate-spin" aria-hidden="true" />
                 {:else}
                   {authMode === 'signup' ? 'CREATE ACCOUNT' : 'SIGN IN'}
                 {/if}
@@ -13043,7 +13035,7 @@ const getStatIcon = getItemIcon;
                 <div
                   role="status"
                   aria-live="polite"
-                  class="auth-submit-crossfade__layer auth-submit-btn auth-submit-btn--feedback h-11 min-h-11 rounded-xl font-black text-[11px] tracking-[0.15em] flex items-center justify-center px-3 text-center leading-snug
+                  class="auth-submit-crossfade__layer auth-submit-btn auth-submit-btn--feedback h-11 min-h-11 rounded-xl font-black text-app-caption tracking-[0.15em] flex items-center justify-center px-3 text-center leading-snug
                     {authError ? 'auth-submit-btn--error' : 'auth-submit-btn--success'}
                     {authFeedbackLit ? 'auth-submit-crossfade__layer--lit auth-submit-crossfade__layer--top' : ''}
                     {authError && authFeedbackLit ? 'auth-submit-btn--error-nudge' : ''}"
@@ -13052,9 +13044,9 @@ const getStatIcon = getItemIcon;
                 >
                   <span class="auth-submit-btn__feedback flex items-center gap-1.5 min-w-0 max-w-full">
                     {#if authError}
-                      <CircleAlert class="auth-submit-btn__icon size-3.5 shrink-0" aria-hidden="true" />
+                      <CircleAlert class="auth-submit-btn__icon app-icon-small shrink-0" aria-hidden="true" />
                     {:else}
-                      <CircleCheck class="auth-submit-btn__icon size-3.5 shrink-0" aria-hidden="true" />
+                      <CircleCheck class="auth-submit-btn__icon app-icon-small shrink-0" aria-hidden="true" />
                     {/if}
                     <span class="line-clamp-2 min-w-0">{authError ?? authSuccess}</span>
                   </span>
@@ -13064,7 +13056,7 @@ const getStatIcon = getItemIcon;
             <div class="text-center">
               <button
                 type="button"
-                class="auth-credential-toggle text-[10px] font-medium tracking-[0.08em] text-zinc-500 hover:text-zinc-300 active:text-white transition-colors disabled:opacity-50"
+                class="auth-credential-toggle text-app-micro font-medium tracking-[0.08em] text-app-fg-muted hover:text-app-fg-secondary-strong active:text-app-fg-primary transition-colors disabled:opacity-50"
                 disabled={signingIn}
                 onclick={toggleEmailAuth}
               >
@@ -13094,12 +13086,12 @@ const getStatIcon = getItemIcon;
   {/if}
   </div>
 
-  <div class="app-footer flex items-baseline justify-center gap-x-1 text-center text-[9px] tracking-[0.5px] text-zinc-500 shrink-0 leading-none">
+  <div class="app-footer flex items-baseline justify-center gap-x-1 text-center text-app-micro tracking-[0.5px] text-app-fg-muted shrink-0 leading-none">
     <a
       href="https://github.com/Kono-o/lift-tracker"
       target="_blank"
       rel="noopener noreferrer"
-      class="hover:text-zinc-300 active:text-white transition-colors"
+      class="hover:text-app-fg-secondary-strong active:text-app-fg-primary transition-colors"
       aria-label="Lift Tracker source code on GitHub"
       title="View Lift Tracker on GitHub"
     >

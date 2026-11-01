@@ -1,7 +1,7 @@
 <script lang="ts">
   let {
     brand,
-    class: className = 'size-5',
+    class: className = 'app-icon-nav',
   }: {
     brand: 'google' | 'github' | 'discord' | 'x';
     class?: string;

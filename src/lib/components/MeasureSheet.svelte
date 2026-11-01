@@ -314,10 +314,10 @@
 
 {#if open}
 <div class="settings-panel-overlay" role="dialog" aria-modal="true" aria-label={editing ? 'Edit weigh-in' : 'Measure body composition'} tabindex="-1" transition:fade={{ duration: OVERLAY_MS }}>
-  <div class="settings-panel-dialog measure-sheet rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left" in:menuPanelIn out:menuPanelOut>
+  <div class="settings-panel-dialog measure-sheet rounded-xl border border-app-outline-subtle bg-app-surface-1 shadow-xl overflow-hidden text-left" in:menuPanelIn out:menuPanelOut>
     <div class="settings-panel-header">
       <div class="settings-panel-header__title">
-        <span class="text-[11px] font-medium tracking-[0.14em] text-zinc-400 leading-none">
+        <span class="text-app-caption font-medium tracking-[0.14em] text-app-fg-secondary leading-none">
           {editing ? 'EDIT WEIGH-IN' : manual || manualOnly ? 'ADD WEIGH-IN' : 'MEASURE'}
         </span>
       </div>
@@ -329,7 +329,7 @@
           <span class="measure-sheet__chip">{battery}%</span>
         {/if}
         <button type="button" aria-label="Close" class="settings-panel-header__close" onclick={onDismiss} disabled={saving}>
-          <X class="size-3.5" />
+          <X class="app-icon-small" />
         </button>
       </div>
     </div>
@@ -378,7 +378,7 @@
           <div class="measure-sheet__actions">
             {#if !manualOnly}
               <button type="button" class="measure-sheet__ghost" onclick={backToScale}>
-                <Bluetooth class="size-3.5" />
+                <Bluetooth class="app-icon-small" />
                 <span>USE SCALE</span>
               </button>
             {/if}
@@ -395,7 +395,7 @@
           </div>
           {#if capturedHeartRate != null && stage !== 'idle'}
             <div class="measure-readout__hr">
-              <Activity class="size-3.5" />
+              <Activity class="app-icon-small" />
               <span class="tabular-nums">{capturedHeartRate} bpm</span>
             </div>
           {/if}
@@ -403,7 +403,7 @@
 
           {#if stage === 'connected' || stage === 'weighing' || stage === 'measuring'}
             <div class="measure-readout__spinner" aria-hidden="true">
-              <RefreshCw class="size-3.5 animate-spin" />
+              <RefreshCw class="app-icon-small animate-spin" />
               <span>{stage === 'measuring' ? 'Counting pulses' : 'Listening for the scale'}</span>
             </div>
           {/if}
@@ -427,15 +427,15 @@
             </div>
           {:else if capturedKg > 0 && !profileReady}
             <button type="button" class="measure-sheet__nudge" onclick={onEditProfile}>
-              <span>Add sex, birthday and height to unlock BMI, body fat, water and BMR</span>
-              <ChevronRight class="size-3.5" />
+              <span>Enter sex, date of birth, and height to calculate BMI, body fat, water, and BMR.</span>
+              <ChevronRight class="app-icon-small" />
             </button>
           {/if}
 
           <div class="measure-sheet__actions">
             {#if stage === 'idle' || stage === 'error'}
               <button type="button" class="measure-sheet__primary" onclick={beginSession}>
-                <Scale class="size-4" />
+                <Scale class="app-icon-control" />
                 <span>{stage === 'error' ? 'TRY AGAIN' : 'STEP ON'}</span>
               </button>
             {:else if busy}
@@ -444,7 +444,7 @@
               </button>
             {:else if reading}
               <button type="button" class="measure-sheet__ghost" onclick={retry}>
-                <RefreshCw class="size-3.5" />
+                <RefreshCw class="app-icon-small" />
                 <span>REDO</span>
               </button>
               <button type="button" class="measure-sheet__primary" onclick={save} disabled={saving}>
@@ -452,7 +452,7 @@
               </button>
             {:else}
               <button type="button" class="measure-sheet__primary" onclick={beginSession}>
-                <Scale class="size-4" />
+                <Scale class="app-icon-control" />
                 <span>STEP ON</span>
               </button>
             {/if}
@@ -478,20 +478,20 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    border: 1px solid #1e1e1e;
-    background: #0d0d0d;
+    border: 1px solid var(--app-outline-subtle);
+    background: var(--app-surface-0);
     border-radius: 999px;
-    padding: 0.125rem 0.5rem;
-    font-size: 9px;
+    padding: var(--space-0-5) var(--space-2);
+    font-size: var(--type-micro);
     letter-spacing: 0.06em;
-    color: #a1a1aa;
+    color: var(--app-fg-secondary);
   }
 
   .measure-sheet__actions {
     display: flex;
     align-items: stretch;
-    gap: 0.5rem;
-    margin-top: 0.75rem;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
   }
 
   .measure-sheet__primary,
@@ -499,18 +499,18 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.4rem;
+    gap: var(--space-1-5);
     height: 2.25rem;
     flex: 1;
-    border-radius: 0.375rem;
-    font-size: 11px;
+    border-radius: var(--app-radius-compact);
+    font-size: var(--type-micro);
     font-weight: 500;
     letter-spacing: 0.08em;
     transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
   }
 
   .measure-sheet__primary {
-    border: 1px solid #2a2a2a;
+    border: 1px solid var(--app-outline);
     background: #fff;
     color: #000;
   }
@@ -525,30 +525,30 @@
   }
 
   .measure-sheet__ghost {
-    border: 1px solid #1e1e1e;
+    border: 1px solid var(--app-outline-subtle);
     background: transparent;
-    color: #a1a1aa;
+    color: var(--app-fg-secondary);
   }
 
   .measure-sheet__ghost:hover {
-    background: #1a1a1a;
+    background: var(--app-surface-2);
     color: #fff;
   }
 
   .measure-sheet__note {
-    margin-top: 0.6rem;
-    font-size: 10px;
+    margin-top: var(--space-2-5);
+    font-size: var(--type-micro);
     line-height: 1.45;
-    color: #a1a1aa;
-    border: 1px dashed #1e1e1e;
-    border-radius: 0.375rem;
-    padding: 0.4rem 0.5rem;
-    background: #0d0d0d;
+    color: var(--app-fg-secondary);
+    border: 1px dashed var(--app-outline-subtle);
+    border-radius: var(--app-radius-compact);
+    padding: var(--space-1-5) var(--space-2);
+    background: var(--app-surface-0);
   }
 
   .measure-sheet__alert {
-    margin-top: 0.5rem;
-    font-size: 10px;
+    margin-top: var(--space-2);
+    font-size: var(--type-micro);
     color: #fca5a5;
   }
 
@@ -556,35 +556,35 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
+    gap: var(--space-2);
     width: 100%;
-    margin-top: 0.6rem;
-    padding: 0.5rem 0.6rem;
-    border: 1px solid #1e1e1e;
-    border-radius: 0.375rem;
-    background: #0d0d0d;
-    font-size: 10px;
+    margin-top: var(--space-2-5);
+    padding: var(--space-2) var(--space-2-5);
+    border: 1px solid var(--app-outline-subtle);
+    border-radius: var(--app-radius-compact);
+    background: var(--app-surface-0);
+    font-size: var(--type-micro);
     line-height: 1.4;
-    color: #d4d4d8;
+    color: var(--app-fg-secondary-strong);
     text-align: left;
   }
 
   .measure-sheet__nudge:hover {
-    border-color: #3a3a3a;
+    border-color: var(--app-outline-strong);
     color: #fff;
   }
 
   .measure-sheet__manual-link {
     display: block;
     width: 100%;
-    margin-top: 0.5rem;
-    font-size: 10px;
-    color: #71717a;
+    margin-top: var(--space-2);
+    font-size: var(--type-micro);
+    color: var(--app-fg-muted);
     text-align: center;
   }
 
   .measure-sheet__manual-link span {
-    color: #a1a1aa;
+    color: var(--app-fg-secondary);
     text-decoration: underline;
     text-underline-offset: 2px;
   }
@@ -597,17 +597,17 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.35rem;
-    padding: 0.75rem 0 0.25rem;
+    gap: var(--space-1-5);
+    padding: var(--space-3) 0 var(--space-1);
   }
 
   .measure-readout__weight {
     display: flex;
     align-items: baseline;
-    gap: 0.35rem;
+    gap: var(--space-1-5);
     font-size: 3.25rem;
     line-height: 1;
-    color: #fafafa;
+    color: var(--app-fg-primary);
     font-variant-numeric: tabular-nums;
   }
 
@@ -616,23 +616,23 @@
   }
 
   .measure-readout__unit {
-    font-size: 0.875rem;
-    color: #71717a;
+    font-size: var(--type-body);
+    color: var(--app-fg-muted);
     letter-spacing: 0.08em;
   }
 
   .measure-readout__hr {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
-    font-size: 11px;
+    gap: var(--space-1);
+    font-size: var(--type-micro);
     color: #f87171;
   }
 
   .measure-readout__status {
-    font-size: 10px;
+    font-size: var(--type-micro);
     letter-spacing: 0.08em;
-    color: #a1a1aa;
+    color: var(--app-fg-secondary);
     text-align: center;
   }
 
@@ -643,80 +643,80 @@
   .measure-readout__spinner {
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
-    font-size: 9px;
+    gap: var(--space-1-5);
+    font-size: var(--type-micro);
     letter-spacing: 0.1em;
-    color: #52525b;
+    color: var(--app-fg-disabled);
   }
 
   .measure-preview {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 1px;
+    gap: 0;
     width: 100%;
-    margin-top: 0.75rem;
-    background: #1e1e1e;
-    border: 1px solid #1e1e1e;
-    border-radius: 0.375rem;
+    margin-top: var(--space-3);
+    background: var(--app-surface-3);
+    border: 1px solid var(--app-outline-subtle);
+    border-radius: var(--app-radius-compact);
     overflow: hidden;
   }
 
   .measure-preview__cell {
     display: flex;
     flex-direction: column;
-    gap: 0.15rem;
-    padding: 0.4rem 0.5rem;
-    background: #0d0d0d;
+    gap: var(--space-0-5);
+    padding: var(--space-1-5) var(--space-2);
+    background: var(--app-surface-0);
   }
 
   .measure-preview__cell span {
-    font-size: 8px;
+    font-size: var(--type-micro);
     letter-spacing: 0.12em;
-    color: #52525b;
+    color: var(--app-fg-disabled);
   }
 
   .measure-preview__cell strong {
-    font-size: 12px;
+    font-size: var(--type-caption);
     font-weight: 500;
-    color: #e4e4e7;
+    color: var(--app-fg-primary);
   }
 
   .measure-preview__cell--muted strong {
-    color: #52525b;
+    color: var(--app-fg-disabled);
   }
 
   .manual-form {
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
-    padding-top: 0.25rem;
+    gap: var(--space-2-5);
+    padding-top: var(--space-1);
   }
 
   .manual-field {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: var(--space-1);
   }
 
   .manual-field__label {
-    font-size: 9px;
+    font-size: var(--type-micro);
     letter-spacing: 0.12em;
-    color: #52525b;
+    color: var(--app-fg-disabled);
   }
 
   .manual-field__input {
     height: 2.25rem;
-    border: 1px solid #1e1e1e;
-    border-radius: 0.375rem;
-    background: #060606;
-    padding: 0 0.6rem;
-    font-size: 13px;
+    border: 1px solid var(--app-outline-subtle);
+    border-radius: var(--app-radius-compact);
+    background: var(--app-canvas);
+    padding: 0 var(--space-2-5);
+    font-size: var(--type-caption);
     color: #fff;
     outline: none;
     font-variant-numeric: tabular-nums;
   }
 
   .manual-field__input:focus {
-    border-color: #3a3a3a;
+    border-color: var(--app-outline-strong);
   }
 </style>

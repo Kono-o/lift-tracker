@@ -58,30 +58,30 @@
 
 <main class="auth-recovery-screen">
 	<section class="auth-recovery-card" aria-labelledby="recovery-title">
-		<div class="auth-recovery-brand"><span><Dumbbell class="size-5" aria-hidden="true" /></span><b>LIFT<small>TRACKER</small></b></div>
+		<div class="auth-recovery-brand"><span><Dumbbell class="app-icon-nav" aria-hidden="true" /></span><b>LIFT<small>TRACKER</small></b></div>
 		<p class="auth-story__eyebrow"><span></span> ACCOUNT RECOVERY</p>
 		<h1 id="recovery-title">Choose a new password</h1>
 		<p class="auth-recovery-copy">Use at least 8 characters. Your other devices may ask you to sign in again.</p>
 
 		{#if checking}
-			<div class="auth-recovery-loading" role="status"><RefreshCw class="size-4 animate-spin" aria-hidden="true" /> Checking your secure link…</div>
+			<div class="auth-recovery-loading" role="status"><RefreshCw class="app-icon-control animate-spin" aria-hidden="true" /> Checking your secure link…</div>
 		{:else if ready}
 			<form class="auth-recovery-form" onsubmit={savePassword}>
 				<label>
 					<span>NEW PASSWORD</span>
-					<div><LockKeyhole class="size-4" aria-hidden="true" /><input type="password" autocomplete="new-password" maxlength={MAX_PASSWORD_LEN} bind:value={password} oninput={() => error = null} /></div>
+					<div><LockKeyhole class="app-icon-control" aria-hidden="true" /><input type="password" autocomplete="new-password" maxlength={MAX_PASSWORD_LEN} bind:value={password} oninput={() => error = null} /></div>
 				</label>
 				<label>
 					<span>CONFIRM NEW PASSWORD</span>
-					<div><LockKeyhole class="size-4" aria-hidden="true" /><input type="password" autocomplete="new-password" maxlength={MAX_PASSWORD_LEN} bind:value={confirmation} oninput={() => error = null} /></div>
+					<div><LockKeyhole class="app-icon-control" aria-hidden="true" /><input type="password" autocomplete="new-password" maxlength={MAX_PASSWORD_LEN} bind:value={confirmation} oninput={() => error = null} /></div>
 				</label>
-				{#if error}<p class="auth-recovery-error" role="alert"><CircleAlert class="size-4 shrink-0" aria-hidden="true" />{error}</p>{/if}
+				{#if error}<p class="auth-recovery-error" role="alert"><CircleAlert class="app-icon-control shrink-0" aria-hidden="true" />{error}</p>{/if}
 				<button class="auth-recovery-submit" type="submit" disabled={saving || !password || !confirmation}>
-					{#if saving}<RefreshCw class="size-4 animate-spin" aria-hidden="true" />{:else}SAVE NEW PASSWORD{/if}
+					{#if saving}<RefreshCw class="app-icon-control animate-spin" aria-hidden="true" />{:else}SAVE NEW PASSWORD{/if}
 				</button>
 			</form>
 		{:else}
-			<p class="auth-recovery-error" role="alert"><CircleAlert class="size-4 shrink-0" aria-hidden="true" />{error}</p>
+			<p class="auth-recovery-error" role="alert"><CircleAlert class="app-icon-control shrink-0" aria-hidden="true" />{error}</p>
 		{/if}
 		<a class="auth-recovery-back" href="/">Back to sign in</a>
 	</section>

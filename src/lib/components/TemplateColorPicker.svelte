@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount } from 'svelte';
+  import { anchoredPopover } from '$lib/anchoredPopover';
   import { Copy, Check } from '@lucide/svelte';
   import {
     clampTemplateColor,
@@ -29,7 +30,6 @@
 
   let hsv = $state<Hsv>({ h: 0, s: 0.9, v: 0.9 });
   let panelEl = $state<HTMLDivElement | undefined>();
-  let pos = $state({ top: 0, left: 0 });
   let hexCopied = $state(false);
   let hexCopyTimer: ReturnType<typeof setTimeout> | null = null;
   /** Draft hex while editing; null means show live preview. */
@@ -70,45 +70,6 @@
       hexCopied = false;
       hexDraft = null;
     }
-  });
-
-  function placePanel() {
-    if (!anchorEl || typeof window === 'undefined') return;
-    const r = anchorEl.getBoundingClientRect();
-    const panelW = panelEl?.offsetWidth || 240;
-    const panelH = panelEl?.offsetHeight || 280;
-    const gap = 6;
-    let left = r.right - panelW;
-    let top = r.bottom + gap;
-    if (left < 8) left = 8;
-    if (left + panelW > window.innerWidth - 8) {
-      left = Math.max(8, window.innerWidth - panelW - 8);
-    }
-    if (top + panelH > window.innerHeight - 8) {
-      top = Math.max(8, r.top - panelH - gap);
-    }
-    pos = { top: Math.round(top), left: Math.round(left) };
-  }
-
-  $effect(() => {
-    if (!open) return;
-    let cancelled = false;
-    placePanel();
-    void tick().then(() => {
-      if (cancelled) return;
-      placePanel();
-      requestAnimationFrame(() => {
-        if (!cancelled) placePanel();
-      });
-    });
-    const onScroll = () => placePanel();
-    window.addEventListener('resize', onScroll);
-    window.addEventListener('scroll', onScroll, true);
-    return () => {
-      cancelled = true;
-      window.removeEventListener('resize', onScroll);
-      window.removeEventListener('scroll', onScroll, true);
-    };
   });
 
   function applyFromSliders() {
@@ -210,8 +171,8 @@
   <div
     bind:this={panelEl}
     use:portal
-    class="template-color-picker fixed z-[200] w-[240px] max-w-[calc(100vw-16px)] rounded-xl border border-[#2a2a2a] bg-[#141414] shadow-xl shadow-black/50 p-3 flex flex-col gap-2.5"
-    style="top: {pos.top}px; left: {pos.left}px;"
+    use:anchoredPopover={{ anchor: anchorEl, fallbackWidth: 240 }}
+    class="app-float-surface app-popover-surface template-color-picker fixed z-[200] w-[240px] max-w-[calc(100vw-16px)] flex flex-col"
     role="dialog"
     aria-label="Template color"
     in:menuPopoverIn
@@ -219,16 +180,16 @@
   >
     <div class="flex items-center gap-2">
       <div
-        class="w-8 h-8 rounded-lg border border-[#2a2a2a] shrink-0"
+        class="w-8 h-8 rounded-lg border border-app-outline shrink-0"
         style="background-color: {liveHex}"
         title="Live preview (saves as {paletteHex})"
       ></div>
       <div class="min-w-0 flex-1">
-        <div class="text-[10px] font-bold tracking-wider text-zinc-400 leading-none">COLOR</div>
+        <div class="text-app-micro font-bold tracking-wider text-app-fg-secondary leading-none">COLOR</div>
         <div class="flex items-center gap-1 mt-0.5 min-w-0">
           <input
             type="text"
-            class="template-hex-input min-w-0 flex-1 bg-transparent border-0 border-b border-transparent hover:border-[#2a2a2a] focus:border-zinc-500 outline-none text-[11px] font-mono uppercase text-zinc-300 py-0 px-0 leading-tight transition-colors {hexValid ? '' : 'text-red-400 border-red-500/60'}"
+            class="template-hex-input min-w-0 flex-1 bg-transparent border-0 border-b border-transparent hover:border-app-outline focus:border-zinc-500 outline-none text-app-caption font-mono uppercase text-app-fg-secondary-strong py-0 px-0 leading-tight transition-colors {hexValid ? '' : 'text-red-400 border-red-500/60'}"
             value={hexDisplay}
             spellcheck="false"
             autocomplete="off"
@@ -246,27 +207,27 @@
               queueMicrotask(() => el.select());
             }}
           />
-          <span class="text-[11px] text-zinc-500 font-mono shrink-0 tabular-nums">· #{quantizedIndex}</span>
+          <span class="text-app-caption text-app-fg-muted font-mono shrink-0 tabular-nums">· #{quantizedIndex}</span>
         </div>
       </div>
       <button
         type="button"
-        class="w-8 h-8 shrink-0 rounded-lg border border-[#1e1e1e] bg-[#0d0d0d] text-zinc-400 hover:text-white hover:border-[#2a2a2a] flex items-center justify-center transition-colors"
+        class="w-8 h-8 shrink-0 rounded-lg border border-app-outline-subtle bg-app-surface-0 text-app-fg-secondary hover:text-app-fg-primary hover:border-app-outline flex items-center justify-center transition-colors"
         title={hexCopied ? 'Copied' : 'Copy hex'}
         onclick={() => void copyHex()}
       >
         {#if hexCopied}
-          <Check class="size-3.5 text-emerald-400" />
+          <Check class="app-icon-small text-emerald-400" />
         {:else}
-          <Copy class="size-3.5" />
+          <Copy class="app-icon-small" />
         {/if}
       </button>
     </div>
 
     <label class="flex flex-col gap-1">
-      <div class="flex justify-between text-[9px] uppercase tracking-wider text-zinc-500">
+      <div class="flex justify-between text-app-micro uppercase tracking-wider text-app-fg-muted">
         <span>Hue</span>
-        <span class="tabular-nums text-zinc-400">{Math.round(hsv.h)}°</span>
+        <span class="tabular-nums text-app-fg-secondary">{Math.round(hsv.h)}°</span>
       </div>
       <input
         type="range"
@@ -283,9 +244,9 @@
     </label>
 
     <label class="flex flex-col gap-1">
-      <div class="flex justify-between text-[9px] uppercase tracking-wider text-zinc-500">
+      <div class="flex justify-between text-app-micro uppercase tracking-wider text-app-fg-muted">
         <span>Saturation</span>
-        <span class="tabular-nums text-zinc-400">{Math.round(hsv.s * 100)}%</span>
+        <span class="tabular-nums text-app-fg-secondary">{Math.round(hsv.s * 100)}%</span>
       </div>
       <input
         type="range"
@@ -303,9 +264,9 @@
     </label>
 
     <label class="flex flex-col gap-1">
-      <div class="flex justify-between text-[9px] uppercase tracking-wider text-zinc-500">
+      <div class="flex justify-between text-app-micro uppercase tracking-wider text-app-fg-muted">
         <span>Value</span>
-        <span class="tabular-nums text-zinc-400">{Math.round(hsv.v * 100)}%</span>
+        <span class="tabular-nums text-app-fg-secondary">{Math.round(hsv.v * 100)}%</span>
       </div>
       <input
         type="range"

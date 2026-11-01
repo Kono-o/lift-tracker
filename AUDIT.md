@@ -236,4 +236,16 @@ Database and setup:
 - [scripts/setup-db.fish](scripts/setup-db.fish) — safe wipe, error propagation, current schema.
 - Five migrations listed in section 6.
 
-No commits were created and no secrets were exposed or written to any file.
+The original audit did not create commits. No secrets were exposed or written to files.
+
+## 10. Visual consistency and copy follow-up — 2026-11-01
+
+- Added shared application tokens for spacing, type sizes, icon sizes, corner radii, surfaces, foreground levels, outlines, and overlays; mapped common utility aliases to those tokens and applied the semantic palette across the main workout screen, dialogs, sheets, menus, and auth screens.
+- Normalized repeated dialog and floating-panel surfaces. Confirm-delete, exercise-icon, and template-color popovers now share one viewport-aware placement action that flips, clamps, and repositions on scroll and resize.
+- Made the auth and onboarding screens use task descriptions and factual feature labels. Removed motivational slogans, celebratory labels, and recovery-growth phrasing. Rephrased profile-calculation descriptions in literal terms.
+- Increased small interactive targets where they were difficult to hit on touch screens; adjusted the exercise icon picker layout for narrow screens; standardized button sizing, focus treatment, and disabled states.
+- Reviewed auth layout at 320, 390, and 1440 CSS-pixel widths. Verified no horizontal overflow in the narrow view, checked sign-in/sign-up and email/username modes, and confirmed the auth form remains vertically scrollable on a short viewport.
+- `npm run check` → **0 errors, 0 warnings**. `npm run build` → success; the optional Supabase `@opentelemetry/api` peer notice remains non-fatal.
+- `npm run build:capacitor` → success with the static adapter. It reports its existing fallback-page overwrite notice for `build/index.html`; it does not fail the build.
+- Source search for the requested slogan and common motivational phrases found none in rendered UI copy. Remaining “progress”/“success” references describe workout data, feature state, or validation outcomes.
+- This pass did not exercise a physical Android/iOS device, third-party login, or authenticated product data; those limits are listed in section 8.

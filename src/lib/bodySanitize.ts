@@ -107,8 +107,11 @@ export function toBodyReading(row: Record<string, unknown>): BodyReading | null 
 		user_id: typeof row.user_id === "string" ? row.user_id : "",
 		measured_at: row.measured_at,
 		weight_kg: weightKg,
-		heart_rate: int(row.heart_rate),
-		impedance_raw: num(row.impedance_raw),
+		// The verified Cult 0xCF BLE packet does not contain reliable HR or
+		// impedance. Older app versions stored undocumented bytes in these columns;
+		// keep the database row intact but never present those bytes as measurements.
+		heart_rate: source === "scale" ? null : int(row.heart_rate),
+		impedance_raw: source === "scale" ? null : num(row.impedance_raw),
 		source,
 		device_label: label && label.trim() ? label.trim() : null,
 		profile_snapshot: toSnapshot(row.profile_snapshot),

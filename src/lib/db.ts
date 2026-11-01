@@ -2257,7 +2257,7 @@ export const db = {
 			.from("profiles")
 			.select("sex, date_of_birth, height_cm")
 			.maybeSingle();
-		if (error) console.warn("[db] profiles fetch warning:", error.message);
+		if (error) throw error;
 		return toBodyProfile(data as Record<string, unknown> | null);
 	},
 
@@ -2300,7 +2300,7 @@ export const db = {
 			const { data, error } = await query;
 			if (error) {
 				console.warn("[db] body_readings fetch warning:", error.message);
-				return [];
+				throw error;
 			}
 			const page = (data ?? []) as Array<Record<string, unknown>>;
 			rows.push(...page);

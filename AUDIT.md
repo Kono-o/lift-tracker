@@ -158,7 +158,7 @@ The browser environment exposes a 0×0 viewport, so pointer automation was perfo
 
 ## 6. Database changes
 
-All migrations are in `supabase/migrations/` and were applied to the linked Supabase project on 2026-10-22; local and remote migration history are in sync.
+All migrations are in `supabase/migrations/`. The body-reading schema and the 2026-11-02 permission correction were applied to the linked Supabase project.
 
 | Migration | Purpose |
 |-----------|---------|
@@ -167,10 +167,12 @@ All migrations are in `supabase/migrations/` and were applied to the linked Supa
 | `20261022000000_exercise_delete_cleanup.sql` | Trigger pruning deleted exercise IDs from every `templates.exercise_ids`. |
 | `20261022010000_bookmarked_workout_profiles_and_pbs.sql` | Per-user PB primary key; profile-row guarantee/backfill; bookmarked-routine completion support; publisher weight protection. |
 | `20261022020000_copy_routine_template_count.sql` | Correct `template_count` in the copy result; keeps `setup.sql` in sync. |
+| `20261101000000_body_profile_and_scale_readings.sql` | Adds private body profiles and timestamped weigh-ins with validated save RPCs and profile snapshots. |
+| `20261102000000_restrict_body_table_writes.sql` | Removes direct insert/update policies and grants; body-table writes go through the validating RPCs. |
 
 `supabase/setup.sql`, `supabase/seed.sql`, and `scripts/setup-db.fish` were regenerated/updated to match this schema. The consolidated setup was executed inside a transaction ending in `ROLLBACK` against the live database without errors.
 
-**Deployment order matters:** the client now calls `save_routine_schedule` and `copy_routine`. Apply migrations before shipping this client build, otherwise routine saving/copying fails against the old schema. Migration `20260719000000` drops legacy tables irreversibly; take a backup before promoting beyond the dev project.
+**Deployment order matters:** migrations must be applied before shipping a client that calls newly added RPCs. The linked project currently includes the scale schema and body-table permission correction. Migration `20260719000000` drops legacy tables irreversibly; take a backup before promoting beyond the dev project.
 
 ---
 
@@ -178,10 +180,12 @@ All migrations are in `supabase/migrations/` and were applied to the linked Supa
 
 ### Static
 
-- `npm run check` → **0 errors, 27 warnings** (remaining warnings are accessibility only; see below).
+- `npm run check` → **0 errors, 0 warnings**.
 - `npm run build` → success with `@sveltejs/adapter-vercel`; only the non-fatal optional `@opentelemetry/api` notice.
 - Consolidated `setup.sql` → compiled in a rolled-back transaction.
-- Migration history → local and remote aligned, including all five audit migrations.
+- Migration history → the body schema and permission-correction migrations are applied remotely.
+- `body_readings` and `profiles`: authenticated has SELECT/DELETE only; anon has no table grants; only own-row SELECT/DELETE policies remain.
+- `save_body_reading` and `save_profile` remain the write path for authenticated users.
 
 ### Live database assertions
 
@@ -201,16 +205,16 @@ All migrations are in `supabase/migrations/` and were applied to the linked Supa
 
 - Midnight rollover (logic and refresh paths reviewed statically).
 - Forced skip-workout failure and rollback (failure injection not practical in the live project).
-- Native Android haptics, back button, background resume, and APK install flow (require a device build).
+- Physical scale pairing and measurement on an Android device; the native debug APK builds, but no scale hardware was available for a live BLE session.
 - Real-email/OAuth sign-up and rename (schema/function logic reviewed; no external inbox used).
 
 ---
 
 ## 8. Remaining warnings and known limitations
 
-- **27 Svelte accessibility warnings** remain in `src/routes/+page.svelte` and `src/lib/components/RoutinesMenu.svelte`. They are drag-row/clickable-container ARIA and keyboard-handler warnings (plus one intentional `autofocus`). They do not affect functionality or the build, but should be addressed in a dedicated accessibility pass; adding roles/tab stops mechanically to complex nested rows risks changing interaction behavior.
 - **Database advisor/perf advisories** (unindexed advisory checks, auth connection settings) were not part of this functional audit. RLS policies and RPC ACLs were reviewed directly.
-- **No automated test suite** exists in the repository. All verification is static analysis, SQL assertions, and manual/scripted browser flows. Adding Playwright (web) and SQL test fixtures would prevent regressions in the routine/workout flows.
+- **No broad automated workout/app suite** exists yet. The scale integration has a focused regression script; routine/workout coverage still relies on the browser flows recorded above.
+- A physical scale and Android device were not available for a live BLE pairing test; simulated frames and mocked browser transport cover the frame and browser connection lifecycle.
 - **`@opentelemetry/api`** is an optional peer of Supabase's client; the build warning is benign unless tracing is enabled.
 
 ---
@@ -249,3 +253,13 @@ The original audit did not create commits. No secrets were exposed or written to
 - `npm run build:capacitor` → success with the static adapter. It reports its existing fallback-page overwrite notice for `build/index.html`; it does not fail the build.
 - Source search for the requested slogan and common motivational phrases found none in rendered UI copy. Remaining “progress”/“success” references describe workout data, feature state, or validation outcomes.
 - This pass did not exercise a physical Android/iOS device, third-party login, or authenticated product data; those limits are listed in section 8.
+
+## 11. Scale capture and cloud sync — 2026-11-02
+
+- Bluetooth reads the scale locally. The user starts a session, the app subscribes to `0xfff0/0xfff4`, validates 11-byte `0xCF` frames, and requires three identical stable-phase weights before enabling Save. Save is a separate action; it calls `save_body_reading`, which validates the value and snapshots the current profile. The app merges the returned row into the current history. History is fetched again on page load or when the BODY panel refreshes; there is no background scale sync or offline write queue.
+- Protocol review confirmed the supported foot-only Cult `0xCF` frame reliably provides weight and status only. Scale HR/impedance values are now null; older scale rows are normalized so their undocumented bytes cannot appear as measurements or feed muscle estimates.
+- Fixed start/cancel races, disconnect-before-completion behavior, invalid status handling, a 60-second no-reading timeout, retry cleanup, and a case where live preview weight could reach the Save handler before stable completion.
+- Removed direct anonymous/authenticated table writes and extra insert/update policies from the live body tables. Verified authenticated SELECT/DELETE grants and the remaining own-row policies; writes use the validating RPCs.
+- Added `npm run test:scale` with **14** parser, stable-frame, malformed-frame, cancel, timeout, retry, Web Bluetooth lifecycle, legacy-row, and completion/cleanup checks.
+- Verification: `npm run check` (0 errors/warnings), `npm run test:scale` (14 checks), `npm run build`, `npm run build:capacitor`, and `android/gradlew assembleDebug` all succeeded. Web build retains the optional `@opentelemetry/api` notice; Capacitor retains its fallback-page notice; Android emitted dependency deprecation warnings.
+- Real scale pairing was not tested because no physical scale/device was available. The BLE hardware protocol is based on [upstream reverse-engineering evidence](https://raw.githubusercontent.com/anshuman852/occult/main/research/cult_scale_protocol.md). The 8-electrode Pro's `0x05`/`0x08` handle phases are kept transitional and its extra `0xBE`/`0xDF` packets are not decoded, so a verified `0x00` stable frame is still required to save.

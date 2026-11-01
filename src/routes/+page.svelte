@@ -4102,11 +4102,13 @@ const getStatIcon = getItemIcon;
   async function refreshBodyReadings() {
     try {
       // Load the full history so ALL and long-term trends mean what they say.
-      bodyReadings = await db.getBodyReadings();
-      bodyProfile = await db.getProfile();
+      const [readings, profile] = await Promise.all([db.getBodyReadings(), db.getProfile()]);
+      bodyReadings = readings;
+      bodyProfile = profile;
+      bodySaveError = null;
     } catch (err) {
-      // The bootstrap copy is still on screen; a background refresh failing is not a user error.
       console.warn('[body] refresh failed', err);
+      bodySaveError = formatDbError(err);
     }
   }
 
@@ -11151,7 +11153,10 @@ const getStatIcon = getItemIcon;
       {#if statSaveError}
         <p class="shrink-0 mx-2.5 mt-2 text-app-micro text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{statSaveError}</p>
       {:else if statsTab === 'body' && bodySaveError}
-        <p class="shrink-0 mx-2.5 mt-2 text-app-micro text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">{bodySaveError}</p>
+        <div class="shrink-0 mx-2.5 mt-2 flex items-center gap-2 text-app-micro text-red-300 leading-snug px-2.5 py-2 rounded-lg border border-red-900/50 bg-red-950/30">
+          <span class="min-w-0 flex-1">{bodySaveError}</span>
+          <button type="button" class="shrink-0 underline underline-offset-2" onclick={() => void refreshBodyReadings()}>RETRY</button>
+        </div>
       {/if}
 
       {#if statsTab === 'tracked'}

@@ -27,6 +27,7 @@ import type { ScaleConnection, ScaleTransport, ScaleConnectHandlers } from "./tr
 
 type BluetoothCharacteristic = {
 	addEventListener(type: string, listener: (event: Event) => void): void;
+	removeEventListener(type: string, listener: (event: Event) => void): void;
 	startNotifications(): Promise<BluetoothCharacteristic>;
 	stopNotifications(): Promise<BluetoothCharacteristic>;
 	readValue(): Promise<DataView>;
@@ -91,43 +92,65 @@ export class WebBluetoothTransport implements ScaleTransport {
 			optionalServices: [SCALE_SERVICE_UUID, BATTERY_SERVICE_UUID],
 		});
 
-		const onDisconnected = () => handlers.onDisconnected();
-		device.addEventListener("gattserverdisconnected", onDisconnected);
-
-		const server = await device.gatt?.connect();
-		if (!server) throw new Error("Could not connect to the scale");
-
-		const service = await server.getPrimaryService(SCALE_SERVICE_UUID);
-		const characteristic = await service.getCharacteristic(MEASUREMENT_CHAR_UUID);
-		characteristic.addEventListener("characteristicvaluechanged", (event) => {
-			// Web Bluetooth puts the new value on the characteristic, and the event's
-			// target is that characteristic — but the DOM types only know EventTarget.
-			const value = (event.target as unknown as { value?: DataView } | null)?.value;
-			if (value) handlers.onFrame(value);
-		});
-		await characteristic.startNotifications();
-
-		const label = device.name || "Cult scale";
-		return {
-			label,
-			disconnect: async () => {
-				characteristic.stopNotifications().catch(() => {});
-				device.removeEventListener("gattserverdisconnected", onDisconnected);
-				if (server.connected) server.disconnect();
-			},
-			readBattery: async () => {
-				try {
-					const batteryService = await server.getPrimaryService(BATTERY_SERVICE_UUID);
-					const battery = await batteryService.getCharacteristic(BATTERY_CHAR_UUID);
-					const value = await battery.readValue();
-					const percent = value.getUint8(0);
-					return percent >= 0 && percent <= 100 ? percent : null;
-				} catch {
-					// Most firmware in this family has no battery service; not an error.
-					return null;
-				}
-			},
+		let closed = false;
+		const onDisconnected = () => {
+			closed = true;
+			handlers.onDisconnected();
 		};
+		device.addEventListener("gattserverdisconnected", onDisconnected);
+		let server: BluetoothGATTServer | null = null;
+		let characteristic: BluetoothCharacteristic | null = null;
+		const onValue = (event: Event) => {
+			// The event target is the characteristic that owns the new DataView.
+			const value = (event.target as unknown as { value?: DataView } | null)?.value;
+			if (!closed && value) handlers.onFrame(value);
+		};
+
+		try {
+			server = await device.gatt?.connect() ?? null;
+			if (!server) throw new Error("Could not connect to the scale");
+
+			const service = await server.getPrimaryService(SCALE_SERVICE_UUID);
+			characteristic = await service.getCharacteristic(MEASUREMENT_CHAR_UUID);
+			characteristic.addEventListener("characteristicvaluechanged", onValue);
+			await characteristic.startNotifications();
+
+			const activeServer = server;
+			const activeCharacteristic = characteristic;
+			let disconnected = false;
+			return {
+				label: device.name || "Cult scale",
+				disconnect: async () => {
+					if (disconnected) return;
+					disconnected = true;
+					closed = true;
+					activeCharacteristic.removeEventListener("characteristicvaluechanged", onValue);
+					activeCharacteristic.stopNotifications().catch(() => {});
+					device.removeEventListener("gattserverdisconnected", onDisconnected);
+					if (activeServer.connected) activeServer.disconnect();
+				},
+				readBattery: async () => {
+					try {
+						const batteryService = await activeServer.getPrimaryService(BATTERY_SERVICE_UUID);
+						const battery = await batteryService.getCharacteristic(BATTERY_CHAR_UUID);
+						const value = await battery.readValue();
+						if (value.byteLength < 1) return null;
+						const percent = value.getUint8(0);
+						return percent <= 100 ? percent : null;
+					} catch {
+						// Most firmware in this family has no battery service; not an error.
+						return null;
+					}
+				},
+			};
+		} catch (err) {
+			closed = true;
+			device.removeEventListener("gattserverdisconnected", onDisconnected);
+			characteristic?.removeEventListener("characteristicvaluechanged", onValue);
+			characteristic?.stopNotifications().catch(() => {});
+			if (server?.connected) server.disconnect();
+			throw err;
+		}
 	}
 }
 

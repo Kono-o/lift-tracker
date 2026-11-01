@@ -101,7 +101,7 @@
       { label: 'Body fat %', ok: needsProfile },
       { label: 'Body water', ok: needsProfile },
       { label: 'BMR (kcal/day)', ok: needsProfile },
-      { label: 'Muscle mass', ok: needsProfile, needsScale: true },
+      { label: 'Muscle mass', ok: false, needsScale: true },
     ];
   });
 
@@ -164,7 +164,7 @@
       <p class="text-app-micro leading-snug text-app-fg-muted">
         {onboarding
           ? 'Sex, date of birth, and height are used to calculate body-fat, water, and BMR estimates. Only you can read these profile details.'
-          : 'Age is worked out from your birthday and stays correct on its own — nothing to update every year.'}
+          : 'Age is calculated from your date of birth for each measurement.'}
       </p>
 
       <!-- Sex -->
@@ -211,7 +211,7 @@
           <span class="profile-field__error">That date is in the future or before {bounds.min}.</span>
         {:else if age}
           <span class="text-app-micro leading-snug text-app-fg-disabled">
-            Measurements keep the age they were taken at, so history stays honest as you grow.
+            Past readings use the age calculated for their measurement date.
           </span>
         {/if}
       </label>
@@ -254,7 +254,7 @@
                 {item.label}
               </span>
               {#if item.needsScale}
-                <span class="text-app-micro text-app-fg-disabled">needs impedance</span>
+                <span class="text-app-micro text-app-fg-disabled">requires impedance</span>
               {/if}
             </div>
           {/each}

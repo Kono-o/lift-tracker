@@ -3,9 +3,8 @@
  *
  * Enabled with `?scalesim=1` (kept on for the tab via localStorage) and it replays
  * captured `0xCF` frames on a realistic cadence. Each connect runs the next
- * scenario in turn, because the exits matter more than the happy path: a reading
- * must still be produced when the user steps off early or the scale powers itself
- * off mid-body-read.
+ * scenario in turn so stable capture, bad frames, and disconnect recovery can be
+ * rehearsed without a physical scale.
  */
 
 import type { ScaleConnectHandlers, ScaleConnection, ScaleTransport } from "./transport";
@@ -29,7 +28,7 @@ export function scaleSimEnabled(): boolean {
 	}
 }
 
-type Step = { weightKg: number; heartRate?: number; impedanceRaw?: number; status?: number; corrupt?: boolean };
+type Step = { weightKg: number; status?: number; noise?: number; corrupt?: boolean };
 
 type Scenario = {
 	name: string;
@@ -42,17 +41,19 @@ type Scenario = {
 function frame(step: Step): Uint8Array {
 	const raw = new Uint8Array(11);
 	raw[0] = 0xcf;
-	raw[1] = step.heartRate ?? 0;
+	// These undocumented bytes intentionally look like plausible HR/impedance in
+	// some frames. The parser must ignore them and capture only weight.
+	raw[1] = step.noise ?? 0x3c;
 	raw[2] = 0xc0;
 	const weight = Math.round(step.weightKg * 100);
 	raw[3] = weight & 0xff;
 	raw[4] = (weight >> 8) & 0xff;
-	raw[5] = (step.impedanceRaw ?? 0) & 0xff;
-	raw[6] = ((step.impedanceRaw ?? 0) >> 8) & 0xff;
+	raw[5] = step.noise ?? 0xf4;
+	raw[6] = 0x01;
 	raw[9] = step.status ?? 0x00;
 	// A foot-only unit publishes noise where an 8-electrode Pro would put impedance.
-	raw[7] = step.impedanceRaw != null ? 0x00 : 0xba;
-	raw[8] = step.impedanceRaw != null ? 0x00 : 0xb5;
+	raw[7] = 0xba;
+	raw[8] = 0xb5;
 	let xor = 0;
 	for (let i = 0; i < 10; i++) xor ^= raw[i];
 	raw[10] = step.corrupt ? xor ^ 0x55 : xor;
@@ -61,68 +62,38 @@ function frame(step: Step): Uint8Array {
 
 const SCENARIOS: Scenario[] = [
 	{
-		name: "hr-stable",
+		name: "stable-weight",
 		steps: [
-			{ weightKg: 74.2 },
-			{ weightKg: 74.9 },
-			{ weightKg: 75.3 },
-			{ weightKg: 75.4, heartRate: 0xc8 }, // byte-1 noise, not a pulse
-			{ weightKg: 75.4, heartRate: 0x3a },
-			{ weightKg: 75.4, heartRate: 0x3d },
-			{ weightKg: 75.4, heartRate: 0x3d },
-			{ weightKg: 75.4, heartRate: 0x3d },
-			{ weightKg: 75.4, heartRate: 0x3d },
+			{ weightKg: 74.2, status: 0x01 },
+			{ weightKg: 74.9, status: 0x01 },
+			{ weightKg: 75.3, status: 0x01 },
+			{ weightKg: 75.4 },
+			{ weightKg: 75.4, noise: 0xc8 },
+			{ weightKg: 75.4, noise: 0x3a },
 		],
 		powersOffAfterMs: 1_200,
 	},
 	{
-		name: "checksum-drop",
+		name: "checksum-noise",
 		steps: [
 			{ weightKg: 75.4 },
 			{ weightKg: 75.4 },
-			{ weightKg: 99.9, corrupt: true }, // must not break the lock count
+			{ weightKg: 99.9, corrupt: true }, // resets the stable-frame candidate
 			{ weightKg: 75.4 },
-			{ weightKg: 75.4, heartRate: 0x44 },
-			{ weightKg: 75.4, heartRate: 0x44 },
-			{ weightKg: 75.4, heartRate: 0x44 },
+			{ weightKg: 75.4 },
+			{ weightKg: 75.4 },
 		],
 		powersOffAfterMs: 1_200,
 	},
 	{
-		name: "stepped-off",
+		name: "never-stable",
 		steps: [
-			{ weightKg: 81.0 },
-			{ weightKg: 81.0 },
-			{ weightKg: 81.0 },
-			{ weightKg: 81.0, heartRate: 0x41 },
-			{ weightKg: 0 },
-			{ weightKg: 0 },
-		],
-		powersOffAfterMs: null,
-	},
-	{
-		name: "power-off-early",
-		steps: [
-			{ weightKg: 68.5 },
-			{ weightKg: 68.5 },
-			{ weightKg: 68.5 },
-			{ weightKg: 68.5, heartRate: 0x3b },
+			{ weightKg: 81.0, status: 0x01 },
+			{ weightKg: 81.0, status: 0x01 },
+			{ weightKg: 81.0, status: 0x01 },
+			{ weightKg: 81.0, status: 0x01 },
 		],
 		powersOffAfterMs: 500,
-	},
-	{
-		name: "pro-with-impedance",
-		steps: [
-			{ weightKg: 70.2, status: 0x01 },
-			{ weightKg: 70.4, status: 0x01 },
-			{ weightKg: 70.4, status: 0x01 },
-			{ weightKg: 70.4, status: 0x01 },
-			// An 8-electrode Pro reports real impedance: raw × 0.03036 ≈ 455 Ω.
-			{ weightKg: 70.4, heartRate: 0x3f, impedanceRaw: 14_990 },
-			{ weightKg: 70.4, heartRate: 0x3f, impedanceRaw: 14_990 },
-			{ weightKg: 70.4, heartRate: 0x3f, impedanceRaw: 14_990 },
-		],
-		powersOffAfterMs: 1_200,
 	},
 ];
 

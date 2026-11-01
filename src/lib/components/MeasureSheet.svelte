@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fade } from 'svelte/transition';
-  import { X, RefreshCw, Bluetooth, Scale, Activity, ChevronRight } from '@lucide/svelte';
+  import { X, RefreshCw, Bluetooth, Scale, ChevronRight } from '@lucide/svelte';
   import { createScaleClient } from '$lib/scale';
   import { menuPanelIn, menuPanelOut, OVERLAY_MS } from '$lib/menuTransitions';
   import type { ScaleClientState } from '$lib/scale/client';
@@ -17,9 +17,8 @@
    * One weigh-in, start to finish.
    *
    * The whole point is that the user never has to think about Bluetooth: tap MEASURE,
-   * step on, hold still, get a number. Every way a session can end — heart rate
-   * converged, stepped off early, scale powered itself off, 30 s elapsed, a link drop,
-   * a wrong device, a declined permission — lands somewhere with a way forward, and
+   * step on, hold still, get a stable weight. A link drop, unsupported browser,
+   * declined permission, or unavailable scale lands somewhere with a way forward, and
    * manual entry is always one tap away for the days the scale refuses to cooperate.
    */
   let {
@@ -48,9 +47,9 @@
   let client = $state<ReturnType<typeof createScaleClient> | null>(null);
   let stage = $state<ScaleClientState>('idle');
   let liveWeight = $state(0);
-  let liveHeartRate = $state<number | null>(null);
   let lockedWeight = $state<number | null>(null);
   let reading = $state<ScaleReading | null>(null);
+  let capturedAt = $state<string | null>(null);
   let deviceLabel = $state<string | null>(null);
   let battery = $state<number | null>(null);
   let errorMessage = $state<string | null>(null);
@@ -87,18 +86,15 @@
       }),
       instance.on('live', (frame) => {
         liveWeight = frame.weightKg;
-        if (frame.heartRate != null) liveHeartRate = frame.heartRate;
       }),
       instance.on('locked', (locked) => {
         lockedWeight = locked.weightKg;
         void hapticMedium();
         playSetLogged();
       }),
-      instance.on('measuring', (tick) => {
-        liveHeartRate = tick.heartRate;
-      }),
       instance.on('complete', (finished) => {
         reading = finished;
+        capturedAt = new Date().toISOString();
         void hapticSuccess();
         playSetLogged();
       }),
@@ -115,7 +111,6 @@
 
   /** The final number, whichever path produced it. */
   const capturedKg = $derived(reading?.weightKg ?? lockedWeight ?? liveWeight ?? 0);
-  const capturedHeartRate = $derived(reading?.heartRate ?? liveHeartRate);
   const capturedImpedance = $derived(reading?.impedanceRaw ?? null);
 
   const displayWeight = $derived(
@@ -145,18 +140,8 @@
     });
   });
 
-  /** Why the session ended, in the user's terms — never a raw protocol reason. */
-  const reasonNote = $derived.by(() => {
-    if (!reading) return null;
-    if (reading.reason === 'hr-stable') return null;
-    if (reading.reason === 'stepped-off') return 'You stepped off before the heart rate finished — the weight is still exact.';
-    if (reading.reason === 'disconnect') return 'The scale switched itself off — saved what it had measured.';
-    if (reading.reason === 'idle' || reading.reason === 'timeout') return 'The scale stopped sending new numbers — saved the last one.';
-    return null;
-  });
-
   const canSave = $derived(
-    !saving && (showScale ? capturedKg > 0 : parsedManualWeight() != null),
+    !saving && (showScale ? reading != null : parsedManualWeight() != null),
   );
 
   function parsedManualWeight(): number | null {
@@ -187,7 +172,7 @@
     reading = null;
     lockedWeight = null;
     liveWeight = 0;
-    liveHeartRate = null;
+    capturedAt = null;
     errorMessage = null;
     deviceLabel = null;
     battery = null;
@@ -212,14 +197,16 @@
     let input: BodyReadingInput | null = null;
 
     if (showScale) {
-      if (capturedKg <= 0) return;
+      // Live preview values are intentionally never savable; only a completed,
+      // stable capture can reach this path.
+      if (!reading || reading.weightKg <= 0) return;
       input = {
         weight_kg: Math.round(capturedKg * 1000) / 1000,
-        heart_rate: capturedHeartRate,
+        heart_rate: null,
         impedance_raw: capturedImpedance,
         source: 'scale',
         device_label: deviceLabel,
-        measured_at: new Date().toISOString(),
+        measured_at: capturedAt ?? new Date().toISOString(),
       };
     } else {
       const weight = parsedManualWeight();
@@ -240,7 +227,7 @@
     saving = true;
     try {
       await onSave(input);
-      client?.stop('manual');
+      client?.stop();
       void hapticSuccess();
       onDismiss();
     } catch (err) {
@@ -264,15 +251,14 @@
 
   const stageCopy = $derived.by(() => {
     if (stage === 'choosing') return 'Pick your scale in the dialog';
-    if (stage === 'connected') return 'Step on the scale — hold still';
-    if (stage === 'weighing') return 'Hold still — settling';
-    if (stage === 'measuring') return 'Weight locked — measuring heart rate';
+    if (stage === 'connected') return 'Connected. Step onto the scale.';
+    if (stage === 'weighing') return 'Hold still while the weight settles.';
     if (stage === 'complete') return 'Reading captured';
     if (stage === 'error') return errorMessage ?? 'Could not read the scale';
     return transportKind === 'sim' ? 'Simulated scale connected' : 'Ready when you are';
   });
 
-  const busy = $derived(stage === 'choosing' || stage === 'connected' || stage === 'weighing' || stage === 'measuring');
+  const busy = $derived(stage === 'choosing' || stage === 'connected' || stage === 'weighing');
 
   /** The manual form only exists to be typed into, so put the cursor there. */
   let manualWeightInput = $state<HTMLInputElement | null>(null);
@@ -288,9 +274,9 @@
     if (!edge) return;
     stage = 'idle';
     liveWeight = 0;
-    liveHeartRate = null;
     lockedWeight = null;
     reading = null;
+    capturedAt = null;
     deviceLabel = null;
     battery = null;
     errorMessage = null;
@@ -393,23 +379,13 @@
             {displayWeight}
             <span class="measure-readout__unit">{massUnit(units)}</span>
           </div>
-          {#if capturedHeartRate != null && stage !== 'idle'}
-            <div class="measure-readout__hr">
-              <Activity class="app-icon-small" />
-              <span class="tabular-nums">{capturedHeartRate} bpm</span>
-            </div>
-          {/if}
           <p class="measure-readout__status" class:measure-readout__status--error={stage === 'error'}>{stageCopy}</p>
 
-          {#if stage === 'connected' || stage === 'weighing' || stage === 'measuring'}
+          {#if stage === 'connected' || stage === 'weighing'}
             <div class="measure-readout__spinner" aria-hidden="true">
               <RefreshCw class="app-icon-small animate-spin" />
-              <span>{stage === 'measuring' ? 'Counting pulses' : 'Listening for the scale'}</span>
+              <span>Listening for the scale</span>
             </div>
-          {/if}
-
-          {#if reasonNote}
-            <p class="measure-sheet__note">{reasonNote}</p>
           {/if}
 
           {#if preview}
@@ -422,12 +398,13 @@
               {#if preview.smmKg != null}
                 <div class="measure-preview__cell"><span>MUSCLE</span><strong class="tabular-nums">{formatBodyMass(preview.smmKg, units)}</strong></div>
               {:else}
-                <div class="measure-preview__cell measure-preview__cell--muted"><span>MUSCLE</span><strong>needs Ω</strong></div>
+                <div class="measure-preview__cell measure-preview__cell--muted"><span>MUSCLE</span><strong>not sent by scale</strong></div>
               {/if}
             </div>
+            <p class="measure-sheet__note">Weight is measured. Other values are estimates calculated from your profile.</p>
           {:else if capturedKg > 0 && !profileReady}
             <button type="button" class="measure-sheet__nudge" onclick={onEditProfile}>
-              <span>Enter sex, date of birth, and height to calculate BMI, body fat, water, and BMR.</span>
+              <span>Enter sex, date of birth, and height to estimate BMI, body fat, water, and BMR.</span>
               <ChevronRight class="app-icon-small" />
             </button>
           {/if}
@@ -619,14 +596,6 @@
     font-size: var(--type-body);
     color: var(--app-fg-muted);
     letter-spacing: 0.08em;
-  }
-
-  .measure-readout__hr {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    font-size: var(--type-micro);
-    color: #f87171;
   }
 
   .measure-readout__status {

@@ -1,32 +1,16 @@
-/**
- * Orchestrates one weigh-in: asks a transport for the scale, feeds notifications
- * through the pure state machine, and owns every clock that the machine refuses to
- * know about.
- *
- * The contract the UI relies on is that a session always ends. Connected scales
- * power themselves off after the body read, users step off early, Bluetooth drops,
- * and some firmware keeps streaming long after the number is settled — each of
- * those has its own exit, and all of them produce a `complete` once a weight has
- * locked.
- */
+/** Connects a BLE transport to the verified weight-frame state machine. */
 
 import { createEmitter } from "./emitter";
-import {
-	FRAME_IDLE_MS,
-	MEASURE_TIMEOUT_MS,
-	ScaleSession,
-	type CompleteReason,
-	type ScaleReading,
-	type ScaleSessionEvent,
-} from "./session";
+import { ScaleSession, type ScaleReading, type ScaleSessionEvent } from "./session";
 import type { ScaleConnection, ScaleTransport } from "./transport";
+
+export const NO_STABLE_WEIGHT_TIMEOUT_MS = 60_000;
 
 export type ScaleClientState =
 	| "idle"
 	| "choosing"
 	| "connected"
 	| "weighing"
-	| "measuring"
 	| "complete"
 	| "error";
 
@@ -34,14 +18,13 @@ export type ScaleEvents = {
 	state: ScaleClientState;
 	device: string | null;
 	battery: number | null;
-	live: { weightKg: number; heartRate: number | null; locked: boolean };
+	live: { weightKg: number; heartRate: null; locked: boolean };
 	locked: { weightKg: number };
-	measuring: { heartRate: number; hasImpedance: boolean; ticks: number };
 	complete: ScaleReading;
 	error: Error;
 };
 
-const WEB_USER_CANCELLED = /cancel|user declined|not selected|no device chosen|abort/i;
+const USER_CANCELLED = /cancel|user declined|not selected|no device chosen|abort/i;
 
 export class BodyScaleClient {
 	#emitter = createEmitter<ScaleEvents>();
@@ -49,14 +32,14 @@ export class BodyScaleClient {
 	#connection: ScaleConnection | null = null;
 	#session = new ScaleSession();
 	#timeoutTimer: ReturnType<typeof setTimeout> | null = null;
-	#idleTimer: ReturnType<typeof setInterval> | null = null;
-	#lastFrameAt = 0;
-	#armed = false;
 	#state: ScaleClientState = "idle";
 	#disposed = false;
+	#attempt = 0;
+	#timeoutMs: number;
 
-	constructor(transport: ScaleTransport) {
+	constructor(transport: ScaleTransport, options: { timeoutMs?: number } = {}) {
 		this.#transport = transport;
+		this.#timeoutMs = options.timeoutMs ?? NO_STABLE_WEIGHT_TIMEOUT_MS;
 	}
 
 	get state(): ScaleClientState {
@@ -79,32 +62,70 @@ export class BodyScaleClient {
 		return this.#transport.unsupportedReason();
 	}
 
-	/** Needs to run inside a click handler — see ScaleTransport.connect(). */
+	/** Must run inside a click handler because Web Bluetooth requires user activation. */
 	async start(): Promise<void> {
-		if (this.#connection) return;
+		if (this.#disposed || this.#state === "choosing" || this.#connection) return;
 		this.#reset();
+		const attempt = ++this.#attempt;
+		let ready = false;
+		let disconnectedBeforeReady = false;
+		const pendingFrames: Array<Uint8Array | DataView> = [];
 		this.#setState("choosing");
+
 		try {
-			this.#connection = await this.#transport.connect({
-				onFrame: (bytes) => this.#handleFrame(bytes),
-				onDisconnected: () => this.#handleDisconnected(),
+			const connection = await this.#transport.connect({
+				onFrame: (bytes) => {
+					if (this.#disposed || attempt !== this.#attempt) return;
+					if (!ready) pendingFrames.push(bytes);
+					else if (this.#state !== "idle" && this.#state !== "error" && this.#state !== "complete") {
+						this.#handleFrame(bytes);
+					}
+				},
+				onDisconnected: () => {
+					if (this.#disposed || attempt !== this.#attempt) return;
+					if (!ready) disconnectedBeforeReady = true;
+					else this.#handleDisconnected();
+				},
 			});
-			if (this.#disposed) {
-				await this.#connection.disconnect().catch(() => {});
+
+			// The user may close/cancel while the native or browser picker is open.
+			if (this.#disposed || attempt !== this.#attempt) {
+				await connection.disconnect().catch(() => {});
 				return;
 			}
-			this.#emitter.emit("device", this.#connection.label);
+
+			this.#connection = connection;
+			this.#emitter.emit("device", connection.label);
 			this.#setState("connected");
-			// Battery is a bonus: a unit without the standard service must not fail a weigh-in.
-			void this.#connection
-				.readBattery()
-				.then((level) => level != null && this.#emitter.emit("battery", level))
-				.catch(() => {});
+			ready = true;
+			this.#timeoutTimer = setTimeout(() => this.#failNoStableWeight(), this.#timeoutMs);
+
+			// Some BLE stacks can deliver a notification before connect() resolves.
+			// Buffer those frames until the connection is owned so completion can also
+			// disconnect it and leave the UI in the correct state.
+			for (const frame of pendingFrames) {
+				if (attempt !== this.#attempt || this.#disposed) break;
+				this.#handleFrame(frame);
+			}
+			pendingFrames.length = 0;
+			if (disconnectedBeforeReady && attempt === this.#attempt) this.#handleDisconnected();
+
+			// Battery is optional and must never delay weight capture.
+			if (this.#connection && attempt === this.#attempt) {
+				void connection
+					.readBattery()
+					.then((level) => {
+						if (level != null && attempt === this.#attempt && !this.#disposed) {
+							this.#emitter.emit("battery", level);
+						}
+					})
+					.catch(() => {});
+			}
 		} catch (err) {
+			if (this.#disposed || attempt !== this.#attempt) return;
 			const message = err instanceof Error ? err.message : String(err);
 			this.#teardown();
-			// Closing the OS picker is not a fault — go quiet instead of alarming.
-			if (WEB_USER_CANCELLED.test(message)) {
+			if (USER_CANCELLED.test(message)) {
 				this.#setState("idle");
 				return;
 			}
@@ -114,67 +135,45 @@ export class BodyScaleClient {
 		}
 	}
 
-	/** Finish now with whatever has been captured (user tapped Done, or leaving). */
-	stop(reason: CompleteReason = "manual"): void {
-		this.#emitEvents(this.#session.finalize(reason));
+	/** Cancel pairing or stop an active scan; incomplete weights are never saved. */
+	stop(): void {
+		this.#attempt += 1;
 		this.#teardown();
 		this.#setState("idle");
 	}
 
 	dispose(): void {
 		this.#disposed = true;
+		this.#attempt += 1;
 		this.#teardown();
 		this.#emitter.clear();
 	}
 
 	#handleFrame(bytes: Uint8Array | DataView): void {
-		this.#lastFrameAt = Date.now();
 		const events = this.#session.handle(bytes);
 		if (!events.length) return;
-
-		if (!this.#armed && this.#session.weightLocked) this.#armClocks();
 		if (this.#state === "connected") this.#setState("weighing");
-
 		this.#emitEvents(events);
-
 		if (this.#session.completed) this.#finishSession();
-		else if (this.#session.weightLocked && this.#state === "weighing") this.#setState("measuring");
 	}
 
 	#handleDisconnected(): void {
-		// Power-off is the normal end of a weigh-in on this hardware.
-		this.#emitEvents(this.#session.finalize("disconnect"));
-		if (this.#session.completed) {
-			if (this.#state !== "complete") this.#finishSession();
-			return;
-		}
+		if (this.#state === "complete" || this.#state === "idle" || this.#state === "error") return;
 		this.#teardown();
 		this.#setState("error");
-		this.#emitter.emit("error", new Error("Scale disconnected before a weight was captured"));
+		this.#emitter.emit("error", new Error("Scale disconnected before a stable weight was captured."));
 	}
 
-	/**
-	 * Armed on the first non-zero weight, not on connect: the clock should measure
-	 * the reading, not the time the scale spent waiting for somebody to step on.
-	 */
-	#armClocks(): void {
-		if (this.#armed) return;
-		this.#armed = true;
-		this.#lastFrameAt = Date.now();
-		this.#timeoutTimer = setTimeout(() => this.#finishOnClock("timeout"), MEASURE_TIMEOUT_MS);
-		this.#idleTimer = setInterval(() => {
-			if (Date.now() - this.#lastFrameAt >= FRAME_IDLE_MS) this.#finishOnClock("idle");
-		}, 1_000);
-	}
-
-	#finishOnClock(reason: CompleteReason): void {
-		this.#emitEvents(this.#session.finalize(reason));
-		if (this.#session.completed) this.#finishSession();
-		else this.#clearClocks();
+	#failNoStableWeight(): void {
+		if (this.#state === "complete" || this.#state === "idle" || this.#state === "error") return;
+		this.#teardown();
+		this.#setState("error");
+		this.#emitter.emit("error", new Error("No stable weight was received. Step onto the scale, hold still, and try again."));
 	}
 
 	#finishSession(): void {
-		this.#clearClocks();
+		if (this.#timeoutTimer != null) clearTimeout(this.#timeoutTimer);
+		this.#timeoutTimer = null;
 		this.#teardown();
 		this.#setState("complete");
 	}
@@ -183,14 +182,12 @@ export class BodyScaleClient {
 		for (const event of events) {
 			if (event.kind === "complete") this.#emitter.emit("complete", event.reading);
 			else if (event.kind === "locked") this.#emitter.emit("locked", { weightKg: event.weightKg });
-			else if (event.kind === "measuring") this.#emitter.emit("measuring", event);
 			else this.#emitter.emit("live", {
 				weightKg: event.weightKg,
-				heartRate: event.heartRate,
+				heartRate: null,
 				locked: event.locked,
 			});
 		}
-		if (events.some((e) => e.kind === "complete")) this.#clearClocks();
 	}
 
 	#setState(next: ScaleClientState): void {
@@ -199,25 +196,16 @@ export class BodyScaleClient {
 		this.#emitter.emit("state", next);
 	}
 
-	#clearClocks(): void {
-		if (this.#timeoutTimer != null) clearTimeout(this.#timeoutTimer);
-		if (this.#idleTimer != null) clearInterval(this.#idleTimer);
-		this.#timeoutTimer = null;
-		this.#idleTimer = null;
-	}
-
 	#teardown(): void {
-		this.#clearClocks();
+		if (this.#timeoutTimer != null) clearTimeout(this.#timeoutTimer);
+		this.#timeoutTimer = null;
 		const connection = this.#connection;
 		this.#connection = null;
-		if (!connection) return;
-		void connection.disconnect().catch(() => {});
+		if (connection) void connection.disconnect().catch(() => {});
 	}
 
 	#reset(): void {
-		this.#clearClocks();
+		this.#teardown();
 		this.#session = new ScaleSession();
-		this.#armed = false;
-		this.#lastFrameAt = 0;
 	}
 }

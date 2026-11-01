@@ -25,10 +25,10 @@
   import { hapticLight, hapticWarning } from '$lib/haptics';
 
   /**
-   * The BODY tab: every number the scale gives, plus the ones derived from it.
+   * The BODY tab: measured weight plus profile-based estimates.
    *
    * Weight is the only measured truth here — the rest is re-derived per row from the
-   * profile captured at that moment, so a birthday or a corrected height does not
+   * profile captured at that moment, so a birthday or corrected height does not
    * silently rewrite history. The three things a user looks for are above the fold:
    * where they are now, which way they are going, and when they last weighed in.
    */
@@ -219,7 +219,7 @@
 
     {#if stale}
       <div class="border-t border-app-outline-subtle bg-surface-0 px-3 py-1.5 text-app-micro leading-snug text-amber-200/80">
-        {daysSinceLatest} days since your last weigh-in — step on the scale to keep the trend honest.
+          Last weigh-in: {daysSinceLatest} days ago.
       </div>
     {/if}
   </section>
@@ -241,7 +241,10 @@
         <Bluetooth class="app-icon-control" />
       </span>
       <div class="text-xs leading-snug text-app-fg-secondary">
-        Weigh in with your scale over Bluetooth.<br />Everything else — BMI, body fat, water, BMR — is worked out for you.
+        This scale sends weight over Bluetooth. BMI, body-fat, body-water, and BMR values are estimates calculated from your profile.
+      </div>
+      <div class="max-w-[22rem] text-app-micro leading-snug text-app-fg-disabled">
+        The BLE reading does not include reliable heart-rate or impedance data, so those metrics are not shown.
       </div>
       <div class="max-w-[22rem] text-app-micro leading-snug text-app-fg-disabled">
         No Bluetooth on this device? Use MANUAL and type in what the display shows.
@@ -257,6 +260,11 @@
       {/if}
     </div>
   {:else}
+    {#if latest?.reading.source === 'scale'}
+      <p class="px-1 text-app-micro leading-snug text-app-fg-disabled">
+        Weight is measured. BMI, body-fat, body-water, and BMR values are profile-based estimates; this scale does not send reliable heart-rate or impedance data.
+      </p>
+    {/if}
     <div class="flex gap-1.5 overflow-x-auto no-scrollbar" role="tablist" aria-label="Body metrics">
       {#each metrics as metric (metric.key)}
         <button

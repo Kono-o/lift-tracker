@@ -85,54 +85,76 @@ export class NativeBleTransport implements ScaleTransport {
 			}
 		}
 
-		const device = await client.requestDevice({
-			services: [SCALE_SERVICE_UUID],
-			optionalServices: [BATTERY_SERVICE_UUID],
-		});
-
+		let device: Awaited<ReturnType<BleClientApi["requestDevice"]>> | null = null;
+		let connected = false;
+		let notificationsStarted = false;
+		let closed = false;
 		let onFrame: ScaleConnectHandlers["onFrame"] = handlers.onFrame;
 		let onDisconnected: ScaleConnectHandlers["onDisconnected"] = handlers.onDisconnected;
-		let closed = false;
 
-		await client.connect(
-			device.deviceId,
-			() => {
+		try {
+			device = await client.requestDevice({
+				services: [SCALE_SERVICE_UUID],
+				optionalServices: [BATTERY_SERVICE_UUID],
+			});
+
+			await client.connect(
+				device.deviceId,
+				() => {
+					if (closed) return;
+					onDisconnected();
+				},
+				{ timeout: 15_000 },
+			);
+			connected = true;
+
+			await client.startNotifications(device.deviceId, SCALE_SERVICE_UUID, MEASUREMENT_CHAR_UUID, (value) => {
 				if (closed) return;
-				onDisconnected();
-			},
-			{ timeout: 15_000 },
-		);
+				onFrame(value);
+			});
+			notificationsStarted = true;
 
-		await client.startNotifications(device.deviceId, SCALE_SERVICE_UUID, MEASUREMENT_CHAR_UUID, (value) => {
-			if (closed) return;
-			onFrame(value);
-		});
-
-		return {
-			label: device.name || "Cult Smart Scale",
-			async disconnect() {
-				if (closed) return;
-				closed = true;
-				// Detach the callbacks first: a teardown race must not surface a
-				// "disconnected before a weight was captured" error for a session
-				// the user already ended.
-				onFrame = () => {};
-				onDisconnected = () => {};
-				await client
-					.stopNotifications(device.deviceId, SCALE_SERVICE_UUID, MEASUREMENT_CHAR_UUID)
-					.catch(() => {});
+			const activeDevice = device;
+			return {
+				label: activeDevice.name || "Cult Smart Scale",
+				async disconnect() {
+					if (closed) return;
+					closed = true;
+					// Detach callbacks before teardown so a racing disconnect cannot turn
+					// an intentional cancel into a connection error.
+					onFrame = () => {};
+					onDisconnected = () => {};
+					if (notificationsStarted) {
+						await client
+							.stopNotifications(activeDevice.deviceId, SCALE_SERVICE_UUID, MEASUREMENT_CHAR_UUID)
+							.catch(() => {});
+					}
+					if (connected) await client.disconnect(activeDevice.deviceId).catch(() => {});
+				},
+				async readBattery() {
+					// Optional standard service; most of these scales do not expose it.
+					const value = await client
+						.read(activeDevice.deviceId, BATTERY_SERVICE_UUID, BATTERY_CHAR_UUID, { timeout: 3_000 })
+						.catch(() => null);
+					if (!value || value.byteLength < 1) return null;
+					const level = value.getUint8(0);
+					return level <= 100 ? level : null;
+				},
+			};
+		} catch (err) {
+			closed = true;
+			onFrame = () => {};
+			onDisconnected = () => {};
+			if (device) {
+				if (notificationsStarted) {
+					await client
+						.stopNotifications(device.deviceId, SCALE_SERVICE_UUID, MEASUREMENT_CHAR_UUID)
+						.catch(() => {});
+				}
 				await client.disconnect(device.deviceId).catch(() => {});
-			},
-			async readBattery() {
-				// Optional standard service; most of these scales do not expose it.
-				const value = await client
-					.read(device.deviceId, BATTERY_SERVICE_UUID, BATTERY_CHAR_UUID, { timeout: 3_000 })
-					.catch(() => null);
-				if (!value || value.byteLength < 1) return null;
-				const level = value.getUint8(0);
-				return level <= 100 ? level : null;
-			},
-		};
+			}
+			throw bluetoothSetupError(err);
+		}
 	}
 }
 

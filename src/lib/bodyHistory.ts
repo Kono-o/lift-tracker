@@ -88,19 +88,26 @@ function snapshotProfile(reading: BodyReading, fallback: BodyProfile | null): {
 }
 
 export function deriveBodyReading(reading: BodyReading, fallback: BodyProfile | null = null): DerivedReading {
-	const profile = snapshotProfile(reading, fallback);
-	const age = profile.date_of_birth ? ageFromDob(profile.date_of_birth, new Date(reading.measured_at)) : null;
+	// Old scale records contain undocumented CF-frame bytes in the HR/impedance
+	// columns. Normalize at the history boundary so no downstream view can expose
+	// them, even when a caller supplied a raw row rather than `toBodyReading` output.
+	const normalizedReading = reading.source === "scale"
+		? { ...reading, heart_rate: null, impedance_raw: null }
+		: reading;
+	const profile = snapshotProfile(normalizedReading, fallback);
+	const age = profile.date_of_birth ? ageFromDob(profile.date_of_birth, new Date(normalizedReading.measured_at)) : null;
 	const ageYears = age != null ? ageYearsDecimal(age) : null;
-	const ohms = impedanceOhms(reading.impedance_raw);
+	const impedanceRaw = normalizedReading.impedance_raw;
+	const ohms = impedanceOhms(impedanceRaw);
 	const metrics = deriveReading({
-		weightKg: reading.weight_kg,
-		impedanceRaw: reading.impedance_raw,
+		weightKg: normalizedReading.weight_kg,
+		impedanceRaw,
 		ageYears,
 		sex: profile.sex,
 		heightCm: profile.height_cm,
 	});
 	return {
-		reading,
+		reading: normalizedReading,
 		metrics,
 		age,
 		ageYears,
@@ -121,7 +128,7 @@ export function metricValueOf(derived: DerivedReading, key: BodyMetricKey): numb
 		case "weight_kg":
 			return derived.reading.weight_kg;
 		case "heart_rate":
-			return derived.reading.heart_rate;
+			return derived.reading.source === "scale" ? null : derived.reading.heart_rate;
 		case "impedance_ohms":
 			return derived.ohms;
 		case "bmi":

@@ -12,13 +12,16 @@
  *   0xfff0 / 0xfff4  notify  every measurement frame
  *   0x180f / 0x2a19  read    standard battery level
  *
- * `0xCF` frame, 11 bytes, little-endian:
+ * `0xCF` frame, 11 bytes, little-endian. For the verified foot-only CS-BF01, only
+ * weight and the settling flag are reliable. Bytes that look like heart rate or
+ * impedance are noise on this model and must not be stored as measurements.
+ *
+ * `0xCF` frame:
  *   0      marker  always 0xCF
- *   1      heart rate (bpm) — body phase only, 0 while weighing
- *   2      unknown (not decoded)
+ *   1-2    undocumented / unstable
  *   3-4    weight, uint16 LE, 0.01 kg units
- *   5-6    impedance, uint16 LE — on a foot-only unit this is noise, not ohms
- *   7-8    unknown
+ *   5-7    reserved / noise on the foot-only CS-BF01
+ *   8      unknown
  *   9      status  0x01 = settling, 0x00 = locked (the Pro also uses 0x05/0x08)
  *   10     XOR of bytes 0..9
  *
@@ -26,10 +29,10 @@
  * confirmed the OneByone `FD`/`F1`/`F2` handshake is accepted but changes nothing
  * (live frames stay weight-only and history comes back empty), so we do not send it.
  *
- * Honest limitation: an 8-electrode Cult *Pro* additionally emits `0xBE` (real
- * multi-frequency impedance) and `0xDF` (encrypted body composition). `0xDF` is
- * proprietary and undecoded upstream, and a foot-only scale emits neither — so raw
- * impedance is captured when present and never invented when absent.
+ * Honest limitation: an 8-electrode Cult *Pro* uses additional `0xBE` and `0xDF`
+ * packets. Those packets are not decoded here. The client therefore records only
+ * the verified weight from `0xCF`; it never interprets the other bytes as heart
+ * rate or impedance.
  */
 
 export const uuid16 = (short: number): string =>
@@ -53,6 +56,8 @@ export const NAME_PREFIXES = ["Cult", "CULT"] as const;
 const FRAME_LENGTH = 11;
 const MARKER = 0xcf;
 const STATUS_SETTLING = 0x01;
+const STATUS_STABLE = 0x00;
+const STATUS_HANDLE_MEASUREMENT = new Set([0x05, 0x08]);
 
 export type ScalePhase = "weigh" | "body";
 
@@ -82,15 +87,23 @@ export function parseScaleFrame(raw: Uint8Array | DataView): ScaleFrame | null {
 
 	const weightKg = Math.round((b[3] | (b[4] << 8)) / 100 * 100) / 100;
 	const status = b[9];
+	// 0x05/0x08 are used during handle measurement on the 8-electrode Pro. Keep
+	// those weight frames visible as transitional only; without a verified 0x00
+	// stable frame, the session must not offer a save. Unknown values are dropped.
+	if (
+		status !== STATUS_SETTLING &&
+		status !== STATUS_STABLE &&
+		!STATUS_HANDLE_MEASUREMENT.has(status)
+	) return null;
 
-	if (status === STATUS_SETTLING) {
+	if (status !== STATUS_STABLE) {
 		return { phase: "weigh", weightKg, heartRate: null, impedanceRaw: null, status, checksumOk: xor === b[10] };
 	}
 	return {
 		phase: "body",
 		weightKg,
-		heartRate: b[1] || null,
-		impedanceRaw: (b[5] | (b[6] << 8)) || null,
+		heartRate: null,
+		impedanceRaw: null,
 		status,
 		checksumOk: xor === b[10],
 	};
@@ -119,8 +132,17 @@ export function cultSelfTest(): string[] {
 	}
 
 	const body = parseScaleFrame(REFERENCE_FRAMES.body);
-	if (!body || body.phase !== "body" || body.weightKg !== 75 || body.heartRate !== 60 || body.impedanceRaw !== 500 || body.checksumOk !== true) {
+	if (!body || body.phase !== "body" || body.weightKg !== 75 || body.heartRate !== null || body.impedanceRaw !== null || body.checksumOk !== true) {
 		failures.push("body frame decoded incorrectly");
+	}
+
+	// The captured body frame has plausible-looking values in undocumented bytes.
+	// They must stay unavailable rather than being presented as HR/impedance.
+	const padded = new Uint8Array(REFERENCE_FRAMES.body.length + 4);
+	padded.set(REFERENCE_FRAMES.body, 2);
+	const view = parseScaleFrame(new DataView(padded.buffer, 2, REFERENCE_FRAMES.body.length));
+	if (!view || view.weightKg !== 75 || view.heartRate !== null || view.impedanceRaw !== null) {
+		failures.push("DataView offsets or unverified fields decoded incorrectly");
 	}
 
 	const corrupt = parseScaleFrame(REFERENCE_FRAMES.corrupt);

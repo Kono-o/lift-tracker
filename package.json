@@ -2,7 +2,7 @@
 	"name": "lift-tracker",
 	"description": "Workout logging app with templates, timed exercises, stats, and Supabase sync",
 	"private": true,
-	"version": "1.0.15",
+	"version": "1.0.16",
 	"homepage": "https://lift-tracker-self.vercel.app",
 	"repository": {
 		"type": "git",
@@ -31,6 +31,7 @@
 		"build:svgs": "node scripts/build-svgs.ts",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"test:scale": "node scripts/test-scale.mjs",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
 	},
 	"devDependencies": {

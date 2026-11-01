@@ -2,6 +2,20 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.16] - 2026-11-02
+
+**Body metrics & Bluetooth scale sync** — same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.
+
+### New features
+- **Body metrics panel** — private body profile (sex, height, birth year, activity) and a timestamped weigh-in history, with BMI/trend readouts and a profile snapshot stored per reading.
+- **Bluetooth scale sync** — pair a Cult `0xCF` scale over Web Bluetooth or the native transport, watch a live preview, then save once three identical stable frames are confirmed.
+
+### Fixes & hardening
+- BLE session hardening: fixed start/cancel races, disconnect-before-completion, invalid status handling, a 60-second no-reading timeout, retry cleanup, and a case where the live preview weight could reach Save before stable completion.
+- Scale protocol now reports weight/status only; undocumented HR/impedance bytes are ignored and legacy rows normalized so stray bytes never appear as measurements.
+- Body-table writes are RPC-only: dropped direct insert/update policies and table grants; authenticated users get SELECT/DELETE only (`20261102000000_restrict_body_table_writes.sql`).
+- Added `npm run test:scale` — 14 parser/stable-frame/timeout/retry/Web Bluetooth lifecycle checks.
+
 ## [1.0.15] - 2026-10-24
 
 **The overhaul release** — same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.

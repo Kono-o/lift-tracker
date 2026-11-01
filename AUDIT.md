@@ -17,6 +17,18 @@ Reviewed the current uncommitted body-profile / scale work and existing app chan
 - `svelte-check` → **0 errors, 31 warnings**. `npm run build` → success. `git diff --check` → clean. Warnings are existing Svelte accessibility/CSS warnings and the optional Supabase OpenTelemetry peer notice; the production bundle also reports the existing large main chunk.
 - No tests were added or run. Live Supabase migration/RLS checks, real Bluetooth hardware, and native APK installation were not exercised in this follow-up.
 
+### Product polish and accessibility follow-up — 2026-11-01
+
+Reviewed the sign-in, sign-up, password recovery, first-run, routine editing, stats chart, exercise catalog, and shared interaction patterns. Browser review covered desktop, 390×844, and compact 320×568 layouts.
+
+- Reworked the login into a responsive branded sign-in/sign-up screen with a product preview, clear Google and username/email paths, and safe password-reset feedback. Added a recovery route and handled query- and fragment-based Supabase recovery redirects, including expired-link messaging and native deep links.
+- Added a three-step first-run guide with staggered entry motion, reduced-motion support, and a single setup action. Short phone screens now scroll from the top without clipping the brand; auth touch targets meet a 44px minimum.
+- Styled recovery and callback states to match the auth system; verified the invalid/expired recovery state in the browser. No real email, OAuth credential, or password change was submitted.
+- Added keyboard operation and ARIA state for row selection, routine rename, stats date selection, and dialog dismissal. Replaced focus-on-render with focus only after the user starts renaming. Corrected the exercise-catalog icon selectors that were not receiving their styles, and removed the hidden footer shortcuts that opened demo update dialogs.
+- Deferred Markdown parsing/sanitizing and update confetti until update UI is opened, keeping them out of the initial page bundle.
+- `npm run check` → **0 errors, 0 warnings**. `npm run build` → success. `git diff --check` → clean. Build still reports one 784 KB uncompressed client chunk (about 320 KB gzip) and Supabase's optional `@opentelemetry/api` peer notice.
+- No end-to-end suite exists. This pass did not submit a real authentication request, apply the pending live migration, test Bluetooth hardware, or install a native APK.
+
 ---
 
 ## 1. Executive summary

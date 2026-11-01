@@ -307,8 +307,7 @@ export function isDuplicateSignupResponse(user: User | null | undefined): boolea
 }
 
 function getEmailRedirectUrl(): string {
-	if (typeof window === "undefined") return "";
-	return `${window.location.origin}/auth/callback`;
+	return getOAuthRedirectUrl();
 }
 
 /** RFC 2606 reserved domain — accepted by Supabase; never shown to users. */
@@ -429,7 +428,9 @@ function clearAuthRedirectParams(): void {
 		url.searchParams.has("error") ||
 		url.searchParams.has("error_description") ||
 		url.searchParams.has("code") ||
-		url.searchParams.has("state");
+		url.searchParams.has("state") ||
+		url.searchParams.has("token_hash") ||
+		url.searchParams.has("type");
 
 	if (!hadAuthParams) return;
 
@@ -1355,6 +1356,23 @@ export const db = {
 		return data;
 	},
 
+	async sendPasswordResetEmail(email: string): Promise<void> {
+		const emailErr = validateEmail(email);
+		if (emailErr) throw new Error(emailErr);
+		const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+			redirectTo: getEmailRedirectUrl(),
+		});
+		if (error) throw error;
+	},
+
+	/** Password recovery has its own verified session and must not re-authenticate with the old password. */
+	async setPasswordAfterRecovery(newPassword: string): Promise<void> {
+		const passwordError = validatePassword(newPassword);
+		if (passwordError) throw new Error(passwordError);
+		const { error } = await supabase.auth.updateUser({ password: newPassword });
+		if (error) throw error;
+	},
+
 	/** Exchange PKCE code after OAuth redirect (safe to call when no code is present). */
 	async handleAuthCallback(): Promise<void> {
 		if (typeof window === "undefined") return;
@@ -1370,9 +1388,14 @@ export const db = {
 		const type = url.searchParams.get("type");
 
 		if (tokenHash && type) {
+			const allowedTypes = ["email", "signup", "recovery", "invite", "magiclink"] as const;
+			if (!allowedTypes.includes(type as (typeof allowedTypes)[number])) {
+				clearAuthRedirectParams();
+				throw new Error("This sign-in link is invalid or has expired. Request a new one and try again.");
+			}
 			const { error } = await supabase.auth.verifyOtp({
 				token_hash: tokenHash,
-				type: type as "email" | "signup" | "recovery" | "invite" | "magiclink",
+				type: type as (typeof allowedTypes)[number],
 			});
 			if (error) throw error;
 			clearAuthRedirectParams();

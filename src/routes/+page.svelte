@@ -162,10 +162,7 @@
     type UpdateInfo,
   } from '$lib/updater';
   import { isNativeApp } from '$lib/native';
-  import { marked } from 'marked';
-  import DOMPurify from 'dompurify';
   import { App } from '@capacitor/app';
-  import confetti from 'canvas-confetti';
   import { showUndoToast } from '$lib/undo.svelte';
   import UndoToast from '$lib/components/UndoToast.svelte';
   import { hapticLight, hapticMedium, hapticPlace, hapticSuccess, hapticWarning, setHapticsEnabled } from '$lib/haptics';
@@ -188,14 +185,18 @@ const getStatIcon = getItemIcon;
   /** Render GitHub release notes (markdown) to sanitized HTML.
    *  Falls back to basic <br> replacement if no DOM (SSR/build) or DOMPurify not ready.
    */
-  function renderChangelog(text: string): string {
+  async function renderChangelog(text: string): Promise<string> {
     if (!text) return '';
-    if (typeof window === 'undefined' || typeof DOMPurify === 'undefined') {
-      // Safe fallback for server-side or before DOMPurify loads
+    try {
+      const [{ marked }, { default: DOMPurify }] = await Promise.all([
+        import('marked'),
+        import('dompurify'),
+      ]);
+      const rawHtml = marked.parse(text, { breaks: true, gfm: true }) as string;
+      return DOMPurify.sanitize(rawHtml, { ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'ul', 'ol', 'li', 'a', 'code', 'pre', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote'] });
+    } catch {
       return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
     }
-    const rawHtml = marked.parse(text, { breaks: true, gfm: true }) as string;
-    return DOMPurify.sanitize(rawHtml, { ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'ul', 'ol', 'li', 'a', 'code', 'pre', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote'] });
   }
 
   function shortDateLabel(dateStr: string): string {
@@ -533,41 +534,37 @@ const getStatIcon = getItemIcon;
   let showPostUpdate = $state(false);
   let postUpdateVersion = $state('');
   let postUpdateNotes = $state('');
+  let updateNotesHtml = $state('');
+  let postUpdateNotesHtml = $state('');
 
-  // Confetti spray when the updated menu opens (for nice celebration)
+  // Parse and sanitize update notes only when one of the update dialogs is shown.
   $effect(() => {
-    if (showPostUpdate) {
-      // Radiate out from center, a little bit, not too long
-      confetti({
-        particleCount: 100,
-        spread: 70,
-        origin: { y: 0.6 }
-      });
-      confetti({
-        particleCount: 50,
-        angle: 90,
-        spread: 50,
-        origin: { y: 0.6 }
-      });
-    }
+    const notes = updateInfo?.notes ?? '';
+    if (!notes) { updateNotesHtml = ''; return; }
+    let cancelled = false;
+    void renderChangelog(notes).then((html) => { if (!cancelled) updateNotesHtml = html; });
+    return () => { cancelled = true; };
   });
 
-  // Same confetti spray on website when the (pre) update menu opens via footer demo
   $effect(() => {
-    if (showUpdatePrompt && !isNativeApp()) {
-      // Radiate out from center, a little bit, not too long
-      confetti({
-        particleCount: 100,
-        spread: 70,
-        origin: { y: 0.6 }
-      });
-      confetti({
-        particleCount: 50,
-        angle: 90,
-        spread: 50,
-        origin: { y: 0.6 }
-      });
-    }
+    const notes = postUpdateNotes;
+    if (!notes) { postUpdateNotesHtml = ''; return; }
+    let cancelled = false;
+    void renderChangelog(notes).then((html) => { if (!cancelled) postUpdateNotesHtml = html; });
+    return () => { cancelled = true; };
+  });
+
+  // Keep the celebration optional: load the animation code only when an update dialog opens.
+  $effect(() => {
+    const shouldCelebrate = showPostUpdate || (showUpdatePrompt && !isNativeApp());
+    if (!shouldCelebrate) return;
+    let cancelled = false;
+    void import('canvas-confetti').then(({ default: confetti }) => {
+      if (cancelled) return;
+      confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
+      confetti({ particleCount: 50, angle: 90, spread: 50, origin: { y: 0.6 } });
+    });
+    return () => { cancelled = true; };
   });
 
   let supabasePanelLoading = $state(false);
@@ -6802,6 +6799,25 @@ const getStatIcon = getItemIcon;
     authSuccess = null;
   }
 
+  async function sendPasswordReset() {
+    const email = authEmail.trim();
+    const emailErr = validateEmail(email);
+    if (emailErr) {
+      await setAuthError(emailErr);
+      return;
+    }
+    signingIn = true;
+    finishAuthFeedbackExit();
+    try {
+      await db.sendPasswordResetEmail(email);
+      await setAuthSuccess('If an account uses this email, a secure reset link is on its way.');
+    } catch (err) {
+      await setAuthError(formatAuthError(err, undefined, 'email'));
+    } finally {
+      signingIn = false;
+    }
+  }
+
   async function handleEmailAuth() {
     const email = authEmail.trim();
     if (!email || !authPassword) {
@@ -7339,59 +7355,6 @@ const getStatIcon = getItemIcon;
     if (typeof window !== 'undefined') {
       window.open(url, '_blank');
     }
-  }
-
-  /** Manually open the update menu (Ctrl+click the left side of the website footer for testing/demo).
-   *  On native the real auto-check will handle it at the right time.
-   *  On website, this attempts the real GitHub fetch so you see actual release data (or the failure reason).
-   */
-  async function manuallyOpenUpdateMenu() {
-    try {
-      const release = await fetchLatestRelease();
-      const info = release ? releaseToUpdateInfo(release) : null;
-
-      if (info) {
-        // Use the real direct asset URL from GitHub. The web Install path
-        // will use a <a download> click which works without CORS fetch.
-        updateInfo = info;
-      } else {
-        updateInfo = {
-          version: '1.0.3',
-          notes: 'Demo of the update menu (triggered from the website footer).\n\nIn the real Android app this appears automatically after sign-in + data load when a newer GitHub release is detected.',
-          downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.3/lift-tracker-v1.0.3.apk',
-          size: 3620000,
-          tag: 'v1.0.3'
-        } as any;
-      }
-      updateDownloadProgress = 0;
-      updateInstalling = false;
-      updateError = null;
-      downloadedApkPath = null;
-      showUpdatePrompt = true;
-    } catch (e) {
-      console.error('[updater] manual open failed to fetch:', e);
-      updateInfo = {
-        version: '1.0.3',
-        notes: 'Demo of the update menu (triggered from the website footer). Fetch failed — see console for details.',
-        downloadUrl: 'https://github.com/Kono-o/lift-tracker/releases/download/v1.0.3/lift-tracker-v1.0.3.apk',
-        size: 3620000,
-        tag: 'v1.0.3'
-      } as any;
-      updateDownloadProgress = 0;
-      updateInstalling = false;
-      updateError = null;
-      downloadedApkPath = null;
-      showUpdatePrompt = true;
-    }
-  }
-
-  /** Manually open the post-update "what's new" menu (Ctrl+click the right side of the website footer for testing/demo).
-   *  On native the real post-update check will handle it on first launch after an update.
-   */
-  function manuallyOpenPostUpdateMenu() {
-    postUpdateVersion = APP_VERSION;
-    postUpdateNotes = '- Full auto-update support for the sideloaded Android APK\n- Update check only after sign-in + data load + main menu visible\n- Centered blur update prompt (matches account/settings style)\n- "Install" is unclosable during download + shows real-time progress\n- Permission check for unknown sources happens *before* downloading\n- Reliable native download (HttpURLConnection + verification)\n- Post-update "what\'s new" changelog popup on first launch\n- Stable signing key across releases';
-    showPostUpdate = true;
   }
 
   function beginAccountNameEdit() {
@@ -8838,6 +8801,7 @@ const getStatIcon = getItemIcon;
       in:userMenuOverlayIn
       out:userMenuOverlayOut
       onclick={(e) => { if (e.target === e.currentTarget) closeSettingsPanel(); }}
+      onkeydown={(e) => { if (e.key === 'Escape') closeSettingsPanel(); }}
     >
       <div
         class="settings-panel-dialog settings-panel-dialog--user-menu rounded-xl border border-[#1e1e1e] bg-[#141414] shadow-xl overflow-hidden text-left"
@@ -9477,7 +9441,7 @@ const getStatIcon = getItemIcon;
             <div class="mt-3">
               <div class="mb-1 text-[9px] font-medium tracking-[1px] text-zinc-500">WHAT'S NEW</div>
               <div class="max-h-40 overflow-auto overscroll-contain rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2.5 text-[10px] leading-snug text-zinc-300 markdown-content no-scrollbar">
-                {@html renderChangelog(updateInfo.notes)}
+                {#if updateNotesHtml}{@html updateNotesHtml}{:else}<span class="text-zinc-500" role="status">Preparing release notes…</span>{/if}
               </div>
             </div>
           {:else}
@@ -9595,7 +9559,7 @@ const getStatIcon = getItemIcon;
             <div class="mt-3">
               <div class="mb-1 text-[9px] font-medium tracking-[1px] text-zinc-500">WHAT'S NEW</div>
               <div class="max-h-44 overflow-auto rounded border border-[#1e1e1e] bg-[#0d0d0d] p-2 text-[10px] leading-snug text-zinc-300 markdown-content no-scrollbar">
-                {@html renderChangelog(postUpdateNotes)}
+                {#if postUpdateNotesHtml}{@html postUpdateNotesHtml}{:else}<span class="text-zinc-500" role="status">Preparing release notes…</span>{/if}
               </div>
               <span class="mt-2 block text-center text-[10px] text-zinc-400">Thanks for staying up to date!</span>
             </div>
@@ -10031,25 +9995,27 @@ const getStatIcon = getItemIcon;
         </button>
       </div>
     {:else if templates.length === 0 && !activeRoutineId}
-      <!-- Onboarding: entire routine is rest (starting out, or last template deleted). Not a tutorial; just a clean create-first page matching rest/unlogged style exactly. -->
-      <div class="flex flex-col items-center justify-center py-10 px-2 gap-6">
-        <!-- Hero icon -->
-        <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
-          <Dumbbell class="size-10 text-zinc-400" />
+      <!-- First-run guide: one clear next action with just enough context to make the builder feel familiar. -->
+      <div class="first-run-onboarding">
+        <div class="first-run-onboarding__mark"><Dumbbell class="size-7" aria-hidden="true" /></div>
+        <div class="first-run-onboarding__heading">
+          <p>START WHERE YOU ARE</p>
+          <h1>Build a routine that fits your life.</h1>
+          <span>Create a workout, choose your training days, and adjust anything later. No perfect plan required.</span>
         </div>
-
-        <div class="text-center">
-          <div class="text-3xl font-semibold tracking-[-0.02em] text-white">START YOUR ROUTINE</div>
-          <div class="text-[10px] uppercase tracking-[2px] text-zinc-500 mt-1">CREATE YOUR FIRST TEMPLATE</div>
+        <div class="first-run-steps" aria-label="Getting started">
+          <div class="first-run-step" style="--step-index: 0"><b>01</b><span><strong>Build a workout</strong><small>Choose movements and set targets.</small></span></div>
+          <div class="first-run-step" style="--step-index: 1"><b>02</b><span><strong>Choose your rhythm</strong><small>Set weekly days or a repeating cycle.</small></span></div>
+          <div class="first-run-step" style="--step-index: 2"><b>03</b><span><strong>Log as you go</strong><small>Change the plan whenever life does.</small></span></div>
         </div>
 
         {#if templateError}
-          <p class="text-[10px] text-red-300 leading-snug">{templateError}</p>
+          <p class="text-[11px] text-red-300 leading-snug" role="alert">{templateError}</p>
         {/if}
         {#if !activeRoutineId}
         <button 
           type="button"
-          class="app-hero-panel app-primary-cta rounded-xl font-sans font-black text-[11px] tracking-[0.15em] bg-white text-black border-2 border-transparent transition-all duration-150 hover:brightness-110 disabled:opacity-50 flex items-center justify-center"
+          class="first-run-onboarding__cta app-primary-cta rounded-xl font-sans font-black text-[11px] tracking-[0.12em] bg-white text-black border-2 border-transparent transition-all duration-150 hover:brightness-110 disabled:opacity-50 flex items-center justify-center"
           disabled={!currentUser}
           onclick={() => {
             if (workoutState === 'active') return;
@@ -10065,9 +10031,10 @@ const getStatIcon = getItemIcon;
             refreshRoutinesPreload();
             void ensureActiveRoutineId();
           }}>
-          CREATE ROUTINE
+          SET UP MY ROUTINE
         </button>
         {/if}
+        <p class="first-run-onboarding__note">About 5 minutes · editable anytime</p>
       </div>
     {:else if ((isRestLog || isLoggedRest) || isScheduledRestDay) && !hasViewedWorkoutLog}
       <!-- REST DAY: scheduled rest or logged rest — never when a real workout log exists -->
@@ -10908,6 +10875,8 @@ const getStatIcon = getItemIcon;
             >
             <div
               class="flex items-stretch gap-1 h-8 {activeRoutineIsReadonly ? '' : 'cursor-grab active:cursor-grabbing'}"
+              role="listitem"
+              aria-roledescription="Reorderable template"
               data-list-row
               style="transform: translateY({activeRoutineIsReadonly ? 0 : dragShift(templateDraggedIndex, templateDragOverIndex, index)}px); transition: transform 150ms ease; {templateDraggedIndex === index ? 'opacity: 0.25;' : ''}"
               draggable={!activeRoutineIsReadonly}
@@ -10991,9 +10960,11 @@ const getStatIcon = getItemIcon;
                     />
                     <span class="shrink-0" style={isSelected ? `color: white` : `color: #aaa`}>]</span>
                   {:else}
-                    <!-- svelte-ignore a11y_click_events_have_key_events -->
                     <span
                       class="font-medium truncate leading-none flex-1 min-w-0 select-none"
+                      role="button"
+                      tabindex="0"
+                      aria-label="Rename template {template.name}"
                       style={isSelected ? `color: white` : `color: #aaa`}
                       title="Tap to rename"
                       onclick={(e) => {
@@ -11007,6 +10978,13 @@ const getStatIcon = getItemIcon;
                       ondblclick={(e) => {
                         e.stopPropagation();
                         beginRoutineTemplateNameEdit(template.id);
+                      }}
+                      onkeydown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          beginRoutineTemplateNameEdit(template.id);
+                        }
                       }}
                     >[ {template.name} ]</span>
                   {/if}
@@ -11199,46 +11177,42 @@ const getStatIcon = getItemIcon;
               style="border-color: {isSelected ? statHex : '#1e1e1e'}; --stat-accent: {statHex};"
             >
               <div
-                class="stats-card__head w-full flex items-center gap-2.5 px-2.5 py-2 text-left hover:bg-[#121212] transition-colors cursor-pointer"
-                role="button"
-                tabindex="0"
-                aria-expanded={isSelected}
-                onclick={() => { selectedStatsViewStatId = selectedStatsViewStatId === stat.id ? null : stat.id; }}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    selectedStatsViewStatId = selectedStatsViewStatId === stat.id ? null : stat.id;
-                  }
-                }}
+                class="stats-card__head w-full flex items-center gap-2.5 px-2.5 py-2 hover:bg-[#121212] transition-colors"
               >
-                <div
-                  class="template-list-color-squircle shrink-0 w-8 h-8 flex items-center justify-center"
-                  style="background-color: {statHex}"
-                  aria-hidden="true"
-                >
-                  <IconComponent class="size-4 text-black/80" strokeWidth={ITEM_ICON_STROKE} />
-                </div>
-                <div class="flex-1 min-w-0">
-                  <div class="text-sm font-medium text-white truncate leading-none">{stat.name}</div>
-                  <div class="mt-1 flex items-center gap-1.5 text-[10px] text-zinc-500 leading-none tabular-nums">
-                    {#if latest}
-                      <span>last {shortDateLabel(latest.date)}</span>
-                      <span class="text-zinc-700">·</span>
-                      <span style="color: {statHex}">{latest.value}{stat.unit ? ` ${stat.unit}` : ''}</span>
-                    {:else}
-                      <span>no entries yet</span>
-                    {/if}
-                    {#if stat.has_target && stat.target_value != null}
-                      <span class="text-zinc-700">·</span>
-                      <span>goal {stat.target_value}{stat.unit ? ` ${stat.unit}` : ''}</span>
-                    {/if}
-                  </div>
-                </div>
+                  <button
+                    type="button"
+                    class="stats-card__trigger flex-1 min-w-0 flex items-center gap-2.5 text-left"
+                    aria-label="Show chart for {stat.name}"
+                    aria-expanded={isSelected}
+                    onclick={() => { selectedStatsViewStatId = selectedStatsViewStatId === stat.id ? null : stat.id; }}
+                  >
+                    <div
+                      class="template-list-color-squircle shrink-0 w-8 h-8 flex items-center justify-center"
+                      style="background-color: {statHex}"
+                      aria-hidden="true"
+                    >
+                      <IconComponent class="size-4 text-black/80" strokeWidth={ITEM_ICON_STROKE} />
+                    </div>
+                    <div class="flex-1 min-w-0">
+                      <div class="text-sm font-medium text-white truncate leading-none">{stat.name}</div>
+                      <div class="mt-1 flex items-center gap-1.5 text-[10px] text-zinc-500 leading-none tabular-nums">
+                        {#if latest}
+                          <span>last {shortDateLabel(latest.date)}</span>
+                          <span class="text-zinc-700">·</span>
+                          <span style="color: {statHex}">{latest.value}{stat.unit ? ` ${stat.unit}` : ''}</span>
+                        {:else}
+                          <span>no entries yet</span>
+                        {/if}
+                        {#if stat.has_target && stat.target_value != null}
+                          <span class="text-zinc-700">·</span>
+                          <span>goal {stat.target_value}{stat.unit ? ` ${stat.unit}` : ''}</span>
+                        {/if}
+                      </div>
+                    </div>
+                  </button>
                 <div
                   class="stats-card__value-wrap shrink-0 flex items-stretch h-8 rounded-md border border-[#1e1e1e] bg-black overflow-hidden"
                   style={todayVal > 0 ? `border-color: color-mix(in srgb, ${statHex} 55%, #1e1e1e);` : undefined}
-                  onclick={(e) => e.stopPropagation()}
-                  onkeydown={(e) => e.stopPropagation()}
                 >
                   <input
                     type="text"
@@ -11316,6 +11290,9 @@ const getStatIcon = getItemIcon;
                 {@const startDate = rangeStartDate}
                 {@const endDate = REAL_TODAY}
                 {@const totalDays = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / msDay) + 1)}
+                {@const selectedDayIdx = statEditEntry
+                  ? Math.max(0, Math.min(totalDays - 1, Math.round((new Date(`${statEditEntry}T00:00:00`).getTime() - startDate.getTime()) / msDay)))
+                  : totalDays - 1}
                 {@const spacingX = totalDays > 1 ? plotW / Math.max(1, totalDays - 1) : 0}
                 {@const xTickCount = Math.min(5, totalDays)}
                 {@const xTicks = Array.from({ length: xTickCount }, (_, i) => {
@@ -11336,7 +11313,6 @@ const getStatIcon = getItemIcon;
                 {@const rangeIdx = Math.max(0, rangeModes.indexOf(statRangeMode))}
                 <div
                   class="stats-card__panel border-t border-[#1e1e1e] bg-[#0a0a0a] px-2.5 pt-2.5 pb-2.5 space-y-2"
-                  onclick={(e) => e.stopPropagation()}
                   transition:slide={{ duration: 220, easing: cubicOut }}
                 >
                   <!-- Entry editor + range -->
@@ -11420,14 +11396,30 @@ const getStatIcon = getItemIcon;
                         width="100%"
                         height="188"
                         class="block select-none"
+                        role="slider"
+                        aria-label="Select date for {stat.name}"
+                        aria-valuemin={0}
+                        aria-valuemax={totalDays - 1}
+                        aria-valuenow={selectedDayIdx}
+                        aria-valuetext={shortDateLabel(toDateStr(new Date(startDate.getTime() + selectedDayIdx * msDay)))}
+                        tabindex="0"
                         onclick={(e) => {
-                          e.stopPropagation();
                           const rect = e.currentTarget.getBoundingClientRect();
                           const svgX = (e.clientX - rect.left) * (containerW / rect.width);
                           const ratio = Math.max(0, Math.min(1, (svgX - padL) / plotW));
                           const dayIdx = Math.round(ratio * Math.max(0, totalDays - 1));
                           const dateStr = toDateStr(new Date(startDate.getTime() + dayIdx * msDay));
                           statEditEntry = dateStr;
+                        }}
+                        onkeydown={(e) => {
+                          let nextDay = selectedDayIdx;
+                          if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') nextDay -= 1;
+                          else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') nextDay += 1;
+                          else if (e.key === 'Home') nextDay = 0;
+                          else if (e.key === 'End') nextDay = totalDays - 1;
+                          else return;
+                          e.preventDefault();
+                          statEditEntry = toDateStr(new Date(startDate.getTime() + Math.max(0, Math.min(totalDays - 1, nextDay)) * msDay));
                         }}
                       >
                         <rect x="0" y="0" width={containerW} height={containerH} fill="#080808" />
@@ -11823,6 +11815,8 @@ const getStatIcon = getItemIcon;
               <div class="list-row-shell" in:listRowIn out:listRowOutInstant>
               <div
                 class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing"
+                role="listitem"
+                aria-roledescription="Reorderable stat"
                 data-list-row
                 style="transform: translateY({dragShift(statDraggedIndex, statDragOverIndex, index)}px); transition: transform 150ms ease; {statDraggedIndex === index ? 'opacity: 0.25;' : ''}"
                 draggable="true"
@@ -11860,7 +11854,12 @@ const getStatIcon = getItemIcon;
                 <div
                   class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center cursor-pointer transition-colors {isSelected ? '' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
                   style={isSelected ? `background-color: color-mix(in srgb, white 8%, #0d0d0d); border-color: white; color: white` : ''}
+                  role="button"
+                  tabindex="0"
+                  aria-pressed={isSelected}
+                  aria-label="Select stat {stat.name}"
                   onclick={() => selectDraftStat(stat.id)}
+                  onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectDraftStat(stat.id); } }}
                 >
                   <div class="flex items-center gap-1 min-w-0 flex-1">
                     <span
@@ -11892,9 +11891,11 @@ const getStatIcon = getItemIcon;
                         placeholder="NAME"
                       />
                     {:else}
-                      <!-- svelte-ignore a11y_click_events_have_key_events -->
                       <span
                         class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                        role="button"
+                        tabindex="0"
+                        aria-label="Rename stat {stat.name}"
                         title="Tap to rename"
                         onclick={(e) => {
                           if (isSelected) {
@@ -11906,6 +11907,7 @@ const getStatIcon = getItemIcon;
                           e.stopPropagation();
                           beginStatNameEdit(stat.id);
                         }}
+                        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); beginStatNameEdit(stat.id); } }}
                       >{stat.name || 'Name'}</span>
                     {/if}
                     {#if isSelected}
@@ -12232,6 +12234,8 @@ const getStatIcon = getItemIcon;
                 <div class="list-row-shell" in:listRowIn out:listRowOutInstant>
                 <div
                   class="flex items-stretch gap-1 h-8 cursor-grab active:cursor-grabbing"
+                  role="listitem"
+                  aria-roledescription="Reorderable exercise"
                   data-list-row
                   style="transform: translateY({dragShift(draggedIndex, dragOverIndex, index)}px); transition: transform 150ms ease; {draggedIndex === index ? 'opacity: 0.25;' : ''}"
                   draggable="true"
@@ -12269,7 +12273,12 @@ const getStatIcon = getItemIcon;
                   <div 
                     class="flex-1 h-8 min-w-0 px-1.5 border rounded text-xs flex items-center cursor-pointer transition-colors {isSelected ? '' : 'bg-[#0d0d0d] border-[#1e1e1e] hover:bg-[#141414] hover:border-[#2a2a2a]'}"
                     style={isSelected ? `background-color: color-mix(in srgb, white 8%, #0d0d0d); border-color: white; color: white` : ''}
+                    role="button"
+                    tabindex="0"
+                    aria-pressed={isSelected}
+                    aria-label="Select exercise {exercise.name || index + 1}"
                     onclick={() => selectExercise(exercise.id)}
+                    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectExercise(exercise.id); } }}
                   >
                     <div class="flex items-center gap-1 min-w-0 flex-1">
                       {#if exercise.exercise_type === 'reps'}
@@ -12298,9 +12307,11 @@ const getStatIcon = getItemIcon;
                           placeholder="NAME"
                         />
                       {:else}
-                        <!-- svelte-ignore a11y_click_events_have_key_events -->
                         <span
                           class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none {isSelected ? 'text-white' : 'text-zinc-400'}"
+                          role="button"
+                          tabindex="0"
+                          aria-label="Rename exercise {exercise.name}"
                           title="Tap to rename"
                           onclick={(e) => {
                             if (isSelected) {
@@ -12312,6 +12323,7 @@ const getStatIcon = getItemIcon;
                             e.stopPropagation();
                             beginExerciseNameEdit(exercise.id);
                           }}
+                          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); beginExerciseNameEdit(exercise.id); } }}
                         >{exercise.name || 'Name'}</span>
                       {/if}
                       {#if isSelected}
@@ -12453,7 +12465,12 @@ const getStatIcon = getItemIcon;
                           class="w-full h-7 min-w-0 px-1.5 rounded border text-xs transition flex items-center gap-1.5 cursor-pointer {isSelectedLib 
                             ? 'bg-[#1e1e1e] border-[#2a2a2a] text-zinc-200' 
                             : 'bg-[#141414] border-[#1e1e1e] text-zinc-500 hover:bg-[#1a1a1a] hover:border-[#2a2a2a] hover:text-zinc-400'}"
+                          role="button"
+                          tabindex="0"
+                          aria-pressed={isSelectedLib}
+                          aria-label="Select library exercise {libraryEx.name}"
                           onclick={() => selectLibraryExercise(libraryEx.id)}
+                          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectLibraryExercise(libraryEx.id); } }}
                           title={isSelectedLib ? '' : 'Select to move or delete'}
                         >
                           <div class="flex items-center gap-1.5 flex-1 min-w-0">
@@ -12814,16 +12831,48 @@ const getStatIcon = getItemIcon;
   {/key}
   </div>
   {:else if !bootOverlayVisible}
-    <div class="flex flex-1 flex-col min-h-0 overflow-y-auto overscroll-contain">
-    <div class="m-auto flex flex-col items-center justify-center pt-0 pb-10 px-2 gap-6 text-center w-full -translate-y-6">
-      <div class="w-20 h-20 rounded-2xl bg-[#141414] border border-[#1e1e1e] flex items-center justify-center transition-all duration-200 hover:border-[#2a2a2a]">
-        <Dumbbell class="size-10 text-zinc-400" />
-      </div>
+    <div class="auth-screen">
+      <section class="auth-story" aria-label="Lift Tracker overview">
+        <div class="auth-story__brand">
+          <span class="auth-story__mark"><Dumbbell class="size-4" aria-hidden="true" /></span>
+          <span>LIFT<span class="auth-story__brand-light">TRACKER</span></span>
+          <span class="auth-story__version">v{APP_VERSION}</span>
+        </div>
+        <div class="auth-story__copy">
+          <p class="auth-story__eyebrow"><span></span> YOUR TRAINING, IN FOCUS</p>
+          <h1>Show up.<br /><em>Get stronger.</em></h1>
+          <p class="auth-story__description">
+            A calm, precise place to plan your training, log every set, and see the work add up.
+          </p>
+        </div>
+        <div class="auth-preview" aria-hidden="true">
+          <div class="auth-preview__top"><span>THIS WEEK</span><span>CONSISTENCY <b>04 / 05</b></span></div>
+          <div class="auth-preview__days">
+            <span class="auth-preview__day auth-preview__day--done">M</span>
+            <span class="auth-preview__day">T</span>
+            <span class="auth-preview__day auth-preview__day--done">W</span>
+            <span class="auth-preview__day">T</span>
+            <span class="auth-preview__day auth-preview__day--today">F</span>
+            <span class="auth-preview__day auth-preview__day--rest">S</span>
+            <span class="auth-preview__day auth-preview__day--rest">S</span>
+          </div>
+          <div class="auth-preview__rule"></div>
+          <div class="auth-preview__lift"><span>BACK SQUAT</span><span>+2.5 <small>KG</small></span></div>
+          <div class="auth-preview__chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><svg viewBox="0 0 320 46" preserveAspectRatio="none"><path d="M0 38 C24 35 28 29 50 32 S78 33 96 25 S128 32 145 22 S171 25 191 18 S226 24 243 12 S276 20 294 8 S312 12 320 3" /></svg></div>
+          <div class="auth-preview__bottom"><span>LAST 8 WEEKS</span><strong>PROGRESS, NOT PRESSURE</strong></div>
+        </div>
+        <div class="auth-story__foot"><span>PLAN WITH INTENT</span><span>·</span><span>TRACK WHAT MATTERS</span><span>·</span><span>KEEP YOUR DATA YOURS</span></div>
+      </section>
 
-      <div class="text-center">
-        <div class="text-6xl font-black tracking-[8px] text-white">LIFT</div>
-        <div class="text-2xl font-light tracking-[6px] text-zinc-300 -mt-3">TRACKER</div>
-        <div class="text-[10px] tracking-[2px] text-emerald-400/70 mt-1">v{APP_VERSION}</div>
+      <section class="auth-form-column" aria-label="Sign in or create an account">
+      <div class="auth-mobile-brand">
+        <div class="auth-mobile-brand__icon"><Dumbbell class="size-7 text-zinc-200" aria-hidden="true" /></div>
+        <div class="auth-mobile-brand__wordmark"><b>LIFT</b><span>TRACKER</span></div>
+      </div>
+      <div class="auth-form-heading">
+        <p class="auth-form-heading__eyebrow">{authMode === 'signup' ? 'YOUR NEXT REP STARTS HERE' : 'GOOD TO HAVE YOU BACK'}</p>
+        <h2>{authMode === 'signup' ? 'Create your account' : 'Welcome back'}</h2>
+        <p>{authMode === 'signup' ? 'Save your routines and progress across devices.' : 'Sign in to pick up where you left off.'}</p>
       </div>
 
       <div class="auth-panel-card rounded-xl border border-[#1e1e1e] bg-[#141414] overflow-hidden">
@@ -12839,7 +12888,7 @@ const getStatIcon = getItemIcon;
             ></div>
             <button
               type="button"
-              class="relative z-10 h-9 flex items-center justify-center text-[10px] font-black tracking-[0.12em] transition-colors {authMode === 'signup' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+              class="auth-mode-switch relative z-10 h-9 flex items-center justify-center text-[10px] font-black tracking-[0.12em] transition-colors {authMode === 'signup' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
               disabled={signingIn}
               onclick={() => setAuthMode('signup')}
             >
@@ -12847,7 +12896,7 @@ const getStatIcon = getItemIcon;
             </button>
             <button
               type="button"
-              class="relative z-10 h-9 flex items-center justify-center text-[10px] font-black tracking-[0.12em] transition-colors {authMode === 'signin' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
+              class="auth-mode-switch relative z-10 h-9 flex items-center justify-center text-[10px] font-black tracking-[0.12em] transition-colors {authMode === 'signin' ? 'text-black' : 'text-zinc-500 hover:text-zinc-300'}"
               disabled={signingIn}
               onclick={() => setAuthMode('signin')}
             >
@@ -12857,38 +12906,11 @@ const getStatIcon = getItemIcon;
         </div>
 
         <div class="p-3 text-left">
-          <div class="relative mb-3 hidden" aria-hidden="true">
-            <div class="flex justify-between gap-1.5 pointer-events-none select-none">
-              <div
-                class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl flex items-center justify-center bg-[#0a0a0a] text-zinc-400">
-                <Mail class="size-5 relative z-0" />
-              </div>
-              <div
-                class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl border border-[#30363d] flex items-center justify-center bg-[#24292f] text-white">
-                <AuthBrandIcon brand="github" class="size-5 text-white relative z-0" />
-              </div>
-              <div
-                class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl flex items-center justify-center bg-white">
-                <AuthBrandIcon brand="google" class="size-5 relative z-0" />
-              </div>
-              <div
-                class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl flex items-center justify-center bg-[#5865F2] text-white">
-                <AuthBrandIcon brand="discord" class="size-5 text-white relative z-0" />
-              </div>
-              <div
-                class="relative overflow-hidden after:absolute after:inset-0 after:z-[1] after:bg-black/50 after:pointer-events-none after:content-[''] h-11 w-11 shrink-0 rounded-xl flex items-center justify-center bg-black text-white">
-                <AuthBrandIcon brand="x" class="size-5 text-white relative z-0" />
-              </div>
-            </div>
-            <div
-              class="absolute inset-0 z-10 flex items-center justify-center rounded-xl pointer-events-none px-1">
-              <p
-                class="text-[10px] font-black tracking-[0.1em] uppercase text-white text-center leading-tight"
-                style="text-shadow: 0 0 2px rgba(0,0,0,0.7), 0 1px 2px rgba(0,0,0,0.55);">
-                CURRENTLY UNDER DEVELOPMENT
-              </p>
-            </div>
-          </div>
+          <button type="button" class="auth-google-button" onclick={handleGoogleSignIn} disabled={signingIn}>
+            <AuthBrandIcon brand="google" class="size-4" />
+            <span>{signingIn ? 'CONNECTING…' : 'CONTINUE WITH GOOGLE'}</span>
+          </button>
+          <div class="auth-divider"><span>OR CONTINUE WITH {authCredentialMethod === 'email' ? 'EMAIL' : 'USERNAME'}</span></div>
 
           <form
             class="flex flex-col gap-2.5"
@@ -12906,6 +12928,7 @@ const getStatIcon = getItemIcon;
                   autocomplete="email"
                   bind:value={authEmail}
                   disabled={signingIn}
+                  aria-label="Email address"
                   placeholder="you@example.com"
                   class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white placeholder:text-zinc-600 outline-none focus:border-zinc-500 disabled:opacity-60"
                   oninput={clearAuthFeedback}
@@ -12921,6 +12944,7 @@ const getStatIcon = getItemIcon;
                   maxlength={MAX_USERNAME_LEN}
                   bind:value={authUsername}
                   disabled={signingIn}
+                  aria-label="Username"
                   placeholder="username"
                   class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white placeholder:text-zinc-600 outline-none focus:border-zinc-500 disabled:opacity-60"
                   oninput={(e) => {
@@ -12940,6 +12964,7 @@ const getStatIcon = getItemIcon;
                   bind:value={authPassword}
                   disabled={signingIn}
                   placeholder="••••••••"
+                  aria-label="Password"
                   class="h-11 w-full pl-10 pr-3 rounded-xl bg-[#0a0a0a] border border-[#1e1e1e] text-sm text-white placeholder:text-zinc-600 outline-none focus:border-zinc-500 disabled:opacity-60"
                   oninput={(e) => {
                     clearAuthFeedback();
@@ -12995,7 +13020,7 @@ const getStatIcon = getItemIcon;
                 {#if signingIn}
                   <RefreshCw class="size-4 shrink-0 animate-spin" aria-hidden="true" />
                 {:else}
-                  {authMode === 'signup' ? 'SIGN UP' : 'SIGN IN'}
+                  {authMode === 'signup' ? 'CREATE ACCOUNT' : 'SIGN IN'}
                 {/if}
               </button>
               {#if authCrossfadeShowFeedback}
@@ -13023,17 +13048,20 @@ const getStatIcon = getItemIcon;
             <div class="text-center">
               <button
                 type="button"
-                class="text-[10px] font-medium tracking-[0.08em] text-zinc-500 hover:text-zinc-300 active:text-white transition-colors disabled:opacity-50"
+                class="auth-credential-toggle text-[10px] font-medium tracking-[0.08em] text-zinc-500 hover:text-zinc-300 active:text-white transition-colors disabled:opacity-50"
                 disabled={signingIn}
                 onclick={toggleEmailAuth}
               >
                 {authCredentialMethod === 'email' ? 'USE USERNAME INSTEAD' : 'USE EMAIL INSTEAD'}
               </button>
             </div>
+            {#if authMode === 'signin' && authCredentialMethod === 'email'}
+              <button type="button" class="auth-forgot-link" disabled={signingIn} onclick={sendPasswordReset}>Forgot password?</button>
+            {/if}
           </form>
         </div>
       </div>
-    </div>
+      </section>
     </div>
   {/if}
   </div>
@@ -13056,23 +13084,10 @@ const getStatIcon = getItemIcon;
       target="_blank"
       rel="noopener noreferrer"
       class="hover:text-zinc-300 active:text-white transition-colors"
-      title="Click to visit the Lift Tracker GitHub repo."
+      aria-label="Lift Tracker source code on GitHub"
+      title="View Lift Tracker on GitHub"
     >
-      <span
-        class="cursor-pointer hover:text-zinc-300 active:text-white transition-colors"
-        title="Update demo — tap (touch) or Ctrl+click (desktop)"
-        onclick={(e) => { if (e.ctrlKey || e.metaKey || window.matchMedia('(pointer: coarse)').matches) { e.preventDefault(); e.stopPropagation(); manuallyOpenUpdateMenu(); } }}
-      >
-        LIFT-TRACKER v{APP_VERSION}
-      </span>
-      <span class="text-zinc-500 select-none">—</span>
-      <span
-        class="cursor-pointer hover:text-zinc-300 active:text-white transition-colors"
-        title="Post-update demo — tap (touch) or Ctrl+click (desktop)"
-        onclick={(e) => { if (e.ctrlKey || e.metaKey || window.matchMedia('(pointer: coarse)').matches) { e.preventDefault(); e.stopPropagation(); manuallyOpenPostUpdateMenu(); } }}
-      >
-        All rights reserved by Arya.
-      </span>
+      LIFT-TRACKER v{APP_VERSION} — All rights reserved by Arya.
     </a>
   </div>
 

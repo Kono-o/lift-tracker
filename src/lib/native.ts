@@ -18,7 +18,7 @@ function inAppPathFromDeepLink(url: string): string | null {
 			const path = `/${parsed.host}${parsed.pathname}`.replace(/\/+/g, '/');
 			return `${path}${parsed.search}${parsed.hash}`;
 		}
-		if (parsed.pathname.includes('/auth/callback')) {
+		if (parsed.pathname.includes('/auth/callback') || parsed.pathname.includes('/auth/recovery')) {
 			return `${parsed.pathname}${parsed.search}${parsed.hash}`;
 		}
 	} catch {

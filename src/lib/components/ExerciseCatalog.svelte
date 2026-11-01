@@ -751,7 +751,7 @@
     align-items: center;
   }
 
-  .catalog-search__icon {
+  .catalog-search :global(.catalog-search__icon) {
     position: absolute;
     left: 0.65rem;
     z-index: 1;
@@ -834,7 +834,7 @@
     border-color: #52525b;
   }
 
-  .catalog-select__chevron {
+  .catalog-select :global(.catalog-select__chevron) {
     position: absolute;
     right: 0.45rem;
     width: 0.75rem;
@@ -959,7 +959,7 @@
     white-space: nowrap;
   }
 
-  .catalog-row__added {
+  .catalog-row :global(.catalog-row__added) {
     width: 0.8rem;
     height: 0.8rem;
     flex: none;
@@ -992,7 +992,7 @@
     white-space: nowrap;
   }
 
-  .catalog-row__chevron {
+  .catalog-row :global(.catalog-row__chevron) {
     width: 0.9rem;
     height: 0.9rem;
     flex: none;

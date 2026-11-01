@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, untrack } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import {
     db,
     formatDbError,
@@ -72,6 +72,7 @@
   let errorMsg = $state<string | null>(null);
   let renamingId = $state<string | null>(null);
   let renameValue = $state('');
+  let renameInputEl = $state<HTMLInputElement | undefined>(undefined);
   let selectedAllId = $state<string | null>(null);
   let loading = $state(untrack(() => initialList.length === 0));
 
@@ -496,6 +497,11 @@
     if (!r || r.source !== 'owned') return;
     renamingId = id;
     renameValue = r.name ?? '';
+    void tick().then(() => {
+      if (renamingId !== id) return;
+      renameInputEl?.focus();
+      renameInputEl?.select();
+    });
   }
 
   async function saveRename(id: string) {
@@ -1070,6 +1076,8 @@
           <div class="list-row-shell" in:listRowIn out:listRowOut>
           <div
             class="flex items-stretch gap-1 h-9 min-w-0 {isOwned && !isPending ? 'cursor-grab active:cursor-grabbing' : ''}"
+            role="listitem"
+            aria-roledescription="Reorderable routine"
             data-routine-source={routine.source}
             data-list-row
             style="transform: translateY({isOwned && !isPending && ownedIdx >= 0 ? dragShift(draggedOwnedIndex, dragOverOwnedIndex, ownedIdx) : 0}px); transition: transform 150ms ease; {draggedOwnedIndex !== null && ownedIdx === draggedOwnedIndex ? 'opacity: 0.25;' : ''}"
@@ -1132,8 +1140,6 @@
                   <div
                     class="flex items-center min-w-0 flex-1 font-medium text-xs uppercase leading-none"
                     style={isActive ? `color: white` : `color: #aaa`}
-                    onclick={(e) => e.stopPropagation()}
-                    onmousedown={(e) => e.stopPropagation()}
                   >
                     <span class="shrink-0 select-none">[</span>
                     <input
@@ -1141,7 +1147,7 @@
                       class="font-medium bg-transparent border-0 p-0 m-0 focus:outline-none focus:ring-0 text-xs uppercase flex-1 min-w-0 truncate leading-none"
                       style={isActive ? `color: white` : `color: #aaa`}
                       bind:value={renameValue}
-                      autofocus
+                      bind:this={renameInputEl}
                       onclick={(e) => e.stopPropagation()}
                       onmousedown={(e) => e.stopPropagation()}
                       onfocus={(e) => (e.currentTarget as HTMLInputElement).select()}
@@ -1172,9 +1178,11 @@
                     title={routine.name}
                   >{routine.name}</span>
                 {:else}
-                  <!-- svelte-ignore a11y_click_events_have_key_events -->
                   <span
                     class="font-medium text-xs flex-1 min-w-0 truncate leading-none select-none uppercase {isActive ? 'text-white' : 'text-zinc-400'} {isOwned ? 'cursor-text' : ''}"
+                    role="button"
+                    tabindex="0"
+                    aria-label="Rename routine {displayRoutineName(routine)}"
                     title={isOwned ? 'Tap to rename' : displayRoutineName(routine)}
                     onclick={(e) => {
                       // Active owned row: single tap on the name renames it.
@@ -1186,6 +1194,13 @@
                     ondblclick={(e) => {
                       e.stopPropagation();
                       if (isOwned) renameRoutine(routine.id);
+                    }}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (isOwned) renameRoutine(routine.id);
+                      }
                     }}
                   >{displayRoutineName(routine)}</span>
                 {/if}

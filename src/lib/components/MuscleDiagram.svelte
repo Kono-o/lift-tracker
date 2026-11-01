@@ -1,6 +1,5 @@
 <script lang="ts">
-  import frontRaw from '../../../static/svg/front.svg?raw';
-  import backRaw from '../../../static/svg/back.svg?raw';
+  import { onMount } from 'svelte';
 
   let {
     primary = [],
@@ -16,8 +15,42 @@
     showLegend?: boolean;
   } = $props();
 
+  let frontRaw = $state('');
+  let backRaw = $state('');
+  let loadingState = $state<'loading' | 'ready' | 'error'>('loading');
+  let diagramRequest: AbortController | null = null;
+
   const primarySet = $derived(new Set(primary.filter((id) => Number.isFinite(id))));
   const secondarySet = $derived(new Set(secondary.filter((id) => Number.isFinite(id))));
+
+  async function loadDiagrams() {
+    diagramRequest?.abort();
+    const request = new AbortController();
+    diagramRequest = request;
+    loadingState = 'loading';
+    try {
+      const [frontResponse, backResponse] = await Promise.all([
+        fetch('/svg/front.svg', { signal: request.signal }),
+        fetch('/svg/back.svg', { signal: request.signal }),
+      ]);
+      if (!frontResponse.ok || !backResponse.ok) throw new Error('Muscle diagrams could not be loaded.');
+      const [front, back] = await Promise.all([frontResponse.text(), backResponse.text()]);
+      if (request.signal.aborted) return;
+      frontRaw = front;
+      backRaw = back;
+      loadingState = 'ready';
+    } catch (error) {
+      if (!request.signal.aborted) {
+        loadingState = 'error';
+        console.warn('[muscle-diagram] Could not load local illustration assets.', error);
+      }
+    }
+  }
+
+  onMount(() => {
+    void loadDiagrams();
+    return () => diagramRequest?.abort();
+  });
 
   function decorate(source: string): string {
     return source.replace(
@@ -34,8 +67,8 @@
     );
   }
 
-  const frontSvg = $derived(decorate(frontRaw));
-  const backSvg = $derived(decorate(backRaw));
+  const frontSvg = $derived(frontRaw ? decorate(frontRaw) : '');
+  const backSvg = $derived(backRaw ? decorate(backRaw) : '');
 
   const ariaLabel = $derived.by(() => {
     if (primary.length === 0 && secondary.length === 0) return 'Muscle diagram';
@@ -43,16 +76,31 @@
   });
 </script>
 
-<div class="muscle-diagram {className}" role="img" aria-label={ariaLabel}>
-  <div class="muscle-diagram__view">
-    <div class="muscle-diagram__canvas">{@html frontSvg}</div>
-    {#if showLabels}<span class="muscle-diagram__label">FRONT</span>{/if}
-  </div>
-  <div class="muscle-diagram__view">
-    <div class="muscle-diagram__canvas">{@html backSvg}</div>
-    {#if showLabels}<span class="muscle-diagram__label">BACK</span>{/if}
-  </div>
-  {#if showLegend && (primary.length > 0 || secondary.length > 0)}
+<div
+  class="muscle-diagram {className}"
+  role={loadingState === 'ready' ? 'img' : 'group'}
+  aria-label={loadingState === 'ready' ? ariaLabel : loadingState === 'loading' ? 'Loading muscle diagrams' : undefined}
+>
+  {#if loadingState === 'error'}
+    <div class="muscle-diagram__error" role="status">
+      <span>Muscle maps are unavailable.</span>
+      <button type="button" onclick={() => void loadDiagrams()}>TRY AGAIN</button>
+    </div>
+  {:else}
+    <div class="muscle-diagram__view">
+      <div class="muscle-diagram__canvas">
+        {#if loadingState === 'ready'}{@html frontSvg}{:else}<span role="status">Loading…</span>{/if}
+      </div>
+      {#if showLabels}<span class="muscle-diagram__label">FRONT</span>{/if}
+    </div>
+    <div class="muscle-diagram__view">
+      <div class="muscle-diagram__canvas" aria-hidden="true">
+        {#if loadingState === 'ready'}{@html backSvg}{:else}<span>Loading…</span>{/if}
+      </div>
+      {#if showLabels}<span class="muscle-diagram__label">BACK</span>{/if}
+    </div>
+  {/if}
+  {#if loadingState === 'ready' && showLegend && (primary.length > 0 || secondary.length > 0)}
     <div class="muscle-diagram__legend">
       {#if primary.length > 0}
         <span><i class="muscle-diagram__dot muscle-diagram__dot--primary"></i>PRIMARY</span>
@@ -145,6 +193,37 @@
     font-size: 8px;
     letter-spacing: 0.14em;
     color: #71717a;
+  }
+
+  .muscle-diagram__error {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    min-height: 3rem;
+    color: #a1a1aa;
+    font-size: 0.65rem;
+  }
+
+  .muscle-diagram__error button {
+    min-height: 2.75rem;
+    padding: 0 0.7rem;
+    border: 1px solid #33343a;
+    border-radius: 0.5rem;
+    color: #d4d4d8;
+    font: 600 0.55rem var(--font-mono, monospace);
+    letter-spacing: 0.08em;
+  }
+
+  .muscle-diagram__canvas > span {
+    display: grid;
+    width: 100%;
+    max-width: 11rem;
+    aspect-ratio: 3 / 4;
+    place-items: center;
+    color: #71717a;
+    font-size: 0.6rem;
   }
 
   .muscle-diagram__legend span {

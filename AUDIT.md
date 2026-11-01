@@ -26,7 +26,8 @@ Reviewed the sign-in, sign-up, password recovery, first-run, routine editing, st
 - Styled recovery and callback states to match the auth system; verified the invalid/expired recovery state in the browser. No real email, OAuth credential, or password change was submitted.
 - Added keyboard operation and ARIA state for row selection, routine rename, stats date selection, and dialog dismissal. Replaced focus-on-render with focus only after the user starts renaming. Corrected the exercise-catalog icon selectors that were not receiving their styles, and removed the hidden footer shortcuts that opened demo update dialogs.
 - Deferred Markdown parsing/sanitizing and update confetti until update UI is opened, keeping them out of the initial page bundle.
-- `npm run check` → **0 errors, 0 warnings**. `npm run build` → success. `git diff --check` → clean. Build still reports one 784 KB uncompressed client chunk (about 320 KB gzip) and Supabase's optional `@opentelemetry/api` peer notice.
+- The bundle report traced the 784 KB client chunk to the front/back muscle diagrams imported as raw SVG markup. The diagram now fetches those same-origin static assets only when the exercise detail is opened, retaining in-SVG highlighting and a retry state. The largest generated client chunk dropped from **784 KB to 409 KB**, and the >500 KB chunk warning is gone.
+- `npm run check` → **0 errors, 0 warnings**. `npm run build` and `npm run build:capacitor` → success; both muscle SVGs are present in the Capacitor output. `git diff --check` → clean. The optional Supabase `@opentelemetry/api` peer notice remains.
 - No end-to-end suite exists. This pass did not submit a real authentication request, apply the pending live migration, test Bluetooth hardware, or install a native APK.
 
 ---

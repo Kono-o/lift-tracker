@@ -30,6 +30,13 @@ Reviewed the sign-in, sign-up, password recovery, first-run, routine editing, st
 - `npm run check` → **0 errors, 0 warnings**. `npm run build` and `npm run build:capacitor` → success; both muscle SVGs are present in the Capacitor output. `git diff --check` → clean. The optional Supabase `@opentelemetry/api` peer notice remains.
 - No end-to-end suite exists. This pass did not submit a real authentication request, apply the pending live migration, test Bluetooth hardware, or install a native APK.
 
+### Workout accessibility and touch pass — 2026-11-01
+
+- Audited the active workout set lane and timed-set controls for keyboard use and phone hit-area sizing.
+- Rep-set actions now work with Enter/Space: holding logs the target set, releasing opens manual rep editing, and key repeat does not restart the hold. Blur and pointer cancellation stop pending holds; vertical swipes can still scroll the workout. Each set exposes its current value and action to assistive technology.
+- Coarse-pointer layouts use 44 CSS px set tiles and timed-session controls; desktop sizing stays compact.
+- `npm run check` → **0 errors, 0 warnings**. `npm run build` and `npm run build:capacitor` → success. No real signed-in workout session or physical device was available for this follow-up, so the new event handling was compile-checked and reviewed against the existing hold-state logic rather than exercised on hardware.
+
 ---
 
 ## 1. Executive summary

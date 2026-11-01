@@ -56,6 +56,32 @@ html {
 		opacity: 1;
 		background-image: radial-gradient(circle, rgba(255, 255, 255, 0.7) 1.5px, transparent 1.5px);
 	}
+
+	/* The workout set lane is a high-frequency control surface. Keep its hit
+	   areas at least 44 CSS px without enlarging the compact desktop layout. */
+	.workout-set-lane {
+		min-height: 44px;
+	}
+
+	.workout-set-lane .set-bubble {
+		height: 44px;
+		min-height: 44px;
+	}
+
+	.workout-set-lane .set-bubble > button {
+		touch-action: pan-y;
+	}
+
+	.workout-set-lane .time-active-bar,
+	.workout-set-lane .timer-control-btn {
+		width: 44px;
+		height: 44px;
+		min-height: 44px;
+	}
+
+	.workout-set-lane .time-active-bar {
+		width: 100%;
+	}
 }
 
 

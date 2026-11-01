@@ -5556,7 +5556,9 @@ const getStatIcon = getItemIcon;
     setIndex: number,
     targetReps: number,
   ) {
-    if (e.cancelable) e.preventDefault();
+    // Keyboard Space/Enter should not scroll the page. Pointer defaults stay
+    // available so touch-action: pan-y can hand a vertical swipe to scrolling.
+    if (e.type === 'keydown' && e.cancelable) e.preventDefault();
     if (workoutState !== 'active' || !isViewingToday) return;
     const blockingRestId = activeRestExerciseId ?? restFadeExerciseId;
     if (blockingRestId != null && blockingRestId !== exerciseId) return;
@@ -10399,7 +10401,7 @@ const getStatIcon = getItemIcon;
             {/snippet}
 
             <!-- sets lane: set boxes crossfade to the rest progress bar during the 1s fade-to-orange -->
-            <div class="relative h-7 w-full">
+            <div class="workout-set-lane relative h-7 w-full">
               <!-- Set boxes layer (crossfades out during fade/rest) -->
               <div
                 class="absolute inset-0 transition-opacity duration-1000"
@@ -10464,13 +10466,27 @@ const getStatIcon = getItemIcon;
                           {:else}
                             <button
                               type="button"
-                              class="relative z-10 w-full h-full flex flex-col items-center justify-center bg-transparent border-none p-0 text-zinc-400 font-sans {hasActiveRestElsewhere || !canLogThisSet ? '' : 'hover:brightness-110'} select-none touch-none"
-                              onmousedown={(e) => startRepSetHold(e, exercise.id, s, exercise.target_reps)}
-                              onmouseup={() => stopRepSetHold(exercise.id, s)}
-                              onmouseleave={cancelRepSetHold}
-                              ontouchstart={(e) => startRepSetHold(e, exercise.id, s, exercise.target_reps)}
-                              ontouchend={() => stopRepSetHold(exercise.id, s)}
-                              ontouchcancel={cancelRepSetHold}
+                              class="relative z-10 w-full h-full flex flex-col items-center justify-center bg-transparent border-none p-0 text-zinc-400 font-sans {hasActiveRestElsewhere || !canLogThisSet ? '' : 'hover:brightness-110'} select-none"
+                              aria-label={`Set ${s + 1}: ${repsValue ?? 'not logged'} reps. Hold to log ${exercise.target_reps}; release to edit.`}
+                              onpointerdown={(e) => {
+                                if (e.pointerType === 'touch') {
+                                  (e.currentTarget as HTMLButtonElement).setPointerCapture(e.pointerId);
+                                }
+                                startRepSetHold(e, exercise.id, s, exercise.target_reps);
+                              }}
+                              onpointerup={() => stopRepSetHold(exercise.id, s)}
+                              onpointercancel={cancelRepSetHold}
+                              onpointerleave={(e) => {
+                                if (e.pointerType !== 'touch') cancelRepSetHold();
+                              }}
+                              onkeydown={(e) => {
+                                if ((e.key !== 'Enter' && e.key !== ' ') || e.repeat) return;
+                                startRepSetHold(e, exercise.id, s, exercise.target_reps);
+                              }}
+                              onkeyup={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') stopRepSetHold(exercise.id, s);
+                              }}
+                              onblur={cancelRepSetHold}
                               disabled={!workoutExercisesEditable || hasActiveRestElsewhere || !canLogThisSet}
                             >
                               <span class="sl text-[8px] tracking-wider opacity-60 block leading-none text-zinc-400">S{s + 1}</span>

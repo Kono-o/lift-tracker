@@ -2,6 +2,21 @@
 
 All notable changes to Lift Tracker are documented here.
 
+## [1.0.17] - 2026-11-02
+
+**Body composition & scale discovery** — same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.
+
+### New features
+- **Body composition estimate** — whole-body impedance now drives fat, muscle, bone, water, visceral, and metabolic-age estimates using the vendor (openScale) foot-to-foot algorithms, with a compensation engine anchored to known anchors. Estimates are labelled and only shown for rows captured with the provenance gate.
+- **Scale discovery** — a ranked, de-duplicated device list folding OS bonded pairs, scan results, and Web Bluetooth reconnects into one stable order so a row never jumps out from under a finger.
+- **Activity level** — profiles gain an optional activity level that feeds TDEE; it is never defaulted, so no daily-calorie target is invented.
+- **Impedance & pulse capture** — staged capture stores impedance in ohms with its source byte-map and a `captured_version` provenance gate; legacy rows keep their stored values but are distrusted by the estimate UI.
+
+### Fixes & hardening
+- Stabilization now publishes the median of an agreeing cluster instead of N consecutive equal frames, so a single dropout, flicker, or corrupt frame no longer strands the user on "hold still".
+- Schema: added `profiles.activity`, `body_readings.impedance_ohms/impedance_source/captured_version` with range/length checks; `save_profile` and `save_body_reading` RPCs take the new fields (`20261102010000_activity_and_impedance.sql`).
+- Expanded `npm run test:scale` to **42** checks (discovery ordering, stabilization, estimate anchors, schema contract, legacy provenance).
+
 ## [1.0.16] - 2026-11-02
 
 **Body metrics & Bluetooth scale sync** — same **stable signing key** (fingerprint 37:04:C3:...) so in-app updates install cleanly.

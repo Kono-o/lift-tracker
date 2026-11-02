@@ -11,14 +11,19 @@
     formatMetric,
     formatMetricDelta,
     metricByKey,
+    metricTier,
     metricUnit,
     metricValueOf,
     rangeStart,
+    seriesTier,
     summarize,
     trendDelta,
+    TIER_HINT,
+    TIER_LABEL,
     type BodyMetricKey,
     type BodyRange,
     type DerivedReading,
+    type MetricTier,
   } from '$lib/bodyHistory';
   import type { BodyProfile, BodyReading } from '$lib/bodySanitize';
   import { formatBodyMass, massUnit, type BodyUnits } from '$lib/units';
@@ -91,6 +96,19 @@
     metrics.some((m) => m.key === metricKey) ? metricKey : 'weight_kg',
   );
   const activeMetric = $derived(metricByKey(activeKey));
+
+  /**
+   * Where this chart's numbers came from. `mixed` is common and honest: it happens
+   * the moment a scale that reports impedance joins a history of profile-only rows.
+   */
+  const activeTier = $derived(seriesTier(rows, activeKey));
+  const TIER_TAG: Record<MetricTier | 'mixed', string> = { ...TIER_LABEL, mixed: 'MIXED' };
+  const TIER_SENTENCE: Record<MetricTier | 'mixed', string> = {
+    measured: 'read straight off the hardware',
+    bia: 'computed from a measured body resistance',
+    estimate: 'computed from weight, height, age and sex',
+    mixed: 'some of these came from a resistance reading, some from your profile alone',
+  };
 
   const allPoints = $derived(buildSeries(rows, activeKey));
   const points = $derived(filterRange(allPoints, range, now));
@@ -241,10 +259,10 @@
         <Bluetooth class="app-icon-control" />
       </span>
       <div class="text-xs leading-snug text-app-fg-secondary">
-        This scale sends weight over Bluetooth. BMI, body-fat, body-water, and BMR values are estimates calculated from your profile.
+        The scale sends weight, pulse and — on hardware that measures it — body resistance. Everything else here is calculated from those plus your profile.
       </div>
       <div class="max-w-[22rem] text-app-micro leading-snug text-app-fg-disabled">
-        The BLE reading does not include reliable heart-rate or impedance data, so those metrics are not shown.
+        Every value is tagged: SCALE means the hardware reported it, BIA means it came from a real resistance reading, DERIVED means weight, height, age and sex only.
       </div>
       <div class="max-w-[22rem] text-app-micro leading-snug text-app-fg-disabled">
         No Bluetooth on this device? Use MANUAL and type in what the display shows.
@@ -260,9 +278,9 @@
       {/if}
     </div>
   {:else}
-    {#if latest?.reading.source === 'scale'}
+    {#if activeTier}
       <p class="px-1 text-app-micro leading-snug text-app-fg-disabled">
-        Weight is measured. BMI, body-fat, body-water, and BMR values are profile-based estimates; this scale does not send reliable heart-rate or impedance data.
+        {activeMetric.label}: {TIER_TAG[activeTier]} · {TIER_SENTENCE[activeTier]}.
       </p>
     {/if}
     <div class="flex gap-1.5 overflow-x-auto no-scrollbar" role="tablist" aria-label="Body metrics">
@@ -345,8 +363,12 @@
           <div class="mt-2 grid grid-cols-3 gap-x-2 gap-y-1.5">
             {#each metrics as metric (metric.key)}
               {#if metric.key !== activeKey}
+                {@const tier = metricTier(selected, metric.key)}
                 <div class="flex flex-col gap-0.5">
-                  <span class="text-app-micro tracking-[0.12em] text-app-fg-disabled leading-none">{metric.label}</span>
+                  <div class="flex items-baseline justify-between gap-1">
+                    <span class="text-app-micro tracking-[0.12em] text-app-fg-disabled leading-none">{metric.label}</span>
+                    <span class="text-app-micro leading-none text-app-fg-disabled" title={TIER_HINT[tier]}>{TIER_TAG[tier]}</span>
+                  </div>
                   <span class="text-app-micro text-app-fg-secondary-strong leading-none tabular-nums">
                     {formatMetric(metric.key, metricValueOf(selected, metric.key), units)}
                   </span>

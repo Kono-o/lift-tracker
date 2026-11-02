@@ -1,10 +1,10 @@
 <script lang="ts">
   import { fade } from 'svelte/transition';
-  import { X, Check, Cake, Ruler } from '@lucide/svelte';
+  import { X, Check, Cake, Ruler, Flame } from '@lucide/svelte';
   import { menuPanelIn, menuPanelOut, OVERLAY_MS } from '$lib/menuTransitions';
   import type { BodyProfile, BodyProfileInput } from '$lib/bodySanitize';
   import { ageFromDob, ageYearsDecimal, dobBounds, formatAge } from '$lib/age';
-  import { canDerive, type Sex } from '$lib/bodyComp';
+  import { ACTIVITY_LEVELS, canDerive, type Activity, type Sex } from '$lib/bodyComp';
   import {
     formatHeight,
     fromDisplayHeight,
@@ -16,7 +16,7 @@
   import { playError, playSetLogged } from '$lib/sounds';
 
   /**
-   * Sex, birthday, height — the three inputs every derived metric needs.
+   * The four inputs every derived metric can use.
    *
    * Only the birth date is stored, never the age, so the number stays correct on its
    * own: nothing to re-enter on a birthday and nothing to drift if the app sits closed
@@ -52,6 +52,7 @@
   let sex = $state<Sex | null>(null);
   let dob = $state('');
   let heightText = $state('');
+  let activity = $state<Activity | null>(null);
   let saving = $state(false);
   let errorMessage = $state<string | null>(null);
 
@@ -71,6 +72,7 @@
     dob = profile.date_of_birth ?? '';
     heightText =
       profile.height_cm != null ? String(round1(toDisplayHeight(profile.height_cm, units))) : '';
+    activity = profile.activity;
     saving = false;
     errorMessage = null;
   });
@@ -92,21 +94,25 @@
     canDerive({ sex, heightCm, ageYears: ageYearsDecimal(age) }),
   );
 
-  /** Per-metric truth table so the user knows what each field buys them. */
-  const unlocks = $derived.by((): { label: string; ok: boolean; needsScale?: boolean }[] => {
-    const hasAgeSex = sex != null && age != null;
-    const needsProfile = hasAgeSex && heightCm != null;
+  /**
+   * Which inputs are in place. Every metric is always calculated and shown — tagged
+   * SCALE / BIA / DERIVED for provenance — so a missing field does not hide a row, it
+   * only costs the accuracy of the numbers that would have used it.
+   */
+  const inputs = $derived.by((): { label: string; ok: boolean; note: string }[] => {
     return [
-      { label: 'BMI', ok: heightCm != null },
-      { label: 'Body fat %', ok: needsProfile },
-      { label: 'Body water', ok: needsProfile },
-      { label: 'BMR (kcal/day)', ok: needsProfile },
-      { label: 'Muscle mass', ok: false, needsScale: true },
+      { label: 'SEX', ok: sex != null, note: 'Body-fat, water, muscle and bone formulas branch on it' },
+      { label: 'DATE OF BIRTH', ok: age != null, note: 'Age at each weigh-in, so history stays correct' },
+      { label: 'HEIGHT', ok: heightCm != null, note: 'BMI, impedance-based lean mass, visceral fat' },
+      { label: 'ACTIVITY LEVEL', ok: activity != null, note: 'Daily-calorie target (TDEE) — nothing else' },
     ];
   });
 
   const canSave = $derived(
-    !saving && !heightInvalid && !dobInvalid && (sex != null || dob !== '' || heightText.trim() !== ''),
+    !saving &&
+      !heightInvalid &&
+      !dobInvalid &&
+      (sex != null || dob !== '' || heightText.trim() !== '' || activity != null),
   );
 
   async function save() {
@@ -114,7 +120,7 @@
     saving = true;
     errorMessage = null;
     try {
-      await onSave({ sex, date_of_birth: dob || null, height_cm: heightCm });
+      await onSave({ sex, date_of_birth: dob || null, height_cm: heightCm, activity });
       void hapticSuccess();
       playSetLogged();
       onDismiss();
@@ -131,6 +137,11 @@
     // Tapping the current choice again clears it: no third-state trap for a
     // mis-click, and an unset sex is a real answer some users want.
     sex = sex === value ? null : value;
+    void hapticLight();
+  }
+
+  function pickActivity(value: Activity) {
+    activity = activity === value ? null : value;
     void hapticLight();
   }
 </script>
@@ -163,7 +174,7 @@
     <div class="settings-panel-body flex flex-col gap-3">
       <p class="text-app-micro leading-snug text-app-fg-muted">
         {onboarding
-          ? 'Sex, date of birth, and height are used to calculate body-fat, water, and BMR estimates. Only you can read these profile details.'
+          ? 'Sex, birthday, height and activity level feed the derived metrics and your daily-calorie target. Only you can read these profile details.'
           : 'Age is calculated from your date of birth for each measurement.'}
       </p>
 
@@ -238,26 +249,66 @@
         {/if}
       </label>
 
-      <!-- Profile-based calculations -->
+      <!-- Activity level -->
+      <div class="flex flex-col gap-1.5">
+        <span class="profile-field__label"><Flame class="app-icon-small" /> ACTIVITY LEVEL</span>
+        <div class="flex flex-col gap-1" role="group" aria-label="Activity level">
+          {#each ACTIVITY_LEVELS as option (option.key)}
+            {@const on = activity === option.key}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={on}
+              class="profile-choice profile-choice--row"
+              class:profile-choice--on={on}
+              onclick={() => pickActivity(option.key)}
+            >
+              <span class="profile-choice__tick" aria-hidden="true">
+                {#if on}<Check class="app-icon-small" />{/if}
+              </span>
+              <span class="profile-choice__text">
+                <span>{option.label.toUpperCase()}</span>
+                <span class="profile-choice__hint">{option.hint}</span>
+              </span>
+            </button>
+          {/each}
+        </div>
+        <span class="text-app-micro leading-snug text-app-fg-disabled">
+          Sets your daily-calorie target. Tap again to clear.
+        </span>
+      </div>
+
+      <!-- What each field is used for -->
       <div class="rounded-md border border-app-outline-subtle bg-app-surface-0 overflow-hidden">
         <div class="flex items-center justify-between px-2.5 py-1.5 border-b border-app-outline-subtle">
-          <span class="text-app-micro tracking-[0.14em] text-app-fg-disabled">DERIVED METRICS</span>
+          <span class="text-app-micro tracking-[0.14em] text-app-fg-disabled">PROFILE INPUTS</span>
           <span class="text-app-micro tabular-nums {ready ? 'text-emerald-400' : 'text-app-fg-disabled'}">
-            {unlocks.filter((u) => u.ok).length}/{unlocks.length}
+            {inputs.filter((item) => item.ok).length}/{inputs.length}
           </span>
         </div>
-        <div class="px-2.5 py-1.5 flex flex-col gap-1">
-          {#each unlocks as item (item.label)}
-            <div class="flex items-center justify-between gap-2">
-              <span class="flex items-center gap-1.5 text-app-micro {item.ok ? 'text-app-fg-secondary-strong' : 'text-app-fg-disabled'}">
-                <span class="w-1.5 h-1.5 rounded-full {item.ok ? 'bg-emerald-500' : 'bg-app-surface-4'}" aria-hidden="true"></span>
-                {item.label}
+        <div class="px-2.5 py-1.5 flex flex-col gap-1.5">
+          {#each inputs as item (item.label)}
+            <div class="flex items-start gap-1.5">
+              <span
+                class="mt-1 w-1.5 h-1.5 shrink-0 rounded-full {item.ok ? 'bg-emerald-500' : 'bg-app-surface-4'}"
+                aria-hidden="true"
+              ></span>
+              <span class="flex flex-col gap-0.5">
+                <span
+                  class="text-app-micro tracking-[0.1em] {item.ok
+                    ? 'text-app-fg-secondary-strong'
+                    : 'text-app-fg-disabled'}"
+                >{item.label}</span>
+                <span class="text-app-micro leading-snug text-app-fg-disabled">{item.note}</span>
               </span>
-              {#if item.needsScale}
-                <span class="text-app-micro text-app-fg-disabled">requires impedance</span>
-              {/if}
             </div>
           {/each}
+        </div>
+        <div
+          class="border-t border-app-outline-subtle px-2.5 py-1.5 text-app-micro leading-snug text-app-fg-disabled"
+        >
+          Every metric is still calculated and charted without these — each one is tagged
+          SCALE, BIA or DERIVED so you can see where a number came from.
         </div>
       </div>
 
@@ -331,6 +382,36 @@
     color: #000;
   }
 
+  .profile-choice--row {
+    justify-content: flex-start;
+    align-items: flex-start;
+    height: auto;
+    padding: var(--space-1-5) var(--space-2-5);
+    text-align: left;
+  }
+
+  .profile-choice__tick {
+    display: flex;
+    align-items: center;
+    height: 1.15rem;
+  }
+
+  .profile-choice__text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .profile-choice__hint {
+    letter-spacing: 0.02em;
+    font-weight: 400;
+    color: var(--app-fg-disabled);
+  }
+
+  .profile-choice--on .profile-choice__hint {
+    color: #52525b;
+  }
+
   .profile-input-row {
     display: flex;
     align-items: stretch;
@@ -357,7 +438,6 @@
     color: #fff;
     outline: none;
     font-variant-numeric: tabular-nums;
-    color-scheme: dark;
   }
 
   .profile-input__readout {

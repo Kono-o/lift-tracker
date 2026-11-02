@@ -20,11 +20,15 @@
 --   - wger_* tables are a public read-only exercise catalog imported from wger.de
 --   - workout_history: composite PK (user_id, workout_date) — one row/day
 --   - exercise_personal_bests: per-user PR lookup (exercise_id, user_id)
---   - profiles: own-only anthropometrics (sex, date of birth, height) used to derive
---     body composition. Never moved onto usernames, which every signed-in user can read
+--   - profiles: own-only anthropometrics (sex, date of birth, height, activity level)
+--     used to derive body composition. Never moved onto usernames, which every
+--     signed-in user can read
 --   - body_readings: one row per weigh-in (date AND time, so two in a day coexist —
 --     stat_logs is keyed by day and cannot hold them). Stores raw measurements plus
---     the profile snapshot taken at capture time; metrics are derived client-side
+--     the profile snapshot taken at capture time; metrics are derived client-side.
+--     impedance_ohms / impedance_source / captured_version record what the scale
+--     actually measured and which protocol revision wrote it; impedance_raw is the
+--     superseded pre-staged-capture column and is no longer written or read
 --   - all SECURITY DEFINER RPCs require auth.uid(); delete_all_accounts is
 --     restricted to service_role/postgres
 -- =============================================================================
@@ -134,6 +138,9 @@ create table public.body_readings (
   weight_kg numeric(6,3) not null,
   heart_rate smallint,
   impedance_raw numeric(8,2),
+  impedance_ohms numeric(6,2),
+  impedance_source text,
+  captured_version smallint,
   source text default 'manual' not null,
   device_label text,
   profile_snapshot jsonb default '{}'::jsonb not null,
@@ -173,6 +180,7 @@ create table public.profiles (
   sex text,
   date_of_birth date,
   height_cm numeric(5,2),
+  activity text,
   created_at timestamp with time zone default now() not null,
   updated_at timestamp with time zone default now() not null
 );
@@ -336,9 +344,12 @@ alter table public.usernames add constraint usernames_pkey PRIMARY KEY (username
 alter table public.workout_history add constraint workout_history_pkey PRIMARY KEY (user_id, workout_date);
 alter table public.routine_bookmarks add constraint routine_bookmarks_user_id_routine_id_key UNIQUE (user_id, routine_id);
 alter table public.usernames add constraint usernames_user_id_key UNIQUE (user_id);
+alter table public.body_readings add constraint body_readings_captured_version_check CHECK (captured_version is null or (captured_version >= 1 AND captured_version <= 100));
 alter table public.body_readings add constraint body_readings_hr_range CHECK (heart_rate is null or (heart_rate >= 20 AND heart_rate <= 260));
 alter table public.body_readings add constraint body_readings_impedance_range CHECK (impedance_raw is null or (impedance_raw >= 0::numeric AND impedance_raw <= 100000::numeric));
+alter table public.body_readings add constraint body_readings_impedance_source_length CHECK (impedance_source is null or char_length(impedance_source) <= 32);
 alter table public.body_readings add constraint body_readings_label_length CHECK (device_label is null or char_length(device_label) <= 40);
+alter table public.body_readings add constraint body_readings_ohms_range CHECK (impedance_ohms is null or (impedance_ohms > 0::numeric AND impedance_ohms <= 5000::numeric));
 alter table public.body_readings add constraint body_readings_snapshot_check CHECK (jsonb_typeof(profile_snapshot) = 'object'::text);
 alter table public.body_readings add constraint body_readings_source_check CHECK (source = any (array['scale'::text, 'manual'::text]));
 alter table public.body_readings add constraint body_readings_weight_range CHECK (weight_kg > 0::numeric AND weight_kg <= 500::numeric);
@@ -348,6 +359,7 @@ alter table public.exercises add constraint exercises_target_sets_range CHECK (t
 alter table public.exercises add constraint exercises_time_fields CHECK (exercise_type <> 'time'::text OR target_reps IS NULL AND target_minutes IS NOT NULL AND target_seconds IS NOT NULL);
 alter table public.exercises add constraint exercises_time_no_weight CHECK (exercise_type <> 'time'::text OR current_weight IS NULL);
 alter table public.exercises add constraint exercises_type_check CHECK (exercise_type = ANY (ARRAY['reps'::text, 'time'::text]));
+alter table public.profiles add constraint profiles_activity_check CHECK (activity is null or activity = any (array['sedentary'::text, 'light'::text, 'moderate'::text, 'high'::text, 'athlete'::text]));
 alter table public.profiles add constraint profiles_dob_floor CHECK (date_of_birth is null or date_of_birth >= '1900-01-01'::date);
 alter table public.profiles add constraint profiles_height_range CHECK (height_cm is null or (height_cm >= 30::numeric AND height_cm <= 280::numeric));
 alter table public.profiles add constraint profiles_sex_check CHECK (sex is null or sex = any (array['male'::text, 'female'::text, 'other'::text]));
@@ -1649,7 +1661,7 @@ begin
 end;
 $function$;
 
-CREATE OR REPLACE FUNCTION public.save_body_reading(p_id uuid, p_measured_at timestamp with time zone, p_weight_kg numeric, p_heart_rate smallint, p_impedance_raw numeric, p_source text, p_device_label text)
+CREATE OR REPLACE FUNCTION public.save_body_reading(p_id uuid, p_measured_at timestamp with time zone, p_weight_kg numeric, p_heart_rate smallint, p_impedance_ohms numeric, p_impedance_source text, p_captured_version smallint, p_source text, p_device_label text)
  RETURNS jsonb
  LANGUAGE plpgsql
  SECURITY DEFINER
@@ -1660,6 +1672,8 @@ declare
   row public.body_readings;
   v_at timestamp with time zone;
   v_label text;
+  v_ohms numeric;
+  v_hypothesis text;
 begin
   if uid is null then
     raise exception 'Not authenticated';
@@ -1673,8 +1687,19 @@ begin
   if p_heart_rate is not null and (p_heart_rate < 20 or p_heart_rate > 260) then
     raise exception 'Heart rate must be between 20 and 260 bpm';
   end if;
-  if p_impedance_raw is not null and (p_impedance_raw < 0 or p_impedance_raw > 100000) then
+  if p_impedance_ohms is not null and (p_impedance_ohms <= 0 or p_impedance_ohms > 5000) then
     raise exception 'Impedance out of range';
+  end if;
+
+  -- A resistance and the byte map that produced it travel together or not at all.
+  v_ohms := p_impedance_ohms;
+  if v_ohms is null then
+    v_hypothesis := null;
+  else
+    v_hypothesis := nullif(btrim(coalesce(p_impedance_source, '')), '');
+    if char_length(v_hypothesis) > 32 then
+      v_hypothesis := left(v_hypothesis, 32);
+    end if;
   end if;
 
   v_at := coalesce(p_measured_at, now());
@@ -1689,20 +1714,23 @@ begin
 
   if p_id is null then
     insert into public.body_readings
-      (user_id, measured_at, weight_kg, heart_rate, impedance_raw, source, device_label, profile_snapshot, created_at, updated_at)
+      (user_id, measured_at, weight_kg, heart_rate, impedance_ohms, impedance_source, captured_version, source, device_label, profile_snapshot, created_at, updated_at)
     values (
       uid,
       v_at,
       p_weight_kg,
       p_heart_rate,
-      p_impedance_raw,
+      v_ohms,
+      v_hypothesis,
+      p_captured_version,
       coalesce(p_source, 'manual'),
       v_label,
       coalesce(
         (select jsonb_build_object(
                    'sex', pr.sex,
                    'date_of_birth', pr.date_of_birth,
-                   'height_cm', pr.height_cm)
+                   'height_cm', pr.height_cm,
+                   'activity', pr.activity)
            from public.profiles pr
           where pr.user_id = uid),
         '{}'::jsonb),
@@ -1712,11 +1740,15 @@ begin
   else
     -- profile_snapshot deliberately not refreshed: a correction to an old
     -- weigh-in must not be re-derived against today's age.
+    -- captured_version is coalesced: correcting a field is not evidence that the
+    -- row stopped being trustworthy.
     update public.body_readings
        set measured_at = v_at,
            weight_kg = p_weight_kg,
            heart_rate = p_heart_rate,
-           impedance_raw = p_impedance_raw,
+           impedance_ohms = v_ohms,
+           impedance_source = v_hypothesis,
+           captured_version = coalesce(p_captured_version, captured_version),
            source = coalesce(p_source, source),
            device_label = v_label,
            updated_at = now()
@@ -1731,7 +1763,7 @@ begin
 end;
 $function$;
 
-CREATE OR REPLACE FUNCTION public.save_profile(p_sex text, p_date_of_birth date, p_height_cm numeric)
+CREATE OR REPLACE FUNCTION public.save_profile(p_sex text, p_date_of_birth date, p_height_cm numeric, p_activity text)
  RETURNS jsonb
  LANGUAGE plpgsql
  SECURITY DEFINER
@@ -1748,6 +1780,9 @@ begin
   if p_sex is not null and p_sex <> all (array['male','female','other']) then
     raise exception 'Invalid sex';
   end if;
+  if p_activity is not null and p_activity <> all (array['sedentary','light','moderate','high','athlete']) then
+    raise exception 'Invalid activity level';
+  end if;
   -- Clock-dependent bounds live here, not in a CHECK constraint: a volatile CHECK
   -- expression can invalidate rows that were legal when written.
   if p_date_of_birth is not null and p_date_of_birth > current_date then
@@ -1757,12 +1792,13 @@ begin
     raise exception 'Height must be between 30 and 280 cm';
   end if;
 
-  insert into public.profiles (user_id, sex, date_of_birth, height_cm, created_at, updated_at)
-  values (uid, p_sex, p_date_of_birth, p_height_cm, now(), now())
+  insert into public.profiles (user_id, sex, date_of_birth, height_cm, activity, created_at, updated_at)
+  values (uid, p_sex, p_date_of_birth, p_height_cm, p_activity, now(), now())
   on conflict (user_id) do update
     set sex = excluded.sex,
         date_of_birth = excluded.date_of_birth,
         height_cm = excluded.height_cm,
+        activity = excluded.activity,
         updated_at = now()
   returning * into row;
 
@@ -2862,10 +2898,10 @@ grant execute on function public.resync_active_bookmarked_routine() to authentic
 revoke all on function public.routine_bookmarks_validate() from public, anon, authenticated;
 revoke all on function public.save_avatar_seed(p_seed text) from public, anon, authenticated;
 grant execute on function public.save_avatar_seed(p_seed text) to authenticated, service_role;
-revoke all on function public.save_body_reading(p_id uuid, p_measured_at timestamp with time zone, p_weight_kg numeric, p_heart_rate smallint, p_impedance_raw numeric, p_source text, p_device_label text) from public, anon, authenticated;
-grant execute on function public.save_body_reading(p_id uuid, p_measured_at timestamp with time zone, p_weight_kg numeric, p_heart_rate smallint, p_impedance_raw numeric, p_source text, p_device_label text) to authenticated, service_role;
-revoke all on function public.save_profile(p_sex text, p_date_of_birth date, p_height_cm numeric) from public, anon, authenticated;
-grant execute on function public.save_profile(p_sex text, p_date_of_birth date, p_height_cm numeric) to authenticated, service_role;
+revoke all on function public.save_body_reading(p_id uuid, p_measured_at timestamp with time zone, p_weight_kg numeric, p_heart_rate smallint, p_impedance_ohms numeric, p_impedance_source text, p_captured_version smallint, p_source text, p_device_label text) from public, anon, authenticated;
+grant execute on function public.save_body_reading(p_id uuid, p_measured_at timestamp with time zone, p_weight_kg numeric, p_heart_rate smallint, p_impedance_ohms numeric, p_impedance_source text, p_captured_version smallint, p_source text, p_device_label text) to authenticated, service_role;
+revoke all on function public.save_profile(p_sex text, p_date_of_birth date, p_height_cm numeric, p_activity text) from public, anon, authenticated;
+grant execute on function public.save_profile(p_sex text, p_date_of_birth date, p_height_cm numeric, p_activity text) to authenticated, service_role;
 revoke all on function public.save_routine_schedule(p_routine_id uuid, p_schedule jsonb) from public, anon, authenticated;
 grant execute on function public.save_routine_schedule(p_routine_id uuid, p_schedule jsonb) to authenticated, service_role;
 revoke all on function public.save_stat_log(p_stat_id uuid, p_log_date date, p_value real) from public, anon, authenticated;

@@ -14,6 +14,14 @@
  *
  * Full 128-bit UUID strings are used rather than 16-bit integers: Bluefy's WebKit
  * stack rejects the short form, Chrome accepts both.
+ *
+ * ## Why the list here is thinner than the one in the app
+ *
+ * `getDevices()` only returns devices this origin has already been granted, and
+ * Chrome will not let one be connected by its token until it has been seen
+ * advertising — so `watchAdvertisements()` is both the scan and a prerequisite for
+ * `connectTo()`. A browser that refuses either call is not an error to report: the
+ * scan resolves with nothing and the system picker stays on screen as the fallback.
  */
 
 import {
@@ -23,7 +31,8 @@ import {
 	NAME_PREFIXES,
 	SCALE_SERVICE_UUID,
 } from "./protocol";
-import type { ScaleConnection, ScaleTransport, ScaleConnectHandlers } from "./transport";
+import { SCAN_WINDOW_MS } from "./discovery";
+import type { ScaleConnectHandlers, ScaleConnection, ScaleDeviceHandler, ScaleDeviceSeed, ScaleTransport } from "./transport";
 
 type BluetoothCharacteristic = {
 	addEventListener(type: string, listener: (event: Event) => void): void;
@@ -48,12 +57,19 @@ type BluetoothDevice = {
 	id: string;
 	name?: string;
 	gatt?: BluetoothGATTServer;
-	addEventListener(type: string, listener: () => void): void;
-	removeEventListener(type: string, listener: () => void): void;
+	/** Chrome only: makes a saved device connectable, and the only way to see it nearby. */
+	watchAdvertisements?(): Promise<void>;
+	stopAdvertisements?(): void;
+	addEventListener(type: string, listener: (event: Event) => void): void;
+	removeEventListener(type: string, listener: (event: Event) => void): void;
 };
+
+type AdvertisementEvent = Event & { rssi?: number };
 
 type Bluetooth = {
 	requestDevice(options: Record<string, unknown>): Promise<BluetoothDevice>;
+	/** Devices this origin was already allowed to reconnect to. */
+	getDevices?(): Promise<BluetoothDevice[]>;
 };
 
 const getBluetooth = (): Bluetooth | null => {
@@ -61,6 +77,10 @@ const getBluetooth = (): Bluetooth | null => {
 	const candidate = (navigator as Navigator & { bluetooth?: Bluetooth }).bluetooth;
 	return candidate ?? null;
 };
+
+/** The device a `advertisementreceived` event belongs to. */
+const eventDevice = (event: Event): BluetoothDevice | null =>
+	((event.target as unknown as { device?: BluetoothDevice } | null)?.device) ?? null;
 
 export class WebBluetoothTransport implements ScaleTransport {
 	readonly kind = "web" as const;
@@ -80,10 +100,111 @@ export class WebBluetoothTransport implements ScaleTransport {
 		return null;
 	}
 
+	/**
+	 * Grants from earlier visits. Nothing new is discovered here — a scale that was
+	 * never picked does not appear, which is why the picker stays on the sheet.
+	 */
+	async listDevices(): Promise<ScaleDeviceSeed[]> {
+		const devices = await this.#saved();
+		return devices.map((device) => ({
+			id: device.id,
+			name: device.name ?? null,
+			remembered: true,
+		}));
+	}
+
+	async #saved(): Promise<BluetoothDevice[]> {
+		const bluetooth = getBluetooth();
+		if (!bluetooth?.getDevices) return [];
+		try {
+			return await bluetooth.getDevices();
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * Watch every saved device for advertisements. Resolves to a stop function even
+	 * when nothing could be watched, because "this browser will not tell us what is
+	 * nearby" is a normal outcome here rather than a failure to report.
+	 */
+	async startScan(onDevice: ScaleDeviceHandler): Promise<() => void> {
+		const devices = await this.#saved();
+		const watched: BluetoothDevice[] = [];
+
+		const onAdvertisement = (event: Event) => {
+			const device = eventDevice(event);
+			if (!device) return;
+			const rssi = (event as AdvertisementEvent).rssi;
+			onDevice({
+				id: device.id,
+				name: device.name ?? null,
+				remembered: true,
+				rssi: typeof rssi === "number" ? rssi : null,
+			});
+		};
+
+		for (const device of devices) {
+			if (!device.watchAdvertisements) continue;
+			try {
+				await device.watchAdvertisements();
+			} catch {
+				// Needs a user gesture, or the browser has the API but not the permission.
+				continue;
+			}
+			device.addEventListener("advertisementreceived", onAdvertisement);
+			watched.push(device);
+		}
+
+		return () => {
+			for (const device of watched) {
+				device.removeEventListener("advertisementreceived", onAdvertisement);
+				device.stopAdvertisements?.();
+			}
+		};
+	}
+
+	/**
+	 * Chrome will not open a GATT server for a saved device it has not recently seen,
+	 * so a tap on a row has to wait for one advertisement first.
+	 */
+	async connectTo(deviceId: string, handlers: ScaleConnectHandlers): Promise<ScaleConnection> {
+		const device = (await this.#saved()).find((candidate) => candidate.id === deviceId);
+		if (!device) {
+			throw new Error("That scale is not saved in this browser. Choose it from the list.");
+		}
+		if (!device.gatt?.connected) await this.#waitForAdvert(device);
+		return this.#open(device, handlers);
+	}
+
+	async #waitForAdvert(device: BluetoothDevice): Promise<void> {
+		const watch = device.watchAdvertisements;
+		if (!watch) return;
+		await new Promise<void>((resolve, reject) => {
+			let settled = false;
+			const finish = (fn: () => void) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				device.removeEventListener("advertisementreceived", onAdvert);
+				device.stopAdvertisements?.();
+				fn();
+			};
+			const onAdvert = (event: Event) => {
+				if (eventDevice(event)?.id === device.id) finish(resolve);
+			};
+			const timer = setTimeout(
+				() => finish(() => reject(new Error("The scale is not in range. Bring it closer and try again."))),
+				SCAN_WINDOW_MS,
+			);
+			device.addEventListener("advertisementreceived", onAdvert);
+			watch.call(device).catch(() => finish(() => reject(new Error("This browser will not show nearby scales. Pick it from the dialog instead."))));
+		});
+	}
+
 	async connect(handlers: ScaleConnectHandlers): Promise<ScaleConnection> {
 		const bluetooth = getBluetooth();
 		if (!bluetooth) throw new Error(this.unsupportedReason() ?? "Web Bluetooth unavailable");
-
 		const device = await bluetooth.requestDevice({
 			filters: [
 				...NAME_PREFIXES.map((namePrefix) => ({ namePrefix })),
@@ -91,7 +212,11 @@ export class WebBluetoothTransport implements ScaleTransport {
 			],
 			optionalServices: [SCALE_SERVICE_UUID, BATTERY_SERVICE_UUID],
 		});
+		return this.#open(device, handlers);
+	}
 
+	/** Link layer shared by the picker's choice and a tap on a row of the list. */
+	async #open(device: BluetoothDevice, handlers: ScaleConnectHandlers): Promise<ScaleConnection> {
 		let closed = false;
 		const onDisconnected = () => {
 			closed = true;

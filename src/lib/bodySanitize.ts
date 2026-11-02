@@ -7,9 +7,16 @@
  * `save_body_reading` RPCs own that, and their errors surface to the caller.
  */
 
-import type { Sex } from "./bodyComp";
+import { isActivity, type Activity, type Sex } from "./bodyComp";
 
 export type BodyReadingSource = "scale" | "manual";
+
+/**
+ * Rows written by the staged capture protocol declare their provenance. Anything
+ * older (null here) kept heart rate and impedance in bytes the Cult `0xCF` frame
+ * does not actually define, so those columns stay distrusted for those rows.
+ */
+export const CAPTURE_VERSION_STAGED = 2;
 
 /** Sex / DOB / height. Age is never stored: it is derived from `date_of_birth`. */
 export interface BodyProfile {
@@ -17,12 +24,16 @@ export interface BodyProfile {
 	/** ISO calendar date, YYYY-MM-DD. */
 	date_of_birth: string | null;
 	height_cm: number | null;
+	/** Optional; TDEE is withheld until the user picks one. */
+	activity: Activity | null;
 }
 
 export type BodyProfileInput = {
 	sex: Sex | null;
 	date_of_birth: string | null;
 	height_cm: number | null;
+	/** Required so a caller cannot wipe a chosen level by forgetting to carry it over. */
+	activity: Activity | null;
 };
 
 /** The profile in force when a reading was taken — history stays pinned to it. */
@@ -30,6 +41,7 @@ export type BodyReadingSnapshot = {
 	sex: Sex | null;
 	date_of_birth: string | null;
 	height_cm: number | null;
+	activity: Activity | null;
 };
 
 export interface BodyReading {
@@ -39,8 +51,12 @@ export interface BodyReading {
 	measured_at: string;
 	weight_kg: number;
 	heart_rate: number | null;
-	/** Raw scale units, NOT ohms. Null on a foot-only unit, which has nothing real. */
-	impedance_raw: number | null;
+	/** Whole-body resistance in ohms, band-checked at capture. */
+	impedance_ohms: number | null;
+	/** Which byte map produced `impedance_ohms`, e.g. `be-wholebody`. */
+	impedance_source: string | null;
+	/** `CAPTURE_VERSION_STAGED` on rows that may be trusted, null on legacy ones. */
+	captured_version: number | null;
 	source: BodyReadingSource;
 	device_label: string | null;
 	profile_snapshot: BodyReadingSnapshot;
@@ -52,7 +68,9 @@ export type BodyReadingInput = {
 	measured_at?: string | null;
 	weight_kg: number;
 	heart_rate?: number | null;
-	impedance_raw?: number | null;
+	impedance_ohms?: number | null;
+	impedance_source?: string | null;
+	captured_version?: number | null;
 	source?: BodyReadingSource;
 	device_label?: string | null;
 };
@@ -79,11 +97,16 @@ function sexValue(value: unknown): Sex | null {
 	return value === "male" || value === "female" || value === "other" ? value : null;
 }
 
+function activityValue(value: unknown): Activity | null {
+	return isActivity(value) ? value : null;
+}
+
 export function toBodyProfile(row: Record<string, unknown> | null | undefined): BodyProfile {
 	return {
 		sex: sexValue(row?.sex),
 		date_of_birth: isoDate(row?.date_of_birth),
 		height_cm: num(row?.height_cm),
+		activity: activityValue(row?.activity),
 	};
 }
 
@@ -93,6 +116,7 @@ function toSnapshot(value: unknown): BodyReadingSnapshot {
 		sex: sexValue(row.sex),
 		date_of_birth: isoDate(row.date_of_birth),
 		height_cm: num(row.height_cm),
+		activity: activityValue(row.activity),
 	};
 }
 
@@ -102,16 +126,22 @@ export function toBodyReading(row: Record<string, unknown>): BodyReading | null 
 	if (typeof row.id !== "string" || typeof row.measured_at !== "string" || weightKg == null) return null;
 	const source = row.source === "scale" ? "scale" : "manual";
 	const label = typeof row.device_label === "string" ? row.device_label.slice(0, DEVICE_LABEL_MAX) : null;
+	const capturedVersion = int(row.captured_version);
+	// The verified Cult 0xCF BLE packet has no heart rate or impedance. App versions
+	// before the staged capture protocol wrote undocumented frame bytes into those
+	// columns, so only a row that declares its provenance is believed. The legacy
+	// bytes stay in the database but never reach the UI.
+	const trusted = source === "manual" || (capturedVersion ?? 0) >= CAPTURE_VERSION_STAGED;
+	const ohms = trusted ? num(row.impedance_ohms) : null;
 	return {
 		id: row.id,
 		user_id: typeof row.user_id === "string" ? row.user_id : "",
 		measured_at: row.measured_at,
 		weight_kg: weightKg,
-		// The verified Cult 0xCF BLE packet does not contain reliable HR or
-		// impedance. Older app versions stored undocumented bytes in these columns;
-		// keep the database row intact but never present those bytes as measurements.
-		heart_rate: source === "scale" ? null : int(row.heart_rate),
-		impedance_raw: source === "scale" ? null : num(row.impedance_raw),
+		heart_rate: trusted ? int(row.heart_rate) : null,
+		impedance_ohms: ohms != null && ohms > 0 ? ohms : null,
+		impedance_source: ohms != null && typeof row.impedance_source === "string" ? row.impedance_source : null,
+		captured_version: capturedVersion,
 		source,
 		device_label: label && label.trim() ? label.trim() : null,
 		profile_snapshot: toSnapshot(row.profile_snapshot),

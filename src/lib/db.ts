@@ -1089,6 +1089,16 @@ function catalogSummaryFromRow(row: any): CatalogExerciseSummary {
 // DB LAYER
 // ============================================================
 
+/**
+ * Select lists for the two body tables. Named once because both are read from two
+ * places (app bootstrap and the BODY tab), and a duplicated string literal is how a
+ * new column ends up missing from half the queries. `impedance_raw` is left out on
+ * purpose: those pre-protocol bytes are never shown.
+ */
+const PROFILE_COLUMNS = "sex, date_of_birth, height_cm, activity";
+const BODY_READING_COLUMNS =
+	"id, user_id, measured_at, weight_kg, heart_rate, impedance_ohms, impedance_source, captured_version, source, device_label, profile_snapshot";
+
 export const db = {
 	/* ==================================================
 		 AUTH
@@ -1750,16 +1760,14 @@ export const db = {
 			includeStats
 				? supabase
 						.from("profiles")
-						.select("sex, date_of_birth, height_cm")
+						.select(PROFILE_COLUMNS)
 						.maybeSingle()
 				: Promise.resolve({ data: null, error: null }),
 			// A recent window only — the BODY tab fetches the range it is showing.
 			includeStats && userId
 				? supabase
 						.from("body_readings")
-						.select(
-							"id, user_id, measured_at, weight_kg, heart_rate, impedance_raw, source, device_label, profile_snapshot",
-						)
+						.select(BODY_READING_COLUMNS)
 						.order("measured_at", { ascending: false })
 						.limit(120)
 				: Promise.resolve({ data: [], error: null }),
@@ -2255,7 +2263,7 @@ export const db = {
 	async getProfile(): Promise<BodyProfile> {
 		const { data, error } = await supabase
 			.from("profiles")
-			.select("sex, date_of_birth, height_cm")
+			.select(PROFILE_COLUMNS)
 			.maybeSingle();
 		if (error) throw error;
 		return toBodyProfile(data as Record<string, unknown> | null);
@@ -2267,6 +2275,7 @@ export const db = {
 			p_sex: profile.sex,
 			p_date_of_birth: profile.date_of_birth,
 			p_height_cm: profile.height_cm,
+			p_activity: profile.activity,
 		});
 		if (error) throw error;
 		return toBodyProfile(data as Record<string, unknown> | null);
@@ -2291,9 +2300,7 @@ export const db = {
 			if (remaining <= 0) break;
 			let query = supabase
 				.from("body_readings")
-				.select(
-					"id, user_id, measured_at, weight_kg, heart_rate, impedance_raw, source, device_label, profile_snapshot",
-				)
+				.select(BODY_READING_COLUMNS)
 				.order("measured_at", { ascending: false })
 				.range(offset, offset + Math.min(pageSize, remaining) - 1);
 			if (since) query = query.gte("measured_at", since);
@@ -2318,7 +2325,9 @@ export const db = {
 			p_measured_at: reading.measured_at ?? null,
 			p_weight_kg: reading.weight_kg,
 			p_heart_rate: reading.heart_rate ?? null,
-			p_impedance_raw: reading.impedance_raw ?? null,
+			p_impedance_ohms: reading.impedance_ohms ?? null,
+			p_impedance_source: reading.impedance_source ?? null,
+			p_captured_version: reading.captured_version ?? null,
 			p_source: reading.source ?? "manual",
 			p_device_label: clampDeviceLabel(reading.device_label),
 		});

@@ -615,7 +615,7 @@ const getStatIcon = getItemIcon;
   let statListBody = $state<HTMLDivElement | undefined>();
 
   // --- BODY tab: profile, weigh-ins and the sheets that write them ---
-  let bodyProfile = $state<BodyProfile>({ sex: null, date_of_birth: null, height_cm: null });
+  let bodyProfile = $state<BodyProfile>({ sex: null, date_of_birth: null, height_cm: null, activity: null });
   let bodyReadings = $state<BodyReading[]>([]);
   let measureSheetOpen = $state(false);
   /** Opened straight to the form (MANUAL), or to correct one stored reading. */
@@ -4151,7 +4151,10 @@ const getStatIcon = getItemIcon;
             measured_at: reading.measured_at,
             weight_kg: reading.weight_kg,
             heart_rate: reading.heart_rate,
-            impedance_raw: reading.impedance_raw,
+            impedance_ohms: reading.impedance_ohms,
+            impedance_source: reading.impedance_source,
+            // A restored row that loses its provenance also loses its heart rate.
+            captured_version: reading.captured_version,
             source: reading.source,
             device_label: reading.device_label,
           })

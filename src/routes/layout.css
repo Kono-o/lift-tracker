@@ -154,6 +154,11 @@ html {
 	--app-shadow-popover: 0 18px 48px rgb(0 0 0 / 0.48), 0 0 0 1px rgb(255 255 255 / 0.035);
 	--app-shadow-dialog: 0 24px 72px rgb(0 0 0 / 0.58), 0 0 0 1px rgb(255 255 255 / 0.04);
 	--app-overlay: rgb(0 0 0 / 0.62);
+	/* Native chrome — see the section below the responsive token overrides.
+	   `--app-scroll-thumb` rides `--app-outline-strong`, so the OLED theme gets a
+	   brighter bar without another declaration. */
+	--app-scroll-thumb: var(--app-outline-strong);
+	--app-selection: rgb(101 230 172 / 0.26);
 	--background: oklch(1 0 0);
 	--foreground: oklch(0.145 0 0);
 	--card: oklch(1 0 0);
@@ -257,6 +262,95 @@ html {
 		--panel-max-w: min(100%, 40rem);
 		--hero-panel-max-w: min(100%, 42rem);
 	}
+}
+
+/*
+ * Native chrome — the widgets the platform draws for us: scrollbars, the
+ * date/time pickers and autofill.
+ *
+ * `color-scheme: dark` is the load-bearing line: the calendar popup, the
+ * `<select>` list and the validation bubble are painted by the browser and are
+ * unreachable any other way. Without it they arrive light-mode grey on a
+ * near-black app.
+ */
+html {
+	color-scheme: dark;
+	/* Inherited, so the root alone themes every scroll box in the app. */
+	scrollbar-color: var(--app-scroll-thumb) transparent;
+}
+
+/* `scrollbar-width`, unlike `scrollbar-color`, does not inherit — hence the
+   universal selector. Both are what Chrome 121+ and Firefox honour. */
+* {
+	scrollbar-width: thin;
+}
+
+::selection {
+	background: var(--app-selection);
+	color: var(--app-fg-primary);
+}
+
+/* Legacy Blink — the Android WebView this ships inside, below Chrome 121. It has
+   no `scrollbar-width`, and it will not resolve a custom property inside these
+   pseudo-elements, so the colours are literal here and in the OLED block. Newer
+   engines ignore the whole section: declaring the standard pair above switches
+   `::-webkit-scrollbar` off. */
+::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+	background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+	border: 2px solid transparent;
+	border-radius: 9999px;
+	background-color: #3a3a3a;
+	background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background-color: #52525b;
+}
+
+/* A finger cannot grab a rail, and a permanent 10px gutter inside a phone-width
+   dialog is a layout cost that buys nothing — touch keeps the platform's own
+   auto-hiding overlay bar. */
+@media (pointer: coarse) {
+	* {
+		scrollbar-width: none;
+	}
+
+	::-webkit-scrollbar {
+		width: 0;
+		height: 0;
+	}
+}
+
+/* Chrome's autofill tint cannot be out-specified by `background`, and the delay is
+   the documented way to keep it from landing on these fields at all. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+	-webkit-text-fill-color: var(--app-fg-primary);
+	caret-color: var(--app-fg-primary);
+	transition: background-color 9999s ease-in-out 0s;
+}
+
+/* The calendar glyph is drawn in the platform foreground, so it reads as a solid
+   blob against these dark fields. */
+input[type='date']::-webkit-calendar-picker-indicator,
+input[type='time']::-webkit-calendar-picker-indicator {
+	opacity: 0.55;
+	cursor: pointer;
+}
+
+input[type='date']:hover::-webkit-calendar-picker-indicator,
+input[type='time']:hover::-webkit-calendar-picker-indicator {
+	opacity: 1;
 }
 
 .dark {
@@ -665,8 +759,6 @@ html {
 	width: min(100%, 76rem);
 	margin: 0 auto;
 	padding: clamp(var(--space-5), 4vw, 3.5rem);
-	scrollbar-color: var(--app-fg-disabled) transparent;
-	scrollbar-width: thin;
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) minmax(21rem, 28rem);
 	align-items: center;
@@ -1680,7 +1772,6 @@ input.prop-num-input::-webkit-outer-spin-button {
 	color: var(--app-fg-primary);
 	font-size: var(--type-micro);
 	font-variant-numeric: tabular-nums;
-	color-scheme: dark;
 }
 
 .settings-prefs__days {
@@ -4223,6 +4314,12 @@ html.oled-theme {
 
 html.oled-theme body {
 	background: var(--app-canvas);
+}
+
+/* The legacy Blink scrollbar colours cannot read the tokens, so OLED repeats them. */
+html.oled-theme::-webkit-scrollbar-thumb,
+html.oled-theme *::-webkit-scrollbar-thumb {
+	background-color: #45454c;
 }
 
 html.oled-theme .settings-panel-password-input,
